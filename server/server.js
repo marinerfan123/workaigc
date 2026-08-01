@@ -160,10 +160,95 @@ async function handleAPI(req, res) {
   const method = req.method;
 
   // ── Media ──
+  // 同步预扫：探测前 16 张未标 failed 的图，限并发 4 + 3s 超时
+  // 把失效的标 failed + errorMessage 写库，避免前端看到「检测链接…」灰色占位
+  // （更深度的扫描由前端 useImageProbe 兜底）
+  const PROBE_CONCURRENCY = 4;
+  const PROBE_TIMEOUT_MS = 3000;
+  const PROBE_BATCH = 16; // 同步预扫只覆盖最显眼的 16 张，避免 GET 卡死
+
+  async function probeOneUrl(url, timeoutMs = PROBE_TIMEOUT_MS) {
+    if (!url || typeof url !== 'string') return { ok: false, error: '链接为空' };
+    if (url.startsWith('data:') || url.startsWith('blob:')) return { ok: true, skipWrite: true };
+    // 平台专有路径或本地 dev 占位（/spark/app/...、/runtime/...）
+    if (url.startsWith('/') && !url.startsWith('//')) {
+      return { ok: false, error: '本地/平台专有路径（不可外网访问）' };
+    }
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const resp = await fetch(url, { method: 'HEAD', signal: controller.signal });
+      clearTimeout(timer);
+      if (resp.ok) return { ok: true };
+      return { ok: false, error: `HTTP ${resp.status}（${resp.statusText || '请求失败'}）` };
+    } catch (e) {
+      return {
+        ok: false,
+        error: e.name === 'AbortError'
+          ? `图片加载超时（${Math.round(timeoutMs / 1000)}s）`
+          : (e.message || '网络错误'),
+      };
+    }
+  }
+
+  async function pMapLimit(arr, limit, iter) {
+    const ret = new Array(arr.length);
+    let i = 0;
+    const workers = Array.from({ length: limit }, async () => {
+      while (i < arr.length) {
+        const idx = i++;
+        ret[idx] = await iter(arr[idx], idx);
+      }
+    });
+    await Promise.all(workers);
+    return ret;
+  }
+
+  async function probeBatchAndMarkFailed(mediaList, pgPoolRef) {
+    const needsProbe = mediaList
+      .filter((m) => m.status !== 'failed' && m.thumbnail)
+      .slice(0, PROBE_BATCH);
+    if (needsProbe.length === 0) return 0;
+    const startedAt = Date.now();
+    const probeResults = await pMapLimit(needsProbe, PROBE_CONCURRENCY, async (m) => ({
+      id: m.id,
+      ...(await probeOneUrl(m.thumbnail)),
+    }));
+    const failedIds = [];
+    for (const pr of probeResults) {
+      if (!pr || pr.skipWrite) continue;
+      if (!pr.ok) {
+        failedIds.push({ id: pr.id, error: pr.error });
+        // 内存中直接修改，前端立即看到 failed 占位
+        const target = mediaList.find((m) => m.id === pr.id);
+        if (target) {
+          target.status = 'failed';
+          target.errorMessage = pr.error;
+          target.failedAt = new Date().toISOString();
+        }
+      }
+    }
+    // 批量写库
+    if (failedIds.length > 0 && pgPoolRef) {
+      for (const f of failedIds) {
+        await pgPoolRef.query(
+          'UPDATE media SET status=$1, error_message=$2, failed_at=$3 WHERE id=$4',
+          ['failed', f.error, new Date().toISOString(), f.id],
+        );
+      }
+    }
+    const elapsed = Date.now() - startedAt;
+    console.log(`[Probe] 预扫 ${needsProbe.length} 张 → 标 ${failedIds.length} 张失败（${elapsed}ms）`);
+    return failedIds.length;
+  }
+
   if (url === '/api/media' && method === 'GET') {
     if (pgPool) {
       const r = await pgPool.query('SELECT * FROM media WHERE is_deleted=FALSE ORDER BY created_at DESC');
-      return sendJSON(res, 200, r.rows.map(fromSnake));
+      const list = r.rows.map(fromSnake);
+      // 同步预扫：只阻塞这一批，超出部分由前端 useImageProbe 异步兜底
+      await probeBatchAndMarkFailed(list, pgPool);
+      return sendJSON(res, 200, list);
     }
     return sendJSON(res, 200, readJSON('media'));
   }

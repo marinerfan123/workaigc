@@ -175,32 +175,32 @@ export default function MediaCard({
             </div>
           </div>
         ) : isFailed ? (
-          /* ─── 失败占位：不再渲染 <img>，避免浏览器显示裂图 ─── */
-          <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-red-950/60 via-zinc-900 to-orange-950/40 p-3 text-center">
-            {/* 失败时也支持删除：右上角红 Trash 按钮（hover 显著，平时半透明） */}
+          /* ─── 失败占位：红橙底 + 明显文字（高对比度，避免被误认为裂图）── */
+          <div className="relative flex h-full w-full flex-col items-center justify-center gap-1.5 bg-gradient-to-br from-red-900/90 via-zinc-900/95 to-orange-900/70 p-3 text-center">
+            {/* 右上角红 Trash 删除按钮（hover 显著，平时半透明） */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onDelete(item.id);
               }}
-              className="absolute right-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-red-500/20 backdrop-blur-md text-red-300 ring-1 ring-red-500/30 opacity-60 transition-all hover:bg-red-500/40 hover:text-red-100 hover:opacity-100"
+              className="absolute right-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-red-500/40 backdrop-blur-md text-white ring-1 ring-red-300/50 opacity-80 transition-all hover:bg-red-500 hover:opacity-100"
               title="删除（移至回收站）"
             >
               <Trash2 className="size-3.5" />
             </button>
 
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/15 text-red-400 ring-1 ring-red-500/20">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/30 text-white ring-2 ring-red-300/40">
               <AlertCircle className="size-5" />
             </div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-red-300/80">生成失败</div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-white drop-shadow">生成失败</div>
             <p
-              className="line-clamp-3 max-w-full text-[11px] leading-snug text-zinc-400"
+              className="line-clamp-3 max-w-full text-[11px] leading-snug text-zinc-100"
               title={failedError || '图片链接已失效'}
             >
               {failedError || '图片链接已失效，无法显示'}
             </p>
             {failedAt && (
-              <p className="text-[9px] text-zinc-600">
+              <p className="text-[9px] text-zinc-300/80">
                 {new Date(failedAt).toLocaleString('zh-CN', { hour12: false })}
               </p>
             )}
@@ -210,7 +210,7 @@ export default function MediaCard({
                   e.stopPropagation();
                   onRetry(item);
                 }}
-                className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-red-500/20 px-2.5 py-1 text-[11px] font-medium text-red-200 ring-1 ring-red-500/30 transition-all hover:bg-red-500/30 hover:text-red-100"
+                className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold text-red-700 shadow-md transition-all hover:bg-white hover:shadow-lg"
                 title="用相同 prompt + model 重新生成"
               >
                 <RotateCw className="size-3" />
@@ -219,12 +219,14 @@ export default function MediaCard({
             )}
           </div>
         ) : probe.status === 'pending' ? (
-          /* ─── 探测中占位：避免裂图/未确定状态时显示破图 ─── */
-          <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-zinc-900/80 p-3 text-center">
-            <div className="flex h-8 w-8 items-center justify-center">
-              <div className="size-5 animate-spin rounded-full border-2 border-zinc-700 border-t-emerald-400" />
+          /* ─── 探测中占位：渐变背景 + 大 spinner + shimmer，明确告诉用户"这是临时状态"── */
+          <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 overflow-hidden bg-gradient-to-br from-zinc-800/90 via-zinc-900/95 to-zinc-800/90 p-3 text-center">
+            {/* shimmer 流光效果（从左到右的白色高光带，告诉用户「正在加载」） */}
+            <div className="pointer-events-none absolute inset-0 -translate-x-full shimmer bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+            <div className="relative z-10 flex h-10 w-10 items-center justify-center rounded-full bg-zinc-800/80 ring-1 ring-zinc-700/50">
+              <Loader2 className="size-5 animate-spin text-emerald-400" />
             </div>
-            <p className="text-[10px] text-zinc-500">检测链接…</p>
+            <p className="relative z-10 text-[11px] font-medium text-zinc-300">检测链接中…</p>
           </div>
         ) : (
           <Image
