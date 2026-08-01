@@ -27,6 +27,7 @@ import {
 import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub } from '@/hooks/useModelHub';
+import { getEffectiveModelName } from '@/data/models';
 import { apiGetMedia, apiSaveMedia, ensureApi, stripBlobItems } from '@/services/api';
 
 export default function ImageEditorPage() {
@@ -293,7 +294,7 @@ export default function ImageEditorPage() {
                 className="flex items-center gap-1.5 rounded-full bg-zinc-800/50 px-3 py-2 text-xs text-white hover:bg-zinc-800 transition-colors"
               >
                 <div className="flex flex-col items-start leading-tight">
-                  <span className="max-w-[100px] truncate font-medium">{model}</span>
+                  <span className="max-w-[100px] truncate font-medium">{getEffectiveModelName(models.find((m) => m.displayName === model)) || model}</span>
                   <span className="text-[9px] text-zinc-500">
                     {providers.find((p) => p.id === models.find((m) => m.displayName === model)?.providerId)?.name || '未知'}
                   </span>
@@ -323,7 +324,7 @@ export default function ImageEditorPage() {
                           const p = providers.find((x) => x.id === m.providerId);
                           if (!p || !p.enabled || !m.enabled) return false;
                           if (m.type !== 'image') return false;
-                          if (modelSearch && !m.displayName.toLowerCase().includes(modelSearch.toLowerCase())) return false;
+                          if (modelSearch && !m.displayName.toLowerCase().includes(modelSearch.toLowerCase()) && !getEffectiveModelName(m).toLowerCase().includes(modelSearch.toLowerCase())) return false;
                           return true;
                         });
                         const byProvider = filtered.reduce((acc, m) => {
@@ -353,7 +354,7 @@ export default function ImageEditorPage() {
                                     : 'text-zinc-300 hover:bg-zinc-800/50'
                                 }`}
                               >
-                                <span className="flex-1 truncate">{m.displayName}</span>
+                                <span className="flex-1 truncate">{getEffectiveModelName(m) || m.displayName}</span>
                               </button>
                             ))}
                           </div>

@@ -37,6 +37,7 @@ import {
   type Resolution,
   type IModelProvider,
   ALL_RESOLUTIONS,
+  getEffectiveModelName,
 } from '@/data/models';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
@@ -422,6 +423,13 @@ export default function ModelHubPage() {
     );
   };
 
+  /** 更新单个模型的映射名称（前台展示用，dispatch 仍按 model_id 走） */
+  const updateModelMappingName = (id: string, name: string) => {
+    setFetchedModels((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, mappingName: name } : m)),
+    );
+  };
+
   /** 切换单个模型某档分辨率（多选） */
   const toggleModelResolution = (id: string, res: Resolution) => {
     setFetchedModels((prev) =>
@@ -442,7 +450,7 @@ export default function ModelHubPage() {
     if (!modelSearchQuery) return fetchedModels;
     const q = modelSearchQuery.toLowerCase();
     return fetchedModels.filter(
-      (m) => m.modelId.toLowerCase().includes(q) || m.displayName.toLowerCase().includes(q),
+      (m) => m.modelId.toLowerCase().includes(q) || m.displayName.toLowerCase().includes(q) || (m.mappingName || '').toLowerCase().includes(q),
     );
   }, [fetchedModels, modelSearchQuery]);
 
@@ -515,6 +523,7 @@ export default function ModelHubPage() {
         id: `model-${Date.now()}-${i}`,
         modelId: m.modelId,
         displayName: m.displayName,
+        mappingName: m.mappingName || '',
         type: m.type,
         providerId: providerId!,
         enabled: true,
@@ -1413,7 +1422,7 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                             </div>
                             <div className="min-w-0">
                               <div className="truncate text-xs font-bold text-white">
-                                {group.displayName}
+                                {getEffectiveModelName(group) || group.displayName}
                                 {group.providerCount > 1 && (
                                   <span className="ml-1.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle">
                                     {group.providerCount}家
@@ -1617,6 +1626,14 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                       <div className="font-mono text-[11px] text-zinc-500 truncate px-2 -mx-2">
                         {model.modelId}
                       </div>
+                      {/* 映射名称：可选，前台展示优先用该名 */}
+                      <input
+                        type="text"
+                        value={model.mappingName || ''}
+                        onChange={(e) => updateModelMappingName(model.id, e.target.value)}
+                        className="w-full bg-zinc-800/40 text-xs text-emerald-300 placeholder:text-zinc-600 focus:outline-none focus:bg-zinc-800/70 rounded-lg px-2 py-0.5 -mx-2 transition-colors"
+                        placeholder="映射名称（前台展示名，可选）"
+                      />
                       {/* 分辨率多选：仅图片模型显示 */}
                       {model.type === 'image' && (
                         <div className="flex items-center gap-1 pt-1 px-2 -mx-2 flex-wrap">

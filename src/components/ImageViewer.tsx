@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
+import { getModelDisplayNameByDisplayName } from '@/hooks/useModelHub';
 
 interface ImageViewerProps {
   items: IMediaItem[];
@@ -292,7 +293,7 @@ export default function ImageViewer({
       {/* 底部信息 */}
       <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-6 px-6 py-4 bg-gradient-to-t from-black/60 to-transparent">
         <div className="flex items-center gap-4 text-xs text-zinc-500">
-          <span>{current.model}</span>
+          <span>{getModelDisplayNameByDisplayName(current.model) || current.model}</span>
           <span>·</span>
           <span>{current.ratio}</span>
           <span>·</span>

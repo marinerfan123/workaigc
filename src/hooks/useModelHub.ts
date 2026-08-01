@@ -147,3 +147,15 @@ export function useModelHub() {
     getDefaultModel,
   };
 }
+
+/**
+ * 非 hook 查询：按 displayName（dispatch 存储键）找到模型行，
+ * 返回其对外映射名（mappingName || displayName）。
+ * 供 DetailPanel / ImageViewer 等不直接持有 models 的组件取「当前展示名」，
+ * 避免重复订阅。模块级 modelsState 始终是最新值。
+ */
+export function getModelDisplayNameByDisplayName(displayName: string): string {
+  if (!displayName) return '';
+  const m = modelsState.find((x) => x.displayName === displayName);
+  return getEffectiveModelName(m);
+}

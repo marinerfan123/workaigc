@@ -25,6 +25,7 @@ import { toast } from 'sonner';
 import { useImageProbe } from '@/hooks/useImageProbe';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiProxyFetch } from '@/services/api';
+import { getModelDisplayNameByDisplayName } from '@/hooks/useModelHub';
 
 interface DetailPanelProps {
   item: IMediaItem | null;
@@ -334,7 +335,7 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
           </div>
           <div className="flex items-center justify-between">
             <span className="text-xs text-zinc-500">使用模型</span>
-            <span className="text-xs font-medium text-white">{item.model}</span>
+            <span className="text-xs font-medium text-white">{getModelDisplayNameByDisplayName(item.model) || item.model}</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-xs text-zinc-500">画面比例</span>

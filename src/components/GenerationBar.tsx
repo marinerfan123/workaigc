@@ -30,7 +30,7 @@ import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiProxyFetch, apiGenerate } from '@/services/api';
-import { ALL_RESOLUTIONS, type Resolution } from '@/data/models';
+import { ALL_RESOLUTIONS, type Resolution, getEffectiveModelName } from '@/data/models';
 import {
   Dialog,
   DialogContent,
@@ -163,6 +163,7 @@ function GenerationBar({
     if (settings.contentType === 'image' && m.type !== 'image') return false;
     if (settings.contentType === 'video' && m.type !== 'video') return false;
     if (modelSearch && !m.displayName.toLowerCase().includes(modelSearch.toLowerCase())
+      && !getEffectiveModelName(m).toLowerCase().includes(modelSearch.toLowerCase())
       && !m.modelId.toLowerCase().includes(modelSearch.toLowerCase())) return false;
     return true;
   });
@@ -170,8 +171,10 @@ function GenerationBar({
   // 按 model_id 聚合（同 model_id 多供应商 → 一个入口，避免重名）
   const groupedModels = groupModelsByModelId(availableModels);
 
-  // 当前选中模型的支持分辨率（图片模型才可能非空；为空数组 = 不显示分辨率按钮）
+  // 当前选中模型（按 dispatch 存储键 displayName 匹配）
   const currentModel = models.find((m) => m.displayName === settings.model);
+  // 顶栏展示名：优先映射名
+  const currentModelLabel = getEffectiveModelName(currentModel) || settings.model || '无';
   const availableResolutions: Resolution[] =
     settings.contentType === 'image' && currentModel?.supportedResolutions
       ? currentModel.supportedResolutions
@@ -261,7 +264,7 @@ function GenerationBar({
     onPromptChange('');
 
     toast.info('已提交生成请求', {
-      description: `模型 ${settings.model} · ${count} 张 · 服务端按并发均衡分配给供应商`,
+      description: `模型 ${currentModelLabel} · ${count} 张 · 服务端按并发均衡分配给供应商`,
       duration: 2500,
     });
 
@@ -601,7 +604,7 @@ function GenerationBar({
               >
                 <Settings2 className="size-3.5 text-zinc-500" />
                 <span className="max-w-[140px] truncate font-medium">
-                  {settings.model || '无'}
+                  {currentModelLabel}
                 </span>
                 <ChevronDown className="size-3 text-zinc-500" />
               </button>
@@ -650,7 +653,7 @@ function GenerationBar({
                                   : 'text-zinc-300 hover:bg-zinc-800/50'
                               }`}
                             >
-                              <span className="flex-1 truncate">{g.displayName}</span>
+                              <span className="flex-1 truncate">{getEffectiveModelName(g) || g.displayName}</span>
                               {g.providerCount > 1 && (
                                 <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold">
                                   {g.providerCount}家

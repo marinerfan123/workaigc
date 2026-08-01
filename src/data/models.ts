@@ -105,6 +105,9 @@ export interface IAiModel {
   id: string;
   modelId: string; // 模型ID（接口用）
   displayName: string; // 显示名称
+  /** 映射名称：用户自定义的对外展示名（前台优先于 displayName 展示）。
+   *  为空时前台回退到 displayName。dispatch 仍按 model_id 分发，不依赖此字段。 */
+  mappingName?: string;
   type: ModelType;
   providerId: string;
   enabled: boolean;
@@ -116,6 +119,16 @@ export interface IAiModel {
   paired?: IModelPaired;
   /** 单模型覆盖服务商的接口配置 */
   endpoint?: IModelEndpoint;
+}
+
+/**
+ * 取模型对外展示名：优先 mappingName（用户自定义映射名），否则 displayName。
+ * 前台所有展示场景统一走这个方法，保证「模型映射名称」在 UI 生效。
+ */
+export function getEffectiveModelName(m: Pick<IAiModel, 'displayName' | 'mappingName'> | undefined | null): string {
+  if (!m) return '';
+  const mapped = (m.mappingName || '').trim();
+  return mapped || (m.displayName || '').trim() || '';
 }
 
 // 预置服务商模板

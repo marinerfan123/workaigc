@@ -11,7 +11,7 @@ import MediaPicker from '@/components/MediaPicker';
 import ImageViewer from '@/components/ImageViewer';
 import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
-import { useModelHub } from '@/hooks/useModelHub';
+import { useModelHub, getModelDisplayNameByDisplayName } from '@/hooks/useModelHub';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
 
@@ -341,7 +341,7 @@ export default function WorkspacePage() {
                     <div className="flex-1 min-w-0">
                       <div className="truncate text-sm font-medium text-white">{item.title}</div>
                       <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-500">
-                        <span className="truncate">{item.model || '—'}</span>
+                        <span className="truncate">{getModelDisplayNameByDisplayName(item.model) || item.model || '—'}</span>
                         <span>·</span>
                         <span>{item.ratio || '—'}</span>
                         <span>·</span>

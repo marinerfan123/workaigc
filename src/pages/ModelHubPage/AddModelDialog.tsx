@@ -125,6 +125,7 @@ export default function AddModelDialog({ open, onClose, providers, models, setMo
       id: `model-${Date.now()}-${i}`,
       modelId: m.modelId,
       displayName: m.displayName,
+      mappingName: m.mappingName || '',
       type: m.type,
       providerId,
       enabled: true,
