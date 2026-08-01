@@ -75,3 +75,11 @@ logs/
 
 # ===== 上下文/对话记忆（含历史） =====
 .workbuddy/
+
+# ===== 凭据脚本（含真实 API Key，绝不入库） =====
+scripts/keys/
+scripts/*.keys.json
+scripts/insert-keys*
+*batch-insert-providers.cjs
+*batch-insert-models.cjs
+api-token.tmp
