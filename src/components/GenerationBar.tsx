@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { probeImageLoad } from '@/utils/imageProbe';
 import {
   ArrowUp,
   Plus,
@@ -61,7 +62,19 @@ interface GenerationBarProps {
   onPromptChange: (v: string) => void;
 }
 
-export default function GenerationBar({
+/** 父级调用 retry() 时用的参数：仅需 prompt + model + ratio（其它用当前 settings） */
+export interface RetryPayload {
+  prompt: string;
+  model: string;
+  ratio: string;
+}
+
+/** 父级通过 ref 触发重试的 imperative handle */
+export interface GenerationBarHandle {
+  retry: (payload: RetryPayload) => void;
+}
+
+function GenerationBar({
   settings,
   onSettingsChange,
   onGenerate,
@@ -72,7 +85,8 @@ export default function GenerationBar({
   setGenerating,
   prompt,
   onPromptChange,
-}: GenerationBarProps) {
+  ref,
+}: GenerationBarProps & { ref?: React.Ref<GenerationBarHandle> }) {
   const promptText = prompt ?? '';
   const navigate = useNavigate();
   const [agentOpen, setAgentOpen] = useState(false);
@@ -83,6 +97,39 @@ export default function GenerationBar({
   const { providers, models, getProviderName, getDefaultModel } = useModelHub();
   const { config: ossConfig, uploadFile: uploadToOss, buildOssUrl } = useOssConfig();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── 重试 imperative handle：父级通过 ref.current.retry({prompt,model,ratio}) 触发 ──
+  const pendingRetryRef = useRef<RetryPayload | null>(null);
+  const retryingRef = useRef(false);
+  // 锁住 handleGenerate 最新引用（避免 useEffect 闭包陷阱）
+  const handleGenerateRef = useRef<() => Promise<void>>(async () => {});
+  handleGenerateRef.current = handleGenerate;
+
+  useImperativeHandle(ref, () => ({
+    retry: (payload: RetryPayload) => {
+      pendingRetryRef.current = payload;
+    },
+  }), []);
+
+  useEffect(() => {
+    const payload = pendingRetryRef.current;
+    if (!payload) return;
+    if (retryingRef.current) return;
+    retryingRef.current = true;
+    pendingRetryRef.current = null;
+    // 1. 写 prompt
+    onPromptChange(payload.prompt);
+    // 2. 更新 settings（model+ratio）
+    onSettingsChange({ ...settings, model: payload.model, ratio: payload.ratio });
+    // 3. 等 React state 完成更新后调 handleGenerate
+    const tid = setTimeout(() => {
+      handleGenerateRef.current().finally(() => {
+        // 给后端分发、OSS 上传、UI 状态重置留时间，再释放锁
+        setTimeout(() => { retryingRef.current = false; }, 300);
+      });
+    }, 80);
+    return () => clearTimeout(tid);
+  }, [settings, onPromptChange, onSettingsChange]);
 
   // 类型切换 + 模型列表变化时，自动校准默认模型
   useEffect(() => {
@@ -192,6 +239,7 @@ export default function GenerationBar({
       return;
     }
 
+
     setGenerating(true);
 
     toast.info('已提交生成请求', {
@@ -281,7 +329,9 @@ export default function GenerationBar({
           // 使用外部原始 URL（OSS 失败后的降级；OSS 成功则用 OSS URL）
           const persistentUrl = ossUploaded ? ossUrl : resultImages[i];
 
-          newItems.push({
+          // 探测图片能否加载（处理失效链接，标记为 failed 让 MediaCard 渲染专用占位）
+          const probe = await probeImageLoad(persistentUrl);
+          const baseItem: IMediaItem = {
             id: `gen-${now}-${i}`,
             title: promptText.slice(0, 20) || '古风人像',
             type: settings.contentType,
@@ -297,7 +347,17 @@ export default function GenerationBar({
             ossUrl,
             ossObjectKey,
             ossUploaded,
-          });
+          };
+          if (!probe.ok) {
+            newItems.push({
+              ...baseItem,
+              status: 'failed',
+              errorMessage: probe.error || '图片链接已失效，无法显示',
+              failedAt: new Date().toISOString(),
+            });
+          } else {
+            newItems.push(baseItem);
+          }
         }
 
         newItems.forEach((item, idx) => {
@@ -829,3 +889,7 @@ export default function GenerationBar({
     </div>
   );
 }
+
+const GenerationBarForwarded = forwardRef<GenerationBarHandle, GenerationBarProps>(GenerationBar);
+GenerationBarForwarded.displayName = 'GenerationBar';
+export default GenerationBarForwarded;

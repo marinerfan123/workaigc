@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import {
   Image as ImageIcon,
   Video,
@@ -16,6 +16,7 @@ import {
   FileUp,
   Grid3X3,
   Download,
+  AlertCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import MediaCard from '@/components/MediaCard';
@@ -35,6 +36,7 @@ const CATEGORY_LABELS: Record<string, { label: string; icon: typeof ImageIcon }>
 
 export default function LibraryPage() {
   const { category = 'all' } = useParams<{ category?: string }>();
+  const navigate = useNavigate();
   const [mediaList, setMediaList] = useState<IMediaItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -42,6 +44,12 @@ export default function LibraryPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [showFailed, setShowFailed] = useState(false);
+
+  const handleRetry = (item: IMediaItem) => {
+    // 跳转到 WorkspacePage 并把 retryItem 通过 router state 传过去
+    navigate('/workspace', { state: { retryItem: item } });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -69,6 +77,8 @@ export default function LibraryPage() {
   const filtered = useMemo(() => {
     return mediaList.filter((m) => {
       if (m.isDeleted) return false;
+      // 默认隐藏生成失败的项（避免裂图占位）；勾选"显示失败"后可查看 + 重新生成
+      if (m.status === 'failed' && !showFailed) return false;
       if (searchQuery && !m.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
       if (category === 'all') return true;
       if (category === 'image') return m.type === 'image';
@@ -80,7 +90,7 @@ export default function LibraryPage() {
       if (category === 'upload') return m.category === 'upload';
       return true;
     });
-  }, [mediaList, searchQuery, category]);
+  }, [mediaList, searchQuery, category, showFailed]);
 
   const catInfo = CATEGORY_LABELS[category] || CATEGORY_LABELS.all;
   const CatIcon = catInfo.icon;
@@ -307,6 +317,19 @@ export default function LibraryPage() {
               <LayoutList className="size-4" />
               <span>{batchMode ? '取消批量' : '批量选择'}</span>
             </button>
+            {/* 显示生成失败项 */}
+            <button
+              onClick={() => setShowFailed((v) => !v)}
+              className={`flex items-center gap-1.5 rounded-full px-3 py-2 text-xs transition-all duration-300 ${
+                showFailed
+                  ? 'bg-red-500/15 text-red-300 border border-red-500/30'
+                  : 'bg-zinc-900 text-zinc-500 border border-zinc-800 hover:border-zinc-700 hover:text-zinc-300'
+              }`}
+              title="显示生成失败的项（可点击重新生成）"
+            >
+              <AlertCircle className="size-3.5" />
+              <span>{showFailed ? '隐藏失败' : '显示失败'}</span>
+            </button>
           </div>
         </div>
 
@@ -417,6 +440,7 @@ export default function LibraryPage() {
                       }}
                       onToggleFavorite={handleToggleFavorite}
                       onDelete={handleDelete}
+                      onRetry={handleRetry}
                       gridSize="M"
                     />
                     {batchMode && (
@@ -497,6 +521,19 @@ export default function LibraryPage() {
             <LayoutList className="size-4" />
             <span>{batchMode ? '取消批量' : '批量选择'}</span>
           </button>
+          {/* 显示生成失败项：默认隐藏避免裂图占位，勾上后可查看 + 重新生成 */}
+          <button
+            onClick={() => setShowFailed((v) => !v)}
+            className={`flex items-center gap-1.5 rounded-full px-3 py-2 text-xs transition-all duration-300 ${
+              showFailed
+                ? 'bg-red-500/15 text-red-300 border border-red-500/30'
+                : 'bg-zinc-900 text-zinc-500 border border-zinc-800 hover:border-zinc-700 hover:text-zinc-300'
+            }`}
+            title="显示生成失败的项（可点击重新生成）"
+          >
+            <AlertCircle className="size-3.5" />
+            <span>{showFailed ? '隐藏失败' : '显示失败'}</span>
+          </button>
         </div>
       </div>
 
@@ -557,6 +594,7 @@ export default function LibraryPage() {
                   }}
                   onToggleFavorite={handleToggleFavorite}
                   onDelete={handleDelete}
+                  onRetry={handleRetry}
                   gridSize="M"
                 />
                 {batchMode && (

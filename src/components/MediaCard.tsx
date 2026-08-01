@@ -15,6 +15,8 @@ import {
   Film,
   Cloud,
   Maximize2,
+  AlertCircle,
+  RotateCw,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Image from '@/components/ui/image';
@@ -27,6 +29,7 @@ interface MediaCardProps {
   onOpenViewer?: () => void;
   onToggleFavorite: (id: string) => void;
   onDelete: (id: string) => void;
+  onRetry?: (item: IMediaItem) => void;
   gridSize: 'S' | 'M' | 'L';
 }
 
@@ -37,6 +40,7 @@ export default function MediaCard({
   onOpenViewer,
   onToggleFavorite,
   onDelete,
+  onRetry,
   gridSize,
 }: MediaCardProps) {
   const [moreOpen, setMoreOpen] = useState(false);
@@ -76,28 +80,57 @@ export default function MediaCard({
       }}
     >
       <div className={`relative w-full ${sizeClasses[gridSize]} overflow-hidden`}>
-        <Image
-          src={item.thumbnail}
-          alt={item.title}
-          className="h-full w-full object-cover duration-500"
-        />
+        {item.status === 'failed' ? (
+          /* ─── 失败占位：不再渲染 <img>，避免浏览器显示裂图 ─── */
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-red-950/60 via-zinc-900 to-orange-950/40 p-3 text-center">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/15 text-red-400 ring-1 ring-red-500/20">
+              <AlertCircle className="size-5" />
+            </div>
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-red-300/80">生成失败</div>
+            <p
+              className="line-clamp-3 max-w-full text-[11px] leading-snug text-zinc-400"
+              title={item.errorMessage || '图片链接已失效'}
+            >
+              {item.errorMessage || '图片链接已失效，无法显示'}
+            </p>
+            {onRetry && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRetry(item);
+                }}
+                className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-red-500/20 px-2.5 py-1 text-[11px] font-medium text-red-200 ring-1 ring-red-500/30 transition-all hover:bg-red-500/30 hover:text-red-100"
+                title="用相同 prompt + model 重新生成"
+              >
+                <RotateCw className="size-3" />
+                重新生成
+              </button>
+            )}
+          </div>
+        ) : (
+          <Image
+            src={item.thumbnail}
+            alt={item.title}
+            className="h-full w-full object-cover duration-500"
+          />
+        )}
 
-        {/* 视频播放角标 */}
-        {item.type === 'video' && (
+        {/* 视频播放角标（仅成功状态显示） */}
+        {(!item.status || item.status === 'success') && item.type === 'video' && (
           <div className="absolute left-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 backdrop-blur-sm text-white">
             <Play className="size-3.5 fill-current" />
           </div>
         )}
 
-        {/* 收藏角标 */}
-        {item.isFavorite && (
+        {/* 收藏角标（仅成功状态显示） */}
+        {(!item.status || item.status === 'success') && item.isFavorite && (
           <div className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500/20 backdrop-blur-sm text-emerald-400">
             <Heart className="size-3.5 fill-current" />
           </div>
         )}
 
-        {/* OSS 已上传角标 —— 左下角（避免与视频播放角标重叠） */}
-        {item.ossUploaded && (
+        {/* OSS 已上传角标 —— 左下角（仅成功状态显示） */}
+        {item.ossUploaded && (!item.status || item.status === 'success') && (
           <div className="absolute left-2 bottom-2 z-20 flex h-7 items-center gap-1 rounded-full bg-emerald-500/20 backdrop-blur-sm px-2 text-emerald-400" title="已同步到 OSS 云存储">
             <Cloud className="size-3.5" />
             <span className="text-[10px] font-semibold">OSS</span>
@@ -109,12 +142,13 @@ export default function MediaCard({
           <div className="absolute inset-0 ring-2 ring-emerald-500 ring-inset rounded-2xl z-10" />
         )}
 
-        {/* 顶部操作栏 - hover 显示 */}
-        <div
-          className={`absolute inset-x-0 top-0 z-10 flex items-start justify-between p-2.5 transition-opacity duration-300 ${
-            hovered ? 'opacity-100' : 'opacity-0'
-          }`}
-        >
+        {/* 顶部操作栏 - hover 显示（仅成功状态显示，失败状态用占位里的"重新生成"） */}
+        {(!item.status || item.status === 'success') && (
+          <div
+            className={`absolute inset-x-0 top-0 z-10 flex items-start justify-between p-2.5 transition-opacity duration-300 ${
+              hovered ? 'opacity-100' : 'opacity-0'
+            }`}
+          >
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -162,28 +196,31 @@ export default function MediaCard({
             </button>
           </div>
         </div>
+        )}
 
-        {/* 底部信息栏 - hover 显示 */}
-        <div
-          className={`absolute inset-x-0 bottom-0 z-10 p-2.5 transition-opacity duration-300 ${
-            hovered ? 'opacity-100' : 'opacity-0'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="truncate text-xs font-medium text-white drop-shadow">
-              {item.title}
-            </span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-              }}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-black/40 backdrop-blur-md text-white hover:bg-black/60 transition-colors"
-              title="重做"
-            >
-              <RefreshCw className="size-3.5" />
-            </button>
+        {/* 底部信息栏 - hover 显示（仅成功状态显示，失败用占位里的"重新生成"） */}
+        {(!item.status || item.status === 'success') && (
+          <div
+            className={`absolute inset-x-0 bottom-0 z-10 p-2.5 transition-opacity duration-300 ${
+              hovered ? 'opacity-100' : 'opacity-0'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <span className="truncate text-xs font-medium text-white drop-shadow">
+                {item.title}
+              </span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                }}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-black/40 backdrop-blur-md text-white hover:bg-black/60 transition-colors"
+                title="重做"
+              >
+                <RefreshCw className="size-3.5" />
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* 底部渐变蒙层 */}
         <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/60 to-transparent pointer-events-none" />

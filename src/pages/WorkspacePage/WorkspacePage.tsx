@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import TopBar from '@/components/TopBar';
 import FilterBar from '@/components/FilterBar';
 import FilterPanel from '@/components/FilterPanel';
 import SettingsPanel from '@/components/SettingsPanel';
 import MediaCard from '@/components/MediaCard';
 import DetailPanel from '@/components/DetailPanel';
-import GenerationBar from '@/components/GenerationBar';
+import GenerationBar, { type GenerationBarHandle } from '@/components/GenerationBar';
 import MediaPicker from '@/components/MediaPicker';
 import ImageViewer from '@/components/ImageViewer';
 import Image from '@/components/ui/image';
@@ -31,6 +32,9 @@ const DEFAULT_SETTINGS: IGenerationSettings = {
 };
 
 export default function WorkspacePage() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const generationBarRef = useRef<GenerationBarHandle>(null);
   const [mediaList, setMediaList] = useState<IMediaItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -92,6 +96,26 @@ export default function WorkspacePage() {
     })();
 
     return () => { cancelled = true; };
+  }, []);
+
+  // 接收 LibraryPage 跳转过来的 retry 请求：用原 prompt+model+ratio 重新生成，并清掉旧的 failed item
+  useEffect(() => {
+    const state = (location.state as { retryItem?: IMediaItem } | null) || null;
+    const item = state?.retryItem;
+    if (!item) return;
+    // 1. 删掉旧失败项（避免列表里残留）
+    setMediaList((prev) => prev.filter((m) => m.id !== item.id));
+    // 2. 通知 GenerationBar 重新生成
+    setTimeout(() => {
+      generationBarRef.current?.retry({
+        prompt: item.prompt,
+        model: item.model,
+        ratio: item.ratio,
+      });
+      // 3. 清掉 navigate state，避免重复触发
+      navigate(location.pathname, { replace: true, state: null });
+    }, 50);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 切换模型时校验分辨率：新模型若不支持当前 resolution，自动选第一个支持的
@@ -325,6 +349,7 @@ export default function WorkspacePage() {
           </div>
 
           <GenerationBar
+            ref={generationBarRef}
             settings={settings}
             onSettingsChange={handleSettingsChange}
             onGenerate={handleGenerate}
