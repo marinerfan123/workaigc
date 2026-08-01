@@ -29,8 +29,7 @@ import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub } from '@/hooks/useModelHub';
 import { useOssConfig } from '@/hooks/useOssConfig';
-import { generateImageViaProvider } from '@/services/imageGeneration';
-import { apiProxyFetch } from '@/services/api';
+import { apiProxyFetch, apiGenerate } from '@/services/api';
 import { ALL_RESOLUTIONS, type Resolution } from '@/data/models';
 import {
   Dialog,
@@ -193,44 +192,31 @@ export default function GenerationBar({
       return;
     }
 
-    // 调用后台配置的服务商 API 生成图片
     setGenerating(true);
 
-    // 反馈：并发 N 次请求
-    const N = Number(settings.count) || 1;
-    toast.info(`并发 ${N} 次请求`, {
-      description: `向 ${settings.model} 同时发起 ${N} 次独立请求`,
+    toast.info('已提交生成请求', {
+      description: `模型 ${settings.model} · ${settings.count} 张 · 服务端按并发均衡分配给供应商`,
       duration: 2500,
     });
 
     try {
-      // 并发 N 次请求，每次调 generateImageViaProvider(n=1)
-      const results = await Promise.all(
-        Array.from({ length: N }, () =>
-          generateImageViaProvider(
-            settings.model, promptText, settings.ratio, 1,
-            providers, models, settings.resolution || '1k',
-          ),
-        ),
-      );
+      const genResult = await apiGenerate({
+        model: settings.model,
+        prompt: promptText,
+        ratio: settings.ratio,
+        resolution: settings.resolution || '1k',
+        count: settings.count,
+        contentType: settings.contentType,
+      });
+      const resultImages = Array.isArray(genResult.images) ? genResult.images.filter(Boolean) : [];
 
-      // 合并所有结果的成功图片
-      const allImages: string[] = [];
-      let firstSource = 'provider' as string;
-      for (const r of results) {
-        if (r.status === 'success' && r.images.length > 0) {
-          allImages.push(r.images[0]);
-          firstSource = r.source || firstSource;
-        }
-      }
-
-      if (allImages.length > 0) {
+      if (resultImages.length > 0) {
         const modelInfo = models.find(
           (m) => m.displayName === settings.model && m.type === settings.contentType,
         );
         const providerName = modelInfo ? getProviderName(modelInfo.providerId) : '未知';
 
-        const resultImages = allImages;
+
 
         const now = Date.now();
         const newItems: IMediaItem[] = [];
@@ -307,7 +293,7 @@ export default function GenerationBar({
             createdAt: new Date().toISOString(),
             isFavorite: false,
             isDeleted: false,
-            source: firstSource === 'provider' ? 'user' : 'mock',
+            source: 'user',
             ossUrl,
             ossObjectKey,
             ossUploaded,
@@ -318,11 +304,10 @@ export default function GenerationBar({
           setTimeout(() => onGenerate(item), idx * 100);
         });
         onPromptChange('');
-        toast.success(`生成成功 · 1 次请求拿到 ${newItems.length} 张 · ${providerName}`);
-        logger.info(`图片生成成功（${firstSource}），共 ${newItems.length} 张`);
+        toast.success(`生成成功 · ${newItems.length} 张 · ${providerName}`);
+        logger.info(`图片生成成功（服务端分发），共 ${newItems.length} 张`);
       } else {
-        // 服务商 API 全部失败
-        const firstError = results.find(r => r.status !== 'success')?.error || '生成失败：服务商返回异常';
+        const firstError = genResult.error || '生成失败：服务商返回异常';
         toast.error(firstError, { duration: 5000 });
         logger.warn(`生成失败 → 降级 mock：${firstError}`);
         fillMockItems();

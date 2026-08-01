@@ -6,6 +6,7 @@ import { Settings2, Plus, X, Check, Loader2, FlaskConical, ChevronRight, Chevron
 import { toast } from 'sonner';
 import type { IModelProvider, IAiModel, IEndpoint, IModelEndpoint, ProtocolType } from '@/data/models';
 import { callEndpoint, getByPath, fillTemplate } from '@/services/genericClient';
+import { apiTestProviderEndpoint, apiTestProviderDefault } from '@/services/api';
 
 interface Props {
   providers: IModelProvider[];
@@ -152,10 +153,6 @@ export default function EndpointsTab({ providers, setProviders, setModels, model
 
   const testEndpoint = async () => {
     if (!selectedProvider) return;
-    if (!selectedProvider.apiKey) {
-      toast.error('请先填写 API Key');
-      return;
-    }
     setTesting(true);
     setTestOutput('');
     try {
@@ -163,25 +160,18 @@ export default function EndpointsTab({ providers, setProviders, setModels, model
       const proto = activeEndpointSource.protocol;
       if (!ep) {
         toast.info('未配置自定义端点，将走 OpenAI 兼容默认');
-        const url = `${selectedProvider.baseUrl.replace(/\/$/, '')}/chat/completions`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selectedProvider.apiKey}` },
-          body: JSON.stringify({ model: 'test', messages: [{ role: 'user', content: testInput }], max_tokens: 50 }),
-        });
-        const text = await res.text();
-        setTestOutput(`[OpenAI 默认]\nHTTP ${res.status}\n${text.slice(0, 1000)}`);
+        const r = await apiTestProviderDefault(selectedProvider.id, testInput);
+        if (!r.success) { setTestOutput(`[错误]\n${r.message}`); toast.error(`测试失败：${(r.message || '').slice(0, 100)}`); return; }
+        const out = typeof r.body === 'string' ? r.body : JSON.stringify(r.body, null, 2);
+        setTestOutput(`[OpenAI 默认]\nHTTP ${r.status}\n${out.slice(0, 1000)}`);
+        toast.success(`测试完成：HTTP ${r.status}`);
         return;
       }
-      const { status, body } = await callEndpoint(
-        selectedProvider.baseUrl,
-        ep,
-        selectedProvider.apiKey,
-        { prompt: testInput, model: 'test', size: '1024x1024', n: 1, ratio: '1:1', resolution: '1k', task_id: '' },
-      );
-      const formatted = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
-      setTestOutput(`[${proto}]\nHTTP ${status}\n${formatted.slice(0, 2000)}`);
-      toast.success(`测试完成：HTTP ${status}`);
+      const r = await apiTestProviderEndpoint(selectedProvider.id, ep as Record<string, unknown>, { prompt: testInput, model: 'test', size: '1024x1024', n: 1, ratio: '1:1', resolution: '1k', task_id: '' });
+      if (!r.success) { setTestOutput(`[错误]\n${r.message}`); toast.error(`测试失败：${(r.message || '').slice(0, 100)}`); return; }
+      const out = typeof r.body === 'string' ? r.body : JSON.stringify(r.body, null, 2);
+      setTestOutput(`[${proto}]\nHTTP ${r.status}\n${out.slice(0, 2000)}`);
+      toast.success(`测试完成：HTTP ${r.status}`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setTestOutput(`[错误]\n${msg}`);

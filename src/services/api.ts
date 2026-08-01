@@ -190,3 +190,57 @@ export async function apiSaveCharacters(items: any[]) {
 export function stripBlobItems<T extends { thumbnail?: string }>(items: T[]): T[] {
   return items.filter((m) => !m.thumbnail?.startsWith('blob:'));
 }
+
+// ─── 服务端生成分发 ─────────────────────────────
+/**
+ * 调用后端 /api/generate：由后端按全局 maxThreads + 各供应商 max_concurrent
+ * 把 N 个请求均衡分配到不同服务商，前端不再持有真实 API Key。
+ */
+export async function apiGenerate(payload: {
+  model: string;
+  prompt: string;
+  ratio?: string;
+  resolution?: string;
+  count?: number;
+  contentType?: 'image' | 'video';
+  referenceImages?: string[];
+}): Promise<{ status: string; images?: string[]; error?: string; source?: string }> {
+  try {
+    return await apiFetch('/api/generate', { method: 'POST', body: JSON.stringify(payload) });
+  } catch (e) {
+    return { status: 'failed', error: (e instanceof Error ? e.message : String(e)).slice(0, 200), images: [] };
+  }
+}
+
+// ─── 同步服务商模型列表（后端代理，避免前端持有真实 Key）───
+export async function apiSyncProviderModels(id: string): Promise<{ success: boolean; models?: Array<{ id: string; name: string }>; message?: string }> {
+  try {
+    return await apiFetch(`/api/providers/${id}/sync`, { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// ─── 测试服务商端点（后端代理）───
+export async function apiTestProviderEndpoint(
+  id: string,
+  endpoint: Record<string, unknown>,
+  vars: Record<string, unknown>,
+): Promise<{ success: boolean; status?: number; body?: unknown; message?: string }> {
+  try {
+    return await apiFetch(`/api/providers/${id}/test-endpoint`, { method: 'POST', body: JSON.stringify({ endpoint, vars }) });
+  } catch (e) {
+    return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+export async function apiTestProviderDefault(
+  id: string,
+  testInput: string,
+): Promise<{ success: boolean; status?: number; body?: unknown; message?: string }> {
+  try {
+    return await apiFetch(`/api/providers/${id}/test-default`, { method: 'POST', body: JSON.stringify({ testInput }) });
+  } catch (e) {
+    return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}

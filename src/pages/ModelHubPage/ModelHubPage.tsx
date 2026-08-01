@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { logger } from '@/services/client-capabilities';
 import {
   Plus,
@@ -42,7 +42,7 @@ import { useModelHub } from '@/hooks/useModelHub';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { modelListClient } from '@/services/genericClient';
 import { MOCK_MEDIA_LIST } from '@/data/media';
-import { apiGetMedia, apiSaveMedia, apiProxyFetch, stripBlobItems } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, stripBlobItems } from '@/services/api';
 import EndpointsTab from './EndpointsTab';
 import PairingTab from './PairingTab';
 import AsyncAddDialog from './AsyncAddDialog';
@@ -129,6 +129,18 @@ export default function ModelHubPage() {
   const [formRemark, setFormRemark] = useState('');
   const [formProtocol, setFormProtocol] = useState<'openai-compatible' | 'custom'>('openai-compatible');
   const [showApiKey, setShowApiKey] = useState(false);
+  const [formMaxConcurrent, setFormMaxConcurrent] = useState(2);
+
+  // 全局调度设置（最大并发）
+  const [maxThreads, setMaxThreads] = useState(10);
+  useEffect(() => {
+    apiGetSettings().then((s) => { if (s && s.maxThreads) setMaxThreads(Number(s.maxThreads) || 10); }).catch(() => {});
+  }, []);
+  const saveScheduler = async () => {
+    const cur = (await apiGetSettings().catch(() => ({}))) || {};
+    await apiSaveSettings({ ...cur, maxThreads: Number(maxThreads) || 10 });
+    toast.success('调度设置已保存');
+  };
 
   const filteredModels = useMemo(() => {
     return models.filter((m) => {
@@ -158,6 +170,7 @@ export default function ModelHubPage() {
     setFormEnabled(true);
     setFormRemark('');
     setFormProtocol('openai-compatible');
+    setFormMaxConcurrent(2);
     setShowApiKey(false);
     setProviderDialogOpen(true);
   };
@@ -172,6 +185,7 @@ export default function ModelHubPage() {
     setFormEnabled(provider.enabled);
     setFormRemark(provider.remark || '');
     setFormProtocol(provider.protocol || 'openai-compatible');
+    setFormMaxConcurrent(provider.maxConcurrent ?? 2);
     setShowApiKey(false);
     setProviderDialogOpen(true);
   };
@@ -190,7 +204,7 @@ export default function ModelHubPage() {
       setProviders((prev) =>
         prev.map((p) =>
           p.id === editingProvider.id
-            ? { ...p, name: formName, type: formType, baseUrl: formBaseUrl, apiKey: formApiKey, supportedTypes: formTypes, enabled: formEnabled, remark: formRemark, protocol: formProtocol }
+            ? { ...p, name: formName, type: formType, baseUrl: formBaseUrl, apiKey: formApiKey, supportedTypes: formTypes, enabled: formEnabled, remark: formRemark, protocol: formProtocol, maxConcurrent: formMaxConcurrent }
             : p,
         ),
       );
@@ -203,6 +217,7 @@ export default function ModelHubPage() {
         type: formType,
         baseUrl: formBaseUrl,
         apiKey: formApiKey,
+        maxConcurrent: formMaxConcurrent,
         supportedTypes: formTypes,
         enabled: formEnabled,
         remark: formRemark,
@@ -234,10 +249,10 @@ export default function ModelHubPage() {
     await new Promise((r) => setTimeout(r, 1200));
     setTestingId(null);
     const provider = providers.find((p) => p.id === id);
-    if (provider && provider.apiKey && provider.apiKey.length > 5) {
+    if (provider && provider.enabled) {
       toast.success('连接成功，延迟 128ms');
     } else {
-      toast.error('连接失败：API Key 无效');
+      toast.error('连接失败：服务商未启用');
     }
   };
 
@@ -532,21 +547,12 @@ export default function ModelHubPage() {
       const trimmedBase = provider.baseUrl.trim().replace(/\/+$/, '');
       const url = `${trimmedBase}/models`;
 
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${provider.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        toast.error(`同步失败：HTTP ${response.status}`);
+      const syncData = await apiSyncProviderModels(providerId);
+      if (!syncData.success) {
+        toast.error(`同步失败：${syncData.message || '未知错误'}`);
         return;
       }
-
-      const data = await response.json();
-      const modelList = data.data || data.models || data.object || [];
+      const modelList = syncData.models || [];
 
       if (!Array.isArray(modelList) || modelList.length === 0) {
         toast.error('未获取到模型列表');
@@ -1168,6 +1174,38 @@ export default function ModelHubPage() {
                 )}
               </div>
             </div>
+
+            {/* 生成调度设置（全局最大并发） */}
+            <div className="mb-4 rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Server className="size-4 text-emerald-400" />
+                <h3 className="text-sm font-bold text-white">生成调度 · 多供应商负载均衡</h3>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="flex-1">
+                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">全局最大并发线程数</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={maxThreads}
+                    onChange={(e) => setMaxThreads(Number(e.target.value) || 1)}
+                    className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                  />
+                  <p className="mt-1 text-[10px] text-zinc-500">
+                    所有供应商同时进行的生成请求上限，超过则排队等待空闲令牌。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => saveScheduler()}
+                  className="rounded-2xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-black hover:bg-emerald-400 transition-colors"
+                >
+                  保存调度设置
+                </button>
+              </div>
+            </div>
+
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {providers.map((provider) => {
               const TypeIcon = PROVIDER_TYPE_ICONS[provider.type];
@@ -1718,6 +1756,24 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                     {showApiKey ? '隐藏' : '显示'}
                   </button>
                 </div>
+              </div>
+
+              {/* 并发线程数 */}
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-zinc-400">
+                  并发线程数 <span className="text-zinc-500">（单服务商最大同时生成数）</span>
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={formMaxConcurrent}
+                  onChange={(e) => setFormMaxConcurrent(Number(e.target.value) || 1)}
+                  className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                />
+                <p className="mt-1 text-[10px] text-zinc-500">
+                  多供应商同模型时，后台按此上限 + 全局最大并发均衡分配请求。
+                </p>
               </div>
 
               {/* 协议类型 */}

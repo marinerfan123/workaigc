@@ -27,6 +27,7 @@ if (!API_TOKEN) {
 import pgLib from 'pg';
 const { Pool } = pgLib;
 let pgPool = null;
+import dispatcher from './dispatcher.cjs';
 
 async function initDB() {
   try {
@@ -41,6 +42,7 @@ async function initDB() {
       CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, title TEXT DEFAULT '', type TEXT DEFAULT 'image', thumbnail TEXT DEFAULT '', full_url TEXT DEFAULT '', prompt TEXT DEFAULT '', model TEXT DEFAULT '', ratio TEXT DEFAULT '1:1', source TEXT DEFAULT 'user', is_favorite BOOLEAN DEFAULT FALSE, is_deleted BOOLEAN DEFAULT FALSE, oss_url TEXT DEFAULT '', oss_object_key TEXT DEFAULT '', oss_uploaded BOOLEAN DEFAULT FALSE, category TEXT DEFAULT 'generated', created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS oss_config (id INTEGER PRIMARY KEY DEFAULT 1, provider TEXT DEFAULT 'aliyun-oss', access_point_name TEXT DEFAULT '', endpoint_external TEXT DEFAULT '', endpoint_internal TEXT DEFAULT '', bucket TEXT DEFAULT '', region TEXT DEFAULT '', region_label TEXT DEFAULT '', access_key_id TEXT DEFAULT '', access_key_secret TEXT DEFAULT '', path_prefix TEXT DEFAULT 'images/', custom_domain TEXT DEFAULT '', enabled BOOLEAN DEFAULT TRUE);
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value JSONB NOT NULL DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW());
+      ALTER TABLE providers ADD COLUMN IF NOT EXISTS max_concurrent INT DEFAULT 2;
       INSERT INTO oss_config (id, enabled) VALUES (1, TRUE) ON CONFLICT (id) DO NOTHING;
       INSERT INTO settings (key, value) VALUES ('app', '{}') ON CONFLICT (key) DO NOTHING;
     `);
@@ -67,7 +69,7 @@ const SNAKE_MAP = {
   full_url:'fullUrl', oss_url:'ossUrl', oss_object_key:'ossObjectKey', oss_uploaded:'ossUploaded',
   is_favorite:'isFavorite', is_deleted:'isDeleted', created_at:'createdAt', base_url:'baseUrl',
   api_key:'apiKey', supported_types:'supportedTypes', default_endpoint:'defaultEndpoint',
-  display_name:'displayName', model_id:'modelId', provider_id:'providerId',
+  display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent',
   supported_resolutions:'supportedResolutions', access_point_name:'accessPointName',
   endpoint_external:'endpointExternal', endpoint_internal:'endpointInternal',
   access_key_id:'accessKeyId', access_key_secret:'accessKeySecret',
@@ -248,8 +250,9 @@ async function handleAPI(req, res) {
   }
 
   if (url === '/api/providers' && method === 'GET') {
-    if (pgPool) { const r = await pgPool.query('SELECT * FROM providers ORDER BY created_at'); return sendJSON(res, 200, r.rows.map(fromSnake)); }
-    return sendJSON(res, 200, readJSON('providers'));
+    const maskKey = (p) => ({ ...p, apiKey: p.apiKey ? '***' : '' });
+    if (pgPool) { const r = await pgPool.query('SELECT * FROM providers ORDER BY created_at'); return sendJSON(res, 200, r.rows.map(fromSnake).map(maskKey)); }
+    return sendJSON(res, 200, readJSON('providers').map(maskKey));
   }
   if (url === '/api/providers' && method === 'POST') {
     const items = await parseBody(req); if (!items) return sendJSON(res, 400, { error: 'Invalid JSON' });
@@ -257,9 +260,15 @@ async function handleAPI(req, res) {
     if (pgPool) {
       for (const it of arr) {
         const s = toSnake(it);
+        // 安全：api_key 含 '*' 或太短视为占位，沿用 DB 现有值（避免误覆盖真实密钥）
+        let apiKey = s.api_key;
+        if (!apiKey || apiKey.includes('*') || apiKey.length < 6) {
+          const ex = await pgPool.query('SELECT api_key FROM providers WHERE id=$1', [s.id]);
+          if (ex.rows[0]?.api_key) apiKey = ex.rows[0].api_key;
+        }
         await pgPool.query(
-          `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled`,
-          [s.id, s.name, s.type, s.base_url, s.api_key, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {})]
+          `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled,max_concurrent=EXCLUDED.max_concurrent`,
+          [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2]
         );
       }
       return sendJSON(res, 200, { ok: true });
@@ -274,6 +283,94 @@ async function handleAPI(req, res) {
     if (pgPool) { await pgPool.query('DELETE FROM models WHERE provider_id=$1', [id]); await pgPool.query('DELETE FROM providers WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); }
     writeJSON('providers', readJSON('providers').filter(p => p.id !== id));
     return sendJSON(res, 200, { ok: true });
+  }
+
+  // ── 服务端生成分发（同模型多供应商动态均衡）──
+  if (url === '/api/generate' && method === 'POST') {
+    if (!pgPool) return sendJSON(res, 200, { status: 'failed', error: '数据库不可用，无法分发生成任务' });
+    const body = await parseBody(req);
+    if (!body || !body.model || !body.prompt) return sendJSON(res, 400, { error: '缺少 model 或 prompt' });
+    try {
+      const result = await dispatcher.generate(pgPool, {
+        model: body.model,
+        prompt: body.prompt,
+        ratio: body.ratio || '1:1',
+        resolution: body.resolution || '1k',
+        count: body.count || 1,
+        contentType: body.contentType || 'image',
+        referenceImages: body.referenceImages || [],
+      });
+      return sendJSON(res, 200, result);
+    } catch (e) {
+      return sendJSON(res, 200, { status: 'failed', error: `分发异常：${(e && e.message) || String(e)}` });
+    }
+  }
+
+  // ── 同步服务商模型列表（后端代理，避免前端持有真实 Key）──
+  if (url.match(/^\/api\/providers\/[^/]+\/sync$/) && method === 'POST') {
+    const id = url.split('/')[3];
+    if (!pgPool) return sendJSON(res, 200, { success: false, message: '数据库不可用' });
+    const r = await pgPool.query('SELECT * FROM providers WHERE id=$1', [id]);
+    const p = r.rows[0];
+    if (!p) return sendJSON(res, 200, { success: false, message: '服务商不存在' });
+    if (!p.api_key || p.api_key.length < 6) return sendJSON(res, 200, { success: false, message: '服务商未配置有效 API Key（请在编辑弹窗保存真实密钥）' });
+    try {
+      const base = (p.base_url || '').trim().replace(/\/+$/, '');
+      const proto = p.protocol || 'openai-compatible';
+      const defEp = p.default_endpoint || {};
+      let models = [];
+      if (proto === 'custom' && defEp.listModels) {
+        const { status, body } = await dispatcher.callEndpoint(base, defEp.listModels, p.api_key, {});
+        if (status >= 400) return sendJSON(res, 200, { success: false, message: `同步失败 HTTP ${status}` });
+        const arr = dispatcher.getArrayByPath(body, defEp.listModels.listFieldPath || 'data');
+        models = arr.map((m) => ({ id: String(dispatcher.getByPath(m, defEp.listModels.listIdFieldPath || 'id') || ''), name: String(dispatcher.getByPath(m, defEp.listModels.listNameFieldPath || 'name') || '') })).filter((m) => m.id);
+      } else {
+        const resp = await fetch(`${base}/models`, { method: 'GET', headers: { Authorization: `Bearer ${p.api_key}` } });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) return sendJSON(res, 200, { success: false, message: `同步失败 HTTP ${resp.status}` });
+        const arr = Array.isArray(data && data.data) ? data.data : [];
+        models = arr.map((m) => ({ id: String(m.id || ''), name: String(m.id || '') })).filter((m) => m.id);
+      }
+      return sendJSON(res, 200, { success: true, models });
+    } catch (e) {
+      return sendJSON(res, 200, { success: false, message: `同步异常：${(e && e.message) || String(e)}` });
+    }
+  }
+
+  // ── 测试服务商端点（后端代理，避免前端持有真实 Key）──
+  if (url.match(/^\/api\/providers\/[^/]+\/test-endpoint$/) && method === 'POST') {
+    const id = url.split('/')[3];
+    const body = await parseBody(req);
+    if (!pgPool) return sendJSON(res, 200, { success: false, message: '数据库不可用' });
+    const r = await pgPool.query('SELECT * FROM providers WHERE id=$1', [id]);
+    const p = r.rows[0];
+    if (!p) return sendJSON(res, 200, { success: false, message: '服务商不存在' });
+    if (!p.api_key || p.api_key.length < 6) return sendJSON(res, 200, { success: false, message: '服务商未配置有效 API Key' });
+    try {
+      const ep = body && body.endpoint;
+      if (!ep || !ep.path) return sendJSON(res, 200, { success: false, message: '缺少 endpoint 配置' });
+      const { status, body: respBody } = await dispatcher.callEndpoint(p.base_url, ep, p.api_key, (body && body.vars) || {});
+      return sendJSON(res, 200, { success: true, status, body: respBody });
+    } catch (e) {
+      return sendJSON(res, 200, { success: false, message: `测试异常：${(e && e.message) || String(e)}` });
+    }
+  }
+  if (url.match(/^\/api\/providers\/[^/]+\/test-default$/) && method === 'POST') {
+    const id = url.split('/')[3];
+    const body = await parseBody(req);
+    if (!pgPool) return sendJSON(res, 200, { success: false, message: '数据库不可用' });
+    const r = await pgPool.query('SELECT * FROM providers WHERE id=$1', [id]);
+    const p = r.rows[0];
+    if (!p) return sendJSON(res, 200, { success: false, message: '服务商不存在' });
+    if (!p.api_key || p.api_key.length < 6) return sendJSON(res, 200, { success: false, message: '服务商未配置有效 API Key' });
+    try {
+      const url2 = `${p.base_url.replace(/\/$/, '')}/chat/completions`;
+      const resp = await fetch(url2, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${p.api_key}` }, body: JSON.stringify({ model: 'test', messages: [{ role: 'user', content: (body && body.testInput) || 'hi' }], max_tokens: 50 }) });
+      const text = await resp.text();
+      return sendJSON(res, 200, { success: true, status: resp.status, body: text.slice(0, 2000) });
+    } catch (e) {
+      return sendJSON(res, 200, { success: false, message: `测试异常：${(e && e.message) || String(e)}` });
+    }
   }
 
   // ── Models ──
