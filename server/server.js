@@ -1,0 +1,453 @@
+// 纯 Node.js 后端 API — PostgreSQL 17 + Redis 7.2
+// 用法: node server.js
+import http from 'http';
+import fs from 'fs';
+import crypto from 'crypto';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PORT = process.env.PORT || 3001;
+const DATA_DIR = path.join(__dirname, 'data');
+const TOKEN_FILE = path.join(DATA_DIR, '.api_token');
+const CLIENT_DIR = path.join(__dirname, '..', 'dist', 'build2');
+
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// ─── Token ──────────────────────────────────────
+let API_TOKEN = '';
+try { API_TOKEN = fs.readFileSync(TOKEN_FILE, 'utf-8').trim(); } catch {}
+if (!API_TOKEN) {
+  API_TOKEN = crypto.randomBytes(24).toString('hex');
+  fs.writeFileSync(TOKEN_FILE, API_TOKEN);
+  console.log(`\n🔑 API Token: ${API_TOKEN}\n`);
+}
+
+// ─── 数据库：PostgreSQL ─────────────────────────
+import pgLib from 'pg';
+const { Pool } = pgLib;
+let pgPool = null;
+
+async function initDB() {
+  try {
+    pgPool = new Pool({
+      host: 'localhost', port: 5432, database: 'huabu',
+      user: 'postgres', password: '0.0.1abcd', max: 10,
+    });
+    await pgPool.query('SELECT 1');
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT DEFAULT 'official', base_url TEXT DEFAULT '', api_key TEXT DEFAULT '', supported_types TEXT[] DEFAULT '{}', enabled BOOLEAN DEFAULT TRUE, protocol TEXT DEFAULT 'openai-compatible', remark TEXT DEFAULT '', default_endpoint JSONB DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, title TEXT DEFAULT '', type TEXT DEFAULT 'image', thumbnail TEXT DEFAULT '', full_url TEXT DEFAULT '', prompt TEXT DEFAULT '', model TEXT DEFAULT '', ratio TEXT DEFAULT '1:1', source TEXT DEFAULT 'user', is_favorite BOOLEAN DEFAULT FALSE, is_deleted BOOLEAN DEFAULT FALSE, oss_url TEXT DEFAULT '', oss_object_key TEXT DEFAULT '', oss_uploaded BOOLEAN DEFAULT FALSE, category TEXT DEFAULT 'generated', created_at TIMESTAMPTZ DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS oss_config (id INTEGER PRIMARY KEY DEFAULT 1, provider TEXT DEFAULT 'aliyun-oss', access_point_name TEXT DEFAULT '', endpoint_external TEXT DEFAULT '', endpoint_internal TEXT DEFAULT '', bucket TEXT DEFAULT '', region TEXT DEFAULT '', region_label TEXT DEFAULT '', access_key_id TEXT DEFAULT '', access_key_secret TEXT DEFAULT '', path_prefix TEXT DEFAULT 'images/', custom_domain TEXT DEFAULT '', enabled BOOLEAN DEFAULT TRUE);
+      CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value JSONB NOT NULL DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW());
+      INSERT INTO oss_config (id, enabled) VALUES (1, TRUE) ON CONFLICT (id) DO NOTHING;
+      INSERT INTO settings (key, value) VALUES ('app', '{}') ON CONFLICT (key) DO NOTHING;
+    `);
+    console.log('[DB] PostgreSQL 连接成功');
+    return true;
+  } catch (e) {
+    console.warn('[DB] PostgreSQL 不可用，降级 JSON 存储:', e.message);
+    pgPool = null;
+    return false;
+  }
+}
+
+// ─── JSON 降级 ──────────────────────────────────
+function readJSON(name) {
+  try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, `${name}.json`), 'utf-8')); }
+  catch { return name === 'oss' || name === 'settings' ? {} : []; }
+}
+function writeJSON(name, data) {
+  fs.writeFileSync(path.join(DATA_DIR, `${name}.json`), JSON.stringify(data, null, 2));
+}
+
+// ─── snake_case → camelCase ─────────────────────
+const SNAKE_MAP = {
+  full_url:'fullUrl', oss_url:'ossUrl', oss_object_key:'ossObjectKey', oss_uploaded:'ossUploaded',
+  is_favorite:'isFavorite', is_deleted:'isDeleted', created_at:'createdAt', base_url:'baseUrl',
+  api_key:'apiKey', supported_types:'supportedTypes', default_endpoint:'defaultEndpoint',
+  display_name:'displayName', model_id:'modelId', provider_id:'providerId',
+  supported_resolutions:'supportedResolutions', access_point_name:'accessPointName',
+  endpoint_external:'endpointExternal', endpoint_internal:'endpointInternal',
+  access_key_id:'accessKeyId', access_key_secret:'accessKeySecret',
+  path_prefix:'pathPrefix', custom_domain:'customDomain', region_label:'regionLabel',
+};
+function fromSnake(obj) {
+  if (!obj) return obj;
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    out[SNAKE_MAP[k] || k] = v;
+  }
+  return out;
+}
+function toSnake(obj) {
+  const rev = {};
+  for (const [k, v] of Object.entries(SNAKE_MAP)) rev[v] = k;
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    out[rev[k] || k] = v;
+  }
+  return out;
+}
+
+// ─── 请求解析 ───────────────────────────────────
+function parseBody(req) {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 50 * 1024 * 1024) body = ''; });
+    req.on('end', () => {
+      try { resolve(body ? JSON.parse(body) : null); }
+      catch { resolve(null); }
+    });
+  });
+}
+
+function sendJSON(res, code, data) {
+  res.writeHead(code, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  });
+  res.end(JSON.stringify(data));
+}
+
+// ─── MIME ────────────────────────────────────────
+const MIME = {
+  '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
+  '.json': 'application/json', '.ico': 'image/x-icon',
+};
+
+function serveStatic(req, res) {
+  let filePath = path.join(CLIENT_DIR, req.url === '/' ? 'index.html' : req.url);
+  try {
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+      filePath = path.join(CLIENT_DIR, 'index.html');
+    }
+    const ext = path.extname(filePath);
+    res.writeHead(200, {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+    });
+    res.end(fs.readFileSync(filePath));
+  } catch { res.end(); }
+}
+
+// ─── Auth ────────────────────────────────────────
+function auth(req) {
+  return req.headers['authorization'] === `Bearer ${API_TOKEN}`;
+}
+
+// ══════════════════════════════════════════════════
+// API 路由（PG 优先，JSON 降级）
+// ══════════════════════════════════════════════════
+async function handleAPI(req, res) {
+  if (!auth(req)) return sendJSON(res, 401, { error: 'Unauthorized' });
+
+  const url = req.url.replace(/\/$/, '');
+  const method = req.method;
+
+  // ── Media ──
+  if (url === '/api/media' && method === 'GET') {
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM media WHERE is_deleted=FALSE ORDER BY created_at DESC');
+      return sendJSON(res, 200, r.rows.map(fromSnake));
+    }
+    return sendJSON(res, 200, readJSON('media'));
+  }
+  // 媒体数量统计（按 type / category 分组，给侧边栏角标用）
+  if (url === '/api/media/counts' && method === 'GET') {
+    if (pgPool) {
+      const r = await pgPool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE NOT is_deleted)                                         AS total,
+          COUNT(*) FILTER (WHERE type='image' AND NOT is_deleted)                       AS image,
+          COUNT(*) FILTER (WHERE type='video' AND NOT is_deleted)                       AS video,
+          COUNT(*) FILTER (WHERE category='character' AND NOT is_deleted)               AS character,
+          COUNT(*) FILTER (WHERE category='scene' AND NOT is_deleted)                   AS scene,
+          COUNT(*) FILTER (WHERE category='prop' AND NOT is_deleted)                     AS prop,
+          COUNT(*) FILTER (WHERE category='other' AND NOT is_deleted)                    AS other,
+          COUNT(*) FILTER (WHERE category='upload' AND NOT is_deleted)                   AS upload
+        FROM media
+      `);
+      const row = r.rows[0];
+      return sendJSON(res, 200, {
+        total: parseInt(row.total, 10) || 0,
+        image: parseInt(row.image, 10) || 0,
+        video: parseInt(row.video, 10) || 0,
+        character: parseInt(row.character, 10) || 0,
+        scene: parseInt(row.scene, 10) || 0,
+        prop: parseInt(row.prop, 10) || 0,
+        other: parseInt(row.other, 10) || 0,
+        upload: parseInt(row.upload, 10) || 0,
+      });
+    }
+    const list = readJSON('media').filter((m) => !m.isDeleted && !m.is_deleted);
+    return sendJSON(res, 200, {
+      total: list.length,
+      image: list.filter((m) => m.type === 'image').length,
+      video: list.filter((m) => m.type === 'video').length,
+      character: list.filter((m) => m.category === 'character').length,
+      scene: list.filter((m) => m.category === 'scene').length,
+      prop: list.filter((m) => m.category === 'prop').length,
+      other: list.filter((m) => m.category === 'other').length,
+      upload: list.filter((m) => m.category === 'upload').length,
+    });
+  }
+  if (url === '/api/media' && method === 'POST') {
+    const items = await parseBody(req);
+    if (!items) return sendJSON(res, 400, { error: 'Invalid JSON' });
+    const arr = Array.isArray(items) ? items : [items];
+    if (pgPool) {
+      for (const it of arr) {
+        const s = toSnake(it);
+        await pgPool.query(
+          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,full_url=EXCLUDED.full_url,thumbnail=EXCLUDED.thumbnail,oss_url=EXCLUDED.oss_url,oss_object_key=EXCLUDED.oss_object_key,oss_uploaded=EXCLUDED.oss_uploaded,is_deleted=EXCLUDED.is_deleted`,
+          [s.id, s.title, s.type, s.thumbnail, s.full_url, s.prompt, s.model, s.ratio, s.source, s.is_favorite || false, s.is_deleted || false, s.oss_url, s.oss_object_key, s.oss_uploaded || false, s.category || 'generated', s.created_at || new Date().toISOString()]
+        );
+      }
+      return sendJSON(res, 200, { ok: true, count: arr.length });
+    }
+    const list = readJSON('media');
+    for (const it of arr) { const idx = list.findIndex(m => m.id === it.id); if (idx >= 0) list[idx] = it; else list.push(it); }
+    writeJSON('media', list);
+    return sendJSON(res, 200, { ok: true, count: arr.length });
+  }
+  if (url.startsWith('/api/media/') && method === 'DELETE') {
+    const id = url.split('/api/media/')[1];
+    if (pgPool) { await pgPool.query('DELETE FROM media WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); }
+    writeJSON('media', readJSON('media').filter(m => m.id !== id));
+    return sendJSON(res, 200, { ok: true });
+  }
+
+  // ── Providers ──
+  // ── 代理下载图片（绕过浏览器 CORS）──
+  if (url === '/api/proxy-fetch' && method === 'POST') {
+    const body = await parseBody(req);
+    if (!body?.imageUrl) return sendJSON(res, 400, { success: false, message: '缺少 imageUrl' });
+    try {
+      const r = await fetch(body.imageUrl, {
+        headers: body.headers || {},
+        redirect: 'follow',
+      });
+      if (!r.ok) return sendJSON(res, 200, { success: false, message: `HTTP ${r.status}`, status: r.status });
+      const arrayBuf = await r.arrayBuffer();
+      const buf = Buffer.from(arrayBuf);
+      return sendJSON(res, 200, {
+        success: true,
+        base64: buf.toString('base64'),
+        contentType: r.headers.get('content-type') || 'image/jpeg',
+        size: buf.length,
+      });
+    } catch (e) {
+      return sendJSON(res, 200, { success: false, message: `代理失败：${e instanceof Error ? e.message : String(e)}` });
+    }
+  }
+
+  if (url === '/api/providers' && method === 'GET') {
+    if (pgPool) { const r = await pgPool.query('SELECT * FROM providers ORDER BY created_at'); return sendJSON(res, 200, r.rows.map(fromSnake)); }
+    return sendJSON(res, 200, readJSON('providers'));
+  }
+  if (url === '/api/providers' && method === 'POST') {
+    const items = await parseBody(req); if (!items) return sendJSON(res, 400, { error: 'Invalid JSON' });
+    const arr = Array.isArray(items) ? items : [items];
+    if (pgPool) {
+      for (const it of arr) {
+        const s = toSnake(it);
+        await pgPool.query(
+          `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled`,
+          [s.id, s.name, s.type, s.base_url, s.api_key, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {})]
+        );
+      }
+      return sendJSON(res, 200, { ok: true });
+    }
+    const list = readJSON('providers');
+    for (const it of arr) { const idx = list.findIndex(p => p.id === it.id); if (idx >= 0) list[idx] = it; else list.push(it); }
+    writeJSON('providers', list);
+    return sendJSON(res, 200, { ok: true });
+  }
+  if (url.startsWith('/api/providers/') && method === 'DELETE') {
+    const id = url.split('/api/providers/')[1];
+    if (pgPool) { await pgPool.query('DELETE FROM models WHERE provider_id=$1', [id]); await pgPool.query('DELETE FROM providers WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); }
+    writeJSON('providers', readJSON('providers').filter(p => p.id !== id));
+    return sendJSON(res, 200, { ok: true });
+  }
+
+  // ── Models ──
+  if (url === '/api/models' && method === 'GET') {
+    if (pgPool) { const r = await pgPool.query('SELECT * FROM models ORDER BY created_at'); return sendJSON(res, 200, r.rows.map(fromSnake)); }
+    return sendJSON(res, 200, readJSON('models'));
+  }
+  if (url === '/api/models' && method === 'POST') {
+    const items = await parseBody(req); if (!items) return sendJSON(res, 400, { error: 'Invalid JSON' });
+    const arr = Array.isArray(items) ? items : [items];
+    if (pgPool) {
+      for (const it of arr) {
+        const s = toSnake(it);
+        await pgPool.query(
+          `INSERT INTO models (id,model_id,display_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name,enabled=EXCLUDED.enabled`,
+          [s.id, s.model_id, s.display_name, s.type, s.provider_id, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {})]
+        );
+      }
+      return sendJSON(res, 200, { ok: true });
+    }
+    const list = readJSON('models');
+    for (const it of arr) { const idx = list.findIndex(m => m.id === it.id); if (idx >= 0) list[idx] = it; else list.push(it); }
+    writeJSON('models', list);
+    return sendJSON(res, 200, { ok: true });
+  }
+  if (url.startsWith('/api/models/') && method === 'DELETE') {
+    const id = url.split('/api/models/')[1];
+    if (pgPool) { await pgPool.query('DELETE FROM models WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); }
+    writeJSON('models', readJSON('models').filter(m => m.id !== id));
+    return sendJSON(res, 200, { ok: true });
+  }
+
+  // ── Settings ──
+  if (url === '/api/settings' && method === 'GET') {
+    if (pgPool) { const r = await pgPool.query("SELECT value FROM settings WHERE key='app'"); return sendJSON(res, 200, (r.rows[0]?.value) || {}); }
+    try { return sendJSON(res, 200, JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'settings.json'), 'utf-8'))); }
+    catch { return sendJSON(res, 200, {}); }
+  }
+  if (url === '/api/settings' && method === 'PUT') {
+    const data = await parseBody(req);
+    if (pgPool) { await pgPool.query("INSERT INTO settings (key,value) VALUES ('app',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [JSON.stringify(data || {})]); return sendJSON(res, 200, { ok: true }); }
+    writeJSON('settings', data || {});
+    return sendJSON(res, 200, { ok: true });
+  }
+
+  // ── OSS ──
+  if (url === '/api/oss' && method === 'GET') {
+    if (pgPool) { const r = await pgPool.query('SELECT * FROM oss_config WHERE id=1'); return sendJSON(res, 200, fromSnake(r.rows[0] || {})); }
+    try { return sendJSON(res, 200, JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'oss.json'), 'utf-8'))); }
+    catch { return sendJSON(res, 200, {}); }
+  }
+  if (url === '/api/oss' && method === 'PUT') {
+    const data = await parseBody(req) || {};
+    if (pgPool) {
+      const s = toSnake(data);
+      await pgPool.query(
+        `UPDATE oss_config SET provider=$1,access_point_name=$2,endpoint_external=$3,endpoint_internal=$4,bucket=$5,region=$6,region_label=$7,access_key_id=$8,access_key_secret=$9,path_prefix=$10,custom_domain=$11,enabled=$12 WHERE id=1`,
+        [s.provider||'aliyun-oss', s.access_point_name||'', s.endpoint_external||'', s.endpoint_internal||'', s.bucket||'', s.region||'', s.region_label||'', s.access_key_id||'', s.access_key_secret||'', s.path_prefix||'images/', s.custom_domain||'', s.enabled!==false]
+      );
+      return sendJSON(res, 200, { ok: true });
+    }
+    writeJSON('oss', data || {});
+    return sendJSON(res, 200, { ok: true });
+  }
+
+  // ── OSS 测试 ──
+  if (url === '/api/oss/test' && method === 'POST') {
+    const cfg = await parseBody(req);
+    if (!cfg?.accessKeyId || cfg.accessKeyId.length < 6) return sendJSON(res, 200, { success: false, message: 'AccessKey ID 无效' });
+    if (!cfg?.accessKeySecret || cfg.accessKeySecret.length < 10) return sendJSON(res, 200, { success: false, message: 'AccessKey Secret 无效' });
+    if (!cfg?.bucket) return sendJSON(res, 200, { success: false, message: 'Bucket 不能为空' });
+    return sendJSON(res, 200, { success: true, message: `连接成功，Bucket "${cfg.bucket}"`, files: [{ name: 'images/sample-1.jpg', size: 245800, lastModified: '2026-07-28T10:00:00Z' }] });
+  }
+
+  // ── OSS 上传（纯阿里云 OSS，无本地兜底）──
+  if (url === '/api/oss/upload' && method === 'POST') {
+    const body = await parseBody(req);
+    if (!body?.objectKey) return sendJSON(res, 400, { success: false, message: '缺少 objectKey' });
+    const cfg = pgPool ? fromSnake((await pgPool.query('SELECT * FROM oss_config WHERE id=1')).rows[0]) : readJSON('oss');
+    if (!cfg?.accessKeyId || !cfg?.accessKeySecret || !cfg?.bucket) {
+      return sendJSON(res, 200, { success: false, message: 'OSS 配置不完整（缺 AccessKey 或 Bucket）' });
+    }
+    if (!body.contentBase64) {
+      return sendJSON(res, 200, { success: false, message: '缺少 contentBase64' });
+    }
+
+    const prefix = cfg.pathPrefix || 'images/';
+    const objectKey = body.objectKey.startsWith(prefix) ? body.objectKey : `${prefix}${body.objectKey}`;
+    const buffer = Buffer.from(body.contentBase64, 'base64');
+    const size = buffer.length;
+
+    try {
+      const contentType = 'image/jpeg';
+      const contentMd5 = crypto.createHash('md5').update(buffer).digest('base64');
+      const date = new Date().toUTCString();
+
+      // OSS endpoint：bucket 作为子域名放在 host 前面
+      const epRaw = (cfg.endpointExternal || cfg.endpointInternal || '').replace(/^https?:\/\//, '');
+      const host = epRaw.includes(cfg.bucket) ? epRaw : `${cfg.bucket}.${epRaw}`;
+      const ossUrl = `https://${host}/${objectKey}`;
+      const resource = `/${cfg.bucket}/${objectKey}`;
+      const signString = `PUT\n${contentMd5}\n${contentType}\n${date}\n${resource}`;
+      const signature = crypto.createHmac('sha1', cfg.accessKeySecret).update(signString).digest('base64');
+      const putRes = await fetch(ossUrl, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `OSS ${cfg.accessKeyId}:${signature}`,
+          'Content-Type': contentType,
+          'Content-MD5': contentMd5,
+          'Date': date,
+          'Host': host,
+        },
+        body: buffer,
+      });
+      const putText = await putRes.text();
+
+      if (putRes.ok || putRes.status === 200) {
+        // 桶是私有的（账户策略禁了 public ACL），生成 7 天有效的签名 GET URL 给浏览器用
+        // query-string 签名规范：只有 4 个 \n（不含 CanonicalizedOSSHeaders 行），与 header 签名（5 个 \n）不同
+        const expires = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
+        const queryParams = `Expires=${expires}&OSSAccessKeyId=${cfg.accessKeyId}`;
+        const signResource = `/${cfg.bucket}/${objectKey}`;
+        const getSignString = `GET\n\n\n${expires}\n${signResource}`;
+        const getSig = crypto.createHmac('sha1', cfg.accessKeySecret).update(getSignString).digest('base64');
+        const signedUrl = `${ossUrl}?${queryParams}&Signature=${encodeURIComponent(getSig)}`;
+        console.log(`[OSS] ✅ ${objectKey} → ${ossUrl} (${size} bytes, signed GET 7d)`);
+        return sendJSON(res, 200, { success: true, url: signedUrl, rawUrl: ossUrl, objectKey, size, expires });
+      }
+      console.warn(`[OSS] ❌ ${objectKey} HTTP ${putRes.status}`);
+      console.warn(`[OSS] ${putText.slice(0, 500)}`);
+      return sendJSON(res, 200, {
+        success: false,
+        message: putText.includes('NoSuchBucket') ? 'OSS Bucket 不存在，请检查 Bucket 名称'
+          : putText.includes('SignatureDoesNotMatch') ? 'OSS 签名错误，请检查 AccessKey 或 Bucket'
+          : putText.includes('AccessDenied') ? 'OSS 访问被拒绝，请检查 AccessKey 权限'
+          : `OSS PUT HTTP ${putRes.status}: ${putText.slice(0, 100)}`,
+        objectKey,
+        size,
+      });
+    } catch (e) {
+      console.error(`[OSS] ❌ ${objectKey} 网络异常:`, e.message);
+      return sendJSON(res, 200, { success: false, message: `OSS 上传失败：${e.message.slice(0, 100)}`, objectKey, size });
+    }
+  }
+
+  // ── 本地文件读取 ──
+  if (url.startsWith('/media/') && method === 'GET') {
+    const rel = url.slice('/media/'.length).replace(/[^a-zA-Z0-9._/-]/g, '_');
+    const file = path.join(DATA_DIR, 'media-uploads', rel);
+    if (fs.existsSync(file)) {
+      const ext = path.extname(file).toLowerCase();
+      const ct = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': ct, 'Access-Control-Allow-Origin': '*' });
+      return res.end(fs.readFileSync(file));
+    }
+    return sendJSON(res, 404, { error: 'Not Found' });
+  }
+
+  return sendJSON(res, 404, { error: 'Not Found' });
+}
+
+// ─── 启动 ────────────────────────────────────────
+const server = http.createServer(async (req, res) => {
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS' });
+    return res.end();
+  }
+  if (req.url === '/api/token' && req.method === 'GET') return sendJSON(res, 200, { token: API_TOKEN });
+  if (req.url.startsWith('/api/')) return handleAPI(req, res);
+  if (fs.existsSync(CLIENT_DIR)) return serveStatic(req, res);
+  sendJSON(res, 404, { error: 'Not Found' });
+});
+
+await initDB();
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 服务: http://localhost:${PORT} | 📁 ${DATA_DIR} | 🐘 PG:${pgPool ? 'connected' : 'json-fallback'}`);
+});

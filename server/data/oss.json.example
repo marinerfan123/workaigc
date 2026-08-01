@@ -1,0 +1,11 @@
+{
+  "provider": "aliyun-oss",
+  "endpointExternal": "oss-cn-shanghai.aliyuncs.com",
+  "endpointInternal": "oss-cn-shanghai.aliyuncs.com",
+  "bucket": "",
+  "region": "cn-shanghai",
+  "accessKeyId": "",
+  "accessKeySecret": "",
+  "pathPrefix": "images/",
+  "enabled": true
+}
