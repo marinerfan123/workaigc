@@ -39,6 +39,7 @@ import {
   ALL_RESOLUTIONS,
 } from '@/data/models';
 import { useModelHub } from '@/hooks/useModelHub';
+import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { modelListClient } from '@/services/genericClient';
 import { MOCK_MEDIA_LIST } from '@/data/media';
@@ -151,14 +152,8 @@ export default function ModelHubPage() {
     });
   }, [models, typeFilter, searchQuery]);
 
-  const modelsByProvider = useMemo(() => {
-    const map: Record<string, ReturnType<typeof useModelHub>['models']> = {};
-    for (const m of filteredModels) {
-      if (!map[m.providerId]) map[m.providerId] = [];
-      map[m.providerId].push(m);
-    }
-    return map;
-  }, [filteredModels]);
+  // 按 model_id 聚合（同 model_id 多供应商 → 一个入口，避免重名）
+  const groupedModels = useMemo(() => groupModelsByModelId(filteredModels), [filteredModels]);
 
   const openAddDialog = () => {
     setEditingProvider(null);
@@ -1385,7 +1380,7 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
 
             {/* 按类型分组（图片 / 视频 / 推理） */}
             {(['image', 'video', 'text'] as const).map((type) => {
-              const list = filteredModels.filter((m) => m.type === type);
+              const list = groupedModels.filter((g) => g.type === type);
               if (list.length === 0) return null;
               const TypeIcon = type === 'image' ? ImageIcon : type === 'video' ? Video : MessageSquare;
               return (
@@ -1400,75 +1395,95 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                     <span className="text-xs text-zinc-600">{list.length} 个模型</span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                    {list.map((model) => (
+                    {list.map((group) => (
                       <div
-                        key={model.id}
+                        key={group.modelId}
                         className={`relative flex flex-col gap-2 rounded-2xl border p-3.5 transition-all duration-200 ${
-                          model.enabled
+                          group.enabled
                             ? 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
                             : 'bg-zinc-900/30 border-zinc-800/50 opacity-60'
                         }`}
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2.5 min-w-0">
-                            <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${TYPE_COLORS[model.type]}`}>
-                              {model.type === 'image' && <ImageIcon className="size-3.5" />}
-                              {model.type === 'video' && <Video className="size-3.5" />}
-                              {model.type === 'text' && <MessageSquare className="size-3.5" />}
+                            <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${TYPE_COLORS[group.type]}`}>
+                              {group.type === 'image' && <ImageIcon className="size-3.5" />}
+                              {group.type === 'video' && <Video className="size-3.5" />}
+                              {group.type === 'text' && <MessageSquare className="size-3.5" />}
                             </div>
                             <div className="min-w-0">
-                              <div className="truncate text-xs font-bold text-white">{model.displayName}</div>
-                              <div className="truncate text-[10px] text-zinc-600">{model.modelId}</div>
+                              <div className="truncate text-xs font-bold text-white">
+                                {group.displayName}
+                                {group.providerCount > 1 && (
+                                  <span className="ml-1.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle">
+                                    {group.providerCount}家
+                                  </span>
+                                )}
+                              </div>
+                              <div className="truncate text-[10px] text-zinc-600">{group.modelId}</div>
                             </div>
                           </div>
                           <button
                             onClick={() => {
                               setModels((prev) =>
-                                prev.map((m) => (m.id === model.id ? { ...m, enabled: !m.enabled } : m)),
+                                prev.map((m) =>
+                                  m.modelId === group.modelId ? { ...m, enabled: !group.enabled } : m,
+                                ),
                               );
                             }}
                             className={`relative h-4 w-7 shrink-0 rounded-full transition-all duration-300 ${
-                              model.enabled ? 'bg-emerald-500' : 'bg-zinc-700'
+                              group.enabled ? 'bg-emerald-500' : 'bg-zinc-700'
                             }`}
                           >
                             <div
                               className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all duration-300 ${
-                                model.enabled ? 'left-[14px]' : 'left-0.5'
+                                group.enabled ? 'left-[14px]' : 'left-0.5'
                               }`}
                             />
                           </button>
                         </div>
                         {/* 能力 chip */}
-                        {model.capabilities && (
+                        {group.rows[0]?.capabilities && (
                           <div className="flex flex-wrap items-center gap-1">
-                            {model.type === 'image' && model.capabilities.asFirstFrame && (
+                            {group.type === 'image' && group.rows[0].capabilities.asFirstFrame && (
                               <span className="rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold">可作首帧</span>
                             )}
-                            {model.type === 'video' && model.capabilities.imageInput && (
+                            {group.type === 'video' && group.rows[0].capabilities.imageInput && (
                               <span className="rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 text-[9px] font-semibold">接受图片输入</span>
                             )}
-                            {model.type === 'text' && model.capabilities.vision && (
+                            {group.type === 'text' && group.rows[0].capabilities.vision && (
                               <span className="rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 px-1.5 py-0.5 text-[9px] font-semibold">视觉/多模态</span>
                             )}
-                            {model.type === 'image' && model.supportedResolutions && model.supportedResolutions.length > 0 && (
+                            {group.type === 'image' && group.supportedResolutions.length > 0 && (
                               <span className="rounded-full bg-zinc-800/50 text-zinc-400 border border-zinc-700 px-1.5 py-0.5 text-[9px] font-semibold">
-                                {model.supportedResolutions.join('/')}
+                                {group.supportedResolutions.join('/')}
                               </span>
                             )}
-                            {model.endpoint && (
+                            {group.rows[0]?.endpoint && (
                               <span className="rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold">自定义端点</span>
                             )}
-                            {model.paired?.baseImageModelId && (
+                            {group.rows[0]?.paired?.baseImageModelId && (
                               <span className="rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold">已配套首帧</span>
                             )}
-                            {model.paired?.visionModelId && (
+                            {group.rows[0]?.paired?.visionModelId && (
                               <span className="rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold">已配套视觉</span>
                             )}
                           </div>
                         )}
-                        {/* 服务商 */}
-                        <div className="text-[10px] text-zinc-500">
-                          {getProviderName(model.providerId)}
+                        {/* 服务商（多供应商时列出各家；禁用的供应商加删除线） */}
+                        <div className="flex flex-wrap items-center gap-1 text-[10px] text-zinc-500">
+                          {group.providerIds.map((pid) => (
+                            <span
+                              key={pid}
+                              className={`rounded-full border px-1.5 py-0.5 ${
+                                group.rows.find((r) => r.providerId === pid)?.enabled
+                                  ? 'border-zinc-700 text-zinc-400'
+                                  : 'border-zinc-800 text-zinc-600 line-through'
+                              }`}
+                            >
+                              {getProviderName(pid)}
+                            </span>
+                          ))}
                         </div>
                       </div>
                     ))}
@@ -1477,7 +1492,7 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
               );
             })}
 
-            {filteredModels.length === 0 && (
+            {groupedModels.length === 0 && (
               <div className="flex flex-col items-center justify-center py-20">
                 <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-[2rem] bg-zinc-900 text-zinc-600">
                   <Settings2 className="size-10" />

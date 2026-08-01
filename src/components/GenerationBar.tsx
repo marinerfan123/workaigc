@@ -29,6 +29,7 @@ import { useNavigate } from 'react-router-dom';
 import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub } from '@/hooks/useModelHub';
+import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiProxyFetch, apiGenerate } from '@/services/api';
 import { ALL_RESOLUTIONS, type Resolution } from '@/data/models';
@@ -164,16 +165,15 @@ function GenerationBar({
     return true;
   });
 
-  // 按服务商分组
-  const modelsByProvider = availableModels.reduce((acc, m) => {
-    if (!acc[m.providerId]) acc[m.providerId] = [];
-    acc[m.providerId].push(m);
-    return acc;
-  }, {} as Record<string, typeof models[number][]>);
+  // 按 model_id 聚合（同 model_id 多供应商 → 一个入口，避免重名）
+  const groupedModels = groupModelsByModelId(availableModels);
 
-  const currentProviderName = getProviderName(
-    models.find((m) => m.displayName === settings.model)?.providerId || 'p0'
-  );
+  const currentGroup = groupedModels.find((g) => g.displayName === settings.model);
+  const currentProviderName = currentGroup
+    ? currentGroup.providerCount > 1
+      ? `${currentGroup.providerCount} 家供应商`
+      : getProviderName(currentGroup.providerIds[0])
+    : '未知';
 
   // 当前选中模型的支持分辨率（图片模型才可能非空；为空数组 = 不显示分辨率按钮）
   const currentModel = models.find((m) => m.displayName === settings.model);
@@ -627,42 +627,43 @@ function GenerationBar({
 
                     {/* 模型列表 */}
                     <div className="max-h-72 overflow-y-auto p-1.5">
-                      {Object.keys(modelsByProvider).length === 0 ? (
+                      {groupedModels.length === 0 ? (
                         <div className="py-6 text-center text-xs text-zinc-600">
                           暂无可用模型
                         </div>
                       ) : (
-                        Object.entries(modelsByProvider).map(([providerId, modelList]) => (
-                          <div key={providerId} className="mb-1.5 last:mb-0">
-                            <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-zinc-500">
-                              {getProviderName(providerId)}
-                            </div>
-                            {modelList.map((m) => (
-                              <button
-                                key={m.id}
-                                onClick={() => {
-                                  onSettingsChange({ ...settings, model: m.displayName });
-                                  setModelMenuOpen(false);
-                                  setModelSearch('');
-                                }}
-                                className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-200 ${
-                                  settings.model === m.displayName
-                                    ? 'bg-emerald-500/10 text-emerald-400 font-medium'
-                                    : 'text-zinc-300 hover:bg-zinc-800/50'
-                                }`}
-                              >
-                                <span className="flex-1 truncate">{m.displayName}</span>
-                                <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold ${
-                                  m.type === 'image' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
-                                  m.type === 'video' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
-                                  'bg-purple-500/10 text-purple-400 border-purple-500/20'
-                                }`}>
-                                  {m.type === 'image' ? '图' : m.type === 'video' ? '视' : '文'}
+                        groupedModels.map((g) => {
+                          const active = settings.model === g.displayName;
+                          return (
+                            <button
+                              key={g.modelId}
+                              onClick={() => {
+                                onSettingsChange({ ...settings, model: g.displayName });
+                                setModelMenuOpen(false);
+                                setModelSearch('');
+                              }}
+                              className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-200 ${
+                                active
+                                  ? 'bg-emerald-500/10 text-emerald-400 font-medium'
+                                  : 'text-zinc-300 hover:bg-zinc-800/50'
+                              }`}
+                            >
+                              <span className="flex-1 truncate">{g.displayName}</span>
+                              {g.providerCount > 1 && (
+                                <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold">
+                                  {g.providerCount}家
                                 </span>
-                              </button>
-                            ))}
-                          </div>
-                        ))
+                              )}
+                              <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold ${
+                                g.type === 'image' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
+                                g.type === 'video' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
+                                'bg-purple-500/10 text-purple-400 border-purple-500/20'
+                              }`}>
+                                {g.type === 'image' ? '图' : g.type === 'video' ? '视' : '文'}
+                              </span>
+                            </button>
+                          );
+                        })
                       )}
                     </div>
 
