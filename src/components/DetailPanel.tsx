@@ -10,6 +10,7 @@ import {
   Image as ImageIcon,
   Share2,
   Copy,
+  Check,
   Edit3,
   FolderPlus,
   Palette,
@@ -36,8 +37,15 @@ interface DetailPanelProps {
 
 export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose, onUsePrompt, onUpdate }: DetailPanelProps) {
   const [moreOpen, setMoreOpen] = useState(false);
+  const [copied, setCopied] = useState(false); // OSS 链接复制成功的瞬时反馈
   const { config: ossConfig, uploadFile: uploadToOss, buildOssUrl } = useOssConfig();
   const [uploadingToOss, setUploadingToOss] = useState(false);
+
+  // 复制成功后 2s 内变对号, 然后自动复位
+  const flashCopied = () => {
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2000);
+  };
 
   if (!item) {
     return (
@@ -108,6 +116,7 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
     }
     try {
       await navigator.clipboard.writeText(item.ossUrl);
+      flashCopied(); // 图标临时变绿对号 ✓
       toast.success('OSS 链接已复制');
     } catch {
       toast.error('复制失败');
@@ -229,10 +238,14 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
           {item.ossUploaded ? (
             <button
               onClick={handleCopyOssLink}
-              className="flex h-9 w-9 items-center justify-center rounded-full text-emerald-400 hover:bg-emerald-500/10 transition-colors"
-              title="复制 OSS 链接"
+              className={`flex h-9 w-9 items-center justify-center rounded-full transition-all duration-200 ${
+                copied
+                  ? 'bg-emerald-500/20 text-emerald-400 scale-110'
+                  : 'text-emerald-400 hover:bg-emerald-500/10 active:scale-95'
+              }`}
+              title={copied ? '已复制!' : '复制 OSS 链接'}
             >
-              <Link className="size-4" />
+              {copied ? <Check className="size-4" /> : <Link className="size-4" />}
             </button>
           ) : ossConfig.enabled ? (
             <button
@@ -341,10 +354,14 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
                 <span className="flex-1 truncate text-xs text-zinc-400 font-mono">{item.ossUrl}</span>
                 <button
                   onClick={handleCopyOssLink}
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-800 hover:text-white transition-colors"
-                  title="复制链接"
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-all duration-200 ${
+                    copied
+                      ? 'bg-emerald-500/20 text-emerald-400 scale-110'
+                      : 'text-zinc-400 hover:bg-zinc-800 hover:text-white active:scale-95'
+                  }`}
+                  title={copied ? '已复制!' : '复制链接'}
                 >
-                  <Copy className="size-3.5" />
+                  {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
                 </button>
               </div>
             </div>
