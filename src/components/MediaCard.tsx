@@ -107,14 +107,15 @@ export default function MediaCard({
 
   return (
     <div
-      className="group relative overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/50 cursor-pointer transition-all duration-300 hover:border-zinc-700"
+      className={`group relative overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/50 transition-all duration-300 hover:border-zinc-700 ${isPending ? 'cursor-default' : 'cursor-pointer'}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => {
         setHovered(false);
         setMoreOpen(false);
       }}
-      onClick={() => onSelect(item)}
+      onClick={isPending ? undefined : () => onSelect(item)}
       onDoubleClick={(e) => {
+        if (isPending) return;
         e.stopPropagation();
         onOpenViewer?.();
       }}
@@ -124,10 +125,7 @@ export default function MediaCard({
           /* ─── 生成中占位：灰色模糊渐变 + 进度条 + 右上角百分比 ─── */
           <div
             className="relative flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-zinc-800/80 via-zinc-900 to-zinc-800/60"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(item.id); // pending 状态点击图片区域 → 取消任务（删除占位）
-            }}
+            title="生成中，悬停右上角取消"
           >
             {/* 模拟生成中：中央模糊球+spinner，参考 Nano Banana Pro 风格 */}
             <div className="absolute inset-0 flex items-center justify-center">

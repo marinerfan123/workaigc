@@ -252,7 +252,6 @@ function GenerationBar({
         isDeleted: false,
         source: 'user',
         status: 'pending',
-        progress: 0,
       });
     }
     onPendingCreate(pendingItems);
