@@ -286,11 +286,11 @@ async function generate(pgPool, opts) {
         };
         const res = contentType === 'video' ? await videoGenerate(p.provider, p.model, input) : await imageGenerate(p.provider, p.model, input);
         if (contentType === 'video') {
-          return res.videoUrl ? { images: [res.videoUrl], status: res.status, error: res.error } : { images: [], status: res.status, error: res.error };
+          return res.videoUrl ? { images: [res.videoUrl], status: res.status, error: res.error, providerId: p.provider.id } : { images: [], status: res.status, error: res.error, providerId: p.provider.id };
         }
-        return res;
+        return { ...res, providerId: p.provider.id };
       } catch (e) {
-        return { images: [], status: 'error', error: (e && e.message) || String(e) };
+        return { images: [], status: 'error', error: (e && e.message) || String(e), providerId: p.provider.id };
       } finally {
         releaseOne(p);
       }
@@ -302,16 +302,18 @@ async function generate(pgPool, opts) {
   const errors = [];
   const usedProviders = [];
   for (const r of results) {
+    if (r.providerId) usedProviders.push(r.providerId);
     if (r.images && r.images.length) {
       images.push(r.images[0]);
     } else if (r.error) {
       errors.push(r.error);
     }
   }
+  const usedProvidersUniq = [...new Set(usedProviders)];
   if (images.length > 0) {
-    return { status: 'success', images, source: 'provider', errors: errors.length ? errors : undefined };
+    return { status: 'success', images, source: 'provider', errors: errors.length ? errors : undefined, usedProviders: usedProvidersUniq };
   }
-  return { status: 'failed', error: errors[0] || '所有服务商生成失败', images: [] };
+  return { status: 'failed', error: errors[0] || '所有服务商生成失败', images: [], usedProviders: usedProvidersUniq };
 }
 
 function getArrayByPath(obj, path) {

@@ -167,6 +167,9 @@ async function handleAPI(req, res) {
   const PROBE_TIMEOUT_MS = 3000;
   const PROBE_BATCH = 16; // 同步预扫只覆盖最显眼的 16 张，避免 GET 卡死
 
+  // 二次验证：HEAD 失败时用 GET range（0-1023 字节）重试
+  // 原因：很多 CDN / 签名 URL（OSS、agne-ai、CloudFront 等）对 HEAD 不友好，
+  //       实际浏览器 GET 200 的图，HEAD 可能返回 403/405/501 或干脆被网络层拦掉
   async function probeOneUrl(url, timeoutMs = PROBE_TIMEOUT_MS) {
     if (!url || typeof url !== 'string') return { ok: false, error: '链接为空' };
     if (url.startsWith('data:') || url.startsWith('blob:')) return { ok: true, skipWrite: true };
@@ -174,19 +177,35 @@ async function handleAPI(req, res) {
     if (url.startsWith('/') && !url.startsWith('//')) {
       return { ok: false, error: '本地/平台专有路径（不可外网访问）' };
     }
+    // 1) 先尝试 HEAD
+    let headStatus = null;
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       const resp = await fetch(url, { method: 'HEAD', signal: controller.signal });
       clearTimeout(timer);
       if (resp.ok) return { ok: true };
-      return { ok: false, error: `HTTP ${resp.status}（${resp.statusText || '请求失败'}）` };
+      headStatus = resp.status;
+      // HEAD 失败（任何 4xx/5xx）一律走 GET range 二次验证
+      // 原因：OSS 签名 URL、agne-ai CDN、CloudFront 等常对 HEAD 返回 403/405/501，但 GET 实际能下
+    } catch (e) {
+      // HEAD 网络层失败（AbortError / 连接被拒）→ 走 GET 二次验证
+      headStatus = 'NETWORK_ERR';
+    }
+    // 2) GET range 0-1024 二次验证（只读 1KB，省流量）
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const resp = await fetch(url, { method: 'GET', signal: controller.signal, headers: { Range: 'bytes=0-1024' } });
+      clearTimeout(timer);
+      if (resp.ok || resp.status === 206) return { ok: true };
+      return { ok: false, error: `HTTP ${resp.status}（HEAD/GET 都失败）` };
     } catch (e) {
       return {
         ok: false,
         error: e.name === 'AbortError'
           ? `图片加载超时（${Math.round(timeoutMs / 1000)}s）`
-          : (e.message || '网络错误'),
+          : `网络错误（HEAD=${headStatus}）`,
       };
     }
   }

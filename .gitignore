@@ -83,3 +83,12 @@ scripts/insert-keys*
 *batch-insert-providers.cjs
 *batch-insert-models.cjs
 api-token.tmp
+
+# ===== 临时测试文件（API 冒烟、生成测试、备份） =====
+# 以 _ 开头的根目录文件通常是测试残留，不入库
+/_*.json
+/_*.txt
+/_*.md
+*_backup_*.json
+*_result.json
+*_smoke_*.json
