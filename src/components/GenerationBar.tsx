@@ -102,8 +102,9 @@ function GenerationBar({
   const pendingRetryRef = useRef<RetryPayload | null>(null);
   const retryingRef = useRef(false);
   // 锁住 handleGenerate 最新引用（避免 useEffect 闭包陷阱）
+  // 注意：handleGenerate 自身在本组件下方声明，不能在组件顶层提前读它（TDZ）。
+  // 改在 handleGenerate 函数体首行自我注册到 ref.current。
   const handleGenerateRef = useRef<() => Promise<void>>(async () => {});
-  handleGenerateRef.current = handleGenerate;
 
   useImperativeHandle(ref, () => ({
     retry: (payload: RetryPayload) => {
@@ -232,6 +233,9 @@ function GenerationBar({
   };
 
   const handleGenerate = async () => {
+    // 自我注册到 ref（避免在组件顶层读未初始化的 const，绕过 TDZ）
+    handleGenerateRef.current = handleGenerate;
+
     if (generating) return;
     if (!promptText.trim()) {
       toast.error('请先输入提示词', { duration: 3000 });
