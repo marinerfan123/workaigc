@@ -172,13 +172,6 @@ function GenerationBar({
   // 按 model_id 聚合（同 model_id 多供应商 → 一个入口，避免重名）
   const groupedModels = groupModelsByModelId(availableModels);
 
-  const currentGroup = groupedModels.find((g) => g.displayName === settings.model);
-  const currentProviderName = currentGroup
-    ? currentGroup.providerCount > 1
-      ? `${currentGroup.providerCount} 家供应商`
-      : getProviderName(currentGroup.providerIds[0])
-    : '未知';
-
   // 当前选中模型的支持分辨率（图片模型才可能非空；为空数组 = 不显示分辨率按钮）
   const currentModel = models.find((m) => m.displayName === settings.model);
   const availableResolutions: Resolution[] =
@@ -534,30 +527,27 @@ function GenerationBar({
     <div className="px-4 pb-6 pt-2">
       <div className="relative z-30 mx-auto max-w-3xl rounded-3xl bg-zinc-900/90 backdrop-blur-xl border border-zinc-800 shadow-2xl shadow-black/40">
         {/* 顶部：类型切换 + 模型 + 数量（紧凑 pill 行） */}
-        <div className="flex items-center justify-between gap-2 border-b border-zinc-800/80 px-3 py-2">
-          <div className="flex items-center gap-1">
-            <button
-              onClick={toggleContentType}
-              className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all duration-300 ${
-                settings.contentType === 'image'
-                  ? 'bg-emerald-500/15 text-emerald-400'
-                  : 'text-zinc-400 hover:text-white hover:bg-zinc-800/50'
-              }`}
-            >
-              <ImageIcon className="size-3.5" />
-              图片
-            </button>
-            <button
-              onClick={toggleContentType}
-              className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all duration-300 ${
-                settings.contentType === 'video'
-                  ? 'bg-emerald-500/15 text-emerald-400'
-                  : 'text-zinc-400 hover:text-white hover:bg-zinc-800/50'
-              }`}
-            >
-              <Video className="size-3.5" />
-              视频
-            </button>
+        <div className="flex items-center justify-between gap-3 border-b border-zinc-800/80 px-4 py-2.5">
+          {/* 类型切换 — SegmentedControl 风格（一个圆角容器 + 滑动高亮） */}
+          <div className="flex items-center gap-0.5 rounded-full bg-zinc-800/50 p-0.5">
+            {(['image', 'video'] as const).map((t) => {
+              const active = settings.contentType === t;
+              const Icon = t === 'image' ? ImageIcon : Video;
+              return (
+                <button
+                  key={t}
+                  onClick={() => onSettingsChange({ ...settings, contentType: t })}
+                  className={`relative z-10 flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-all duration-200 active:scale-95 ${
+                    active
+                      ? 'bg-zinc-900 text-emerald-400 shadow-sm shadow-black/40'
+                      : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  <Icon className="size-3" />
+                  {t === 'image' ? '图片' : '视频'}
+                </button>
+              );
+            })}
           </div>
 
           <div className="flex items-center gap-2">
@@ -601,15 +591,12 @@ function GenerationBar({
             <div className="relative">
               <button
                 onClick={() => setModelMenuOpen(!modelMenuOpen)}
-                className="flex items-center gap-1.5 rounded-full bg-zinc-800/50 px-3 py-1.5 text-xs text-white hover:bg-zinc-800 transition-colors"
+                className="flex h-7 items-center gap-1.5 rounded-full bg-zinc-800/50 pl-2.5 pr-2 text-xs text-white hover:bg-zinc-800 transition-colors"
               >
                 <Settings2 className="size-3.5 text-zinc-500" />
-                <div className="flex flex-col items-start leading-tight">
-                  <span className="max-w-[120px] truncate font-medium">
-                    {settings.model || '无'}
-                  </span>
-                  <span className="text-[9px] text-zinc-500">{currentProviderName}</span>
-                </div>
+                <span className="max-w-[140px] truncate font-medium">
+                  {settings.model || '无'}
+                </span>
                 <ChevronDown className="size-3 text-zinc-500" />
               </button>
               {modelMenuOpen && (
