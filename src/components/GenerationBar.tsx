@@ -6,9 +6,7 @@ import {
   Sparkles,
   Wand2,
   X,
-  Image as ImageIcon,
   Music,
-  Video,
   ChevronDown,
   Palette,
   User,
@@ -532,7 +530,6 @@ function GenerationBar({
           <div className="flex items-center gap-0.5 rounded-full bg-zinc-800/50 p-0.5">
             {(['image', 'video'] as const).map((t) => {
               const active = settings.contentType === t;
-              const Icon = t === 'image' ? ImageIcon : Video;
               return (
                 <button
                   key={t}
@@ -543,7 +540,17 @@ function GenerationBar({
                       : 'text-zinc-500 hover:text-zinc-300'
                   }`}
                 >
-                  <Icon className="size-3" />
+                  {t === 'image' ? (
+                    // 图片 → 圆点
+                    <svg viewBox="0 0 12 12" className="size-3" fill="currentColor" aria-hidden="true">
+                      <circle cx="6" cy="6" r="3.5" />
+                    </svg>
+                  ) : (
+                    // 视频 → 方块
+                    <svg viewBox="0 0 12 12" className="size-3" fill="currentColor" aria-hidden="true">
+                      <rect x="2.5" y="2.5" width="7" height="7" rx="1" />
+                    </svg>
+                  )}
                   {t === 'image' ? '图片' : '视频'}
                 </button>
               );
