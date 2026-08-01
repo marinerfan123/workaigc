@@ -133,12 +133,42 @@ export default function WorkspacePage() {
     setSettings(next);
   };
 
-  // 持久化（写回后端）
+  // 持久化（写回后端）—— 跳过 pending 状态（生成中不持久化，等真图回来再写）
   useEffect(() => {
-    if (mediaList.length > 0) {
-      apiSaveMedia(stripBlobItems(mediaList));
+    const persistable = stripBlobItems(mediaList).filter((m) => m.status !== 'pending');
+    if (persistable.length > 0) {
+      apiSaveMedia(persistable);
     }
   }, [mediaList]);
+
+  // pending 超时保护：60s 未被替换视为任务失败，自动删除并 toast 提醒
+  const pendingTimeoutRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  useEffect(() => {
+    const ids = mediaList.filter((m) => m.status === 'pending').map((m) => m.id);
+    // 新增的 pending：注册 60s 超时
+    for (const id of ids) {
+      if (!pendingTimeoutRef.current.has(id)) {
+        pendingTimeoutRef.current.set(id, setTimeout(() => {
+          // 超时：删除该 pending 并提示
+          setMediaList((prev) => prev.filter((m) => m.id !== id));
+          pendingTimeoutRef.current.delete(id);
+          toast.error('生成超时，已自动取消', { duration: 4000 });
+        }, 60000));
+      }
+    }
+    // 不再 pending 的：清掉 timeout
+    for (const [id, tid] of pendingTimeoutRef.current.entries()) {
+      if (!ids.includes(id)) {
+        clearTimeout(tid);
+        pendingTimeoutRef.current.delete(id);
+      }
+    }
+  }, [mediaList]);
+  useEffect(() => () => {
+    // 卸载时清空所有 timeout
+    for (const tid of pendingTimeoutRef.current.values()) clearTimeout(tid);
+    pendingTimeoutRef.current.clear();
+  }, []);
 
   // 后台补传遗漏素材：每次刷新/登录时自动尝试补传之前 OSS 失败的图片
   const backfillRef = useRef(false);
@@ -203,9 +233,15 @@ export default function WorkspacePage() {
     [mediaList, selectedId],
   );
 
+  // 提交瞬间立即插入 N 个 pending 占位 → 让用户立刻看到进度卡片
+  const handlePendingCreate = (items: IMediaItem[]) => {
+    setMediaList((prev) => [...items, ...prev]);
+    setSelectedId(items[0]?.id ?? null);
+  };
+
+  // 后端真正返图后：找到对应 pending id 替换为真图（pending → success/failed）
   const handleGenerate = (item: IMediaItem) => {
-    setMediaList((prev) => [item, ...prev]);
-    setSelectedId(item.id);
+    setMediaList((prev) => prev.map((m) => (m.id === item.id ? item : m)));
   };
 
   const handleToggleFavorite = (id: string) => {
@@ -352,6 +388,7 @@ export default function WorkspacePage() {
             ref={generationBarRef}
             settings={settings}
             onSettingsChange={handleSettingsChange}
+            onPendingCreate={handlePendingCreate}
             onGenerate={handleGenerate}
             referenceImages={referenceImages}
             onRemoveReference={handleRemoveReference}

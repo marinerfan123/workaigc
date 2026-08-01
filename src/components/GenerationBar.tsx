@@ -53,6 +53,9 @@ interface IGenerationSettings {
 interface GenerationBarProps {
   settings: IGenerationSettings;
   onSettingsChange: (s: IGenerationSettings) => void;
+  /** 提交瞬间立刻回调：父级应立即在 mediaList 插入这些 pending 占位 */
+  onPendingCreate: (items: IMediaItem[]) => void;
+  /** 后端真正返图后回调：用真图替换对应 pending（按 id 匹配） */
   onGenerate: (item: IMediaItem) => void;
   referenceImages: string[];
   onRemoveReference: (url: string) => void;
@@ -78,6 +81,7 @@ export interface GenerationBarHandle {
 function GenerationBar({
   settings,
   onSettingsChange,
+  onPendingCreate,
   onGenerate,
   referenceImages,
   onRemoveReference,
@@ -197,17 +201,16 @@ function GenerationBar({
   )}`;
 
   // 降级：用本地 mock 数据填充生成结果（平台能力不可用时）
-  const fillMockItems = () => {
-    const count = Math.max(1, Math.min(4, Number(settings.count) || 1));
+  // 注意：mock items 用传入的 pendingIds —— 这样父级 onGenerate 按 id 替换能命中 pending
+  const fillMockItems = (pendingIds: string[]) => {
     const pool = MOCK_MEDIA_LIST.length > 0 ? MOCK_MEDIA_LIST : [];
     const now = Date.now();
-    const newItems: IMediaItem[] = [];
-    for (let i = 0; i < count; i++) {
+    pendingIds.forEach((id, i) => {
       const base = pool.length > 0 ? pool[(now + i) % pool.length] : null;
       const thumbnail = import.meta.env.DEV ? LOCAL_PLACEHOLDER_SVG : (base?.thumbnail || '');
       const fullUrl = import.meta.env.DEV ? LOCAL_PLACEHOLDER_SVG : (base?.fullUrl || '');
-      newItems.push({
-        id: `mock-gen-${now}-${i}`,
+      const item: IMediaItem = {
+        id,
         title: promptText.slice(0, 20) || '本地降级示例',
         type: 'image',
         thumbnail,
@@ -219,171 +222,177 @@ function GenerationBar({
         isFavorite: false,
         isDeleted: false,
         source: 'mock',
-      });
-    }
-    newItems.forEach((item, idx) => {
-      setTimeout(() => onGenerate(item), idx * 100);
+      };
+      // 错峰 100ms，避免一次性触发大重渲染
+      setTimeout(() => onGenerate(item), i * 100);
     });
-    onPromptChange('');
-    toast.warning(
-      `本地降级：返回 ${newItems.length} 张示例图占位（飞书平台外无法调用真实 AI 能力）`,
-      { duration: 5000 },
-    );
-    logger.warn(`本地降级：capability unavailable → ${newItems.length} 张示例图`);
   };
 
   const handleGenerate = async () => {
     // 自我注册到 ref（避免在组件顶层读未初始化的 const，绕过 TDZ）
     handleGenerateRef.current = handleGenerate;
 
-    if (generating) return;
     if (!promptText.trim()) {
       toast.error('请先输入提示词', { duration: 3000 });
       inputRef.current?.focus();
       return;
     }
 
+    // ── 立即释放按钮：用户可以继续编辑 prompt 或立刻再次提交 ──
+    setGenerating(false);
 
-    setGenerating(true);
+    const count = Math.max(1, Math.min(4, Number(settings.count) || 1));
+    const now = Date.now();
+
+    // ── 1) 立刻构造 N 个 pending 占位，调 onPendingCreate 插入 mediaList ──
+    const pendingItems: IMediaItem[] = [];
+    for (let i = 0; i < count; i++) {
+      pendingItems.push({
+        id: `gen-pending-${now}-${i}`,
+        title: promptText.slice(0, 20) || '生成中...',
+        type: settings.contentType,
+        thumbnail: '',
+        fullUrl: '',
+        prompt: promptText,
+        model: settings.model,
+        ratio: settings.ratio,
+        createdAt: new Date().toISOString(),
+        isFavorite: false,
+        isDeleted: false,
+        source: 'user',
+        status: 'pending',
+        progress: 0,
+      });
+    }
+    onPendingCreate(pendingItems);
+    const pendingIds = pendingItems.map((p) => p.id);
+
+    // 清空输入框，让用户立刻可以输入下一个 prompt
+    onPromptChange('');
 
     toast.info('已提交生成请求', {
-      description: `模型 ${settings.model} · ${settings.count} 张 · 服务端按并发均衡分配给供应商`,
+      description: `模型 ${settings.model} · ${count} 张 · 服务端按并发均衡分配给供应商`,
       duration: 2500,
     });
 
-    try {
-      const genResult = await apiGenerate({
-        model: settings.model,
-        prompt: promptText,
-        ratio: settings.ratio,
-        resolution: settings.resolution || '1k',
-        count: settings.count,
-        contentType: settings.contentType,
-      });
-      const resultImages = Array.isArray(genResult.images) ? genResult.images.filter(Boolean) : [];
-
-      if (resultImages.length > 0) {
-        const modelInfo = models.find(
-          (m) => m.displayName === settings.model && m.type === settings.contentType,
-        );
-        const providerName = modelInfo ? getProviderName(modelInfo.providerId) : '未知';
-
-
-
-        const now = Date.now();
-        const newItems: IMediaItem[] = [];
-
-        for (let i = 0; i < resultImages.length; i++) {
-          let ossUrl = '';
-          let ossObjectKey = '';
-          let ossUploaded = false;
-
-          // OSS 默认开启，上传图片以确保持久化
-          let imgBlob: Blob | null = null;
-          try {
-            if (resultImages[i].startsWith('data:')) {
-              imgBlob = await (await fetch(resultImages[i])).blob();
-            } else {
-              // 外部 URL：走后端代理（绕开浏览器 CORS）
-              const proxied = await apiProxyFetch(resultImages[i]);
-              if (proxied.success && proxied.base64) {
-                const byteChars = atob(proxied.base64);
-                const byteArr = new Uint8Array(byteChars.length);
-                for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
-                imgBlob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
-              } else {
-                logger.warn(`代理下载失败：${proxied.message}`);
-              }
-            }
-          } catch (e) {
-            logger.warn(`图片下载失败：${e instanceof Error ? e.message : String(e)}`);
-          }
-
-          if (ossConfig.enabled && imgBlob) {
-            const file = new File([imgBlob], `gen-${now}-${i}.jpg`, { type: 'image/jpeg' });
-            const MAX_ATTEMPTS = 3;
-            for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-              try {
-                const uploadResult = await uploadToOss(file, `gen-${now}-${i}.jpg`);
-                if (uploadResult.success && uploadResult.url) {
-                  ossUrl = uploadResult.url;
-                  ossObjectKey = uploadResult.objectKey;
-                  ossUploaded = true;
-                  logger.info(`OSS 上传成功（第 ${attempt}/${MAX_ATTEMPTS} 次）：${ossUrl}`);
-                  break;
-                } else {
-                  logger.warn(`OSS 上传失败（第 ${attempt}/${MAX_ATTEMPTS} 次）：${uploadResult.success === false ? 'success=false' : '未知错误'}`);
-                }
-              } catch (e) {
-                logger.warn(`OSS 上传异常（第 ${attempt}/${MAX_ATTEMPTS} 次）：${e instanceof Error ? e.message : String(e)}`);
-              }
-              if (attempt < MAX_ATTEMPTS) {
-                await new Promise((r) => setTimeout(r, 800));
-              }
-            }
-            if (!ossUploaded) {
-              // 全部重试失败：降级使用模型端原始 URL，不显示 OSS 徽章
-              logger.warn(`OSS 上传经 ${MAX_ATTEMPTS} 次重试仍失败，回退到模型原始 URL：${resultImages[i].slice(0, 80)}`);
-              toast.warning(`图片 ${i + 1} 上传 OSS 失败，已回退使用服务商原始链接（链接可能随时过期）`, { duration: 4000 });
-            }
-          } else if (!ossConfig.enabled) {
-            toast.error('OSS 未开启，请到「模型 Hub → 存储配置」开启', { duration: 5000 });
-          }
-
-          // 使用外部原始 URL（OSS 失败后的降级；OSS 成功则用 OSS URL）
-          const persistentUrl = ossUploaded ? ossUrl : resultImages[i];
-
-          // 探测图片能否加载（处理失效链接，标记为 failed 让 MediaCard 渲染专用占位）
-          const probe = await probeImageLoad(persistentUrl);
-          const baseItem: IMediaItem = {
-            id: `gen-${now}-${i}`,
-            title: promptText.slice(0, 20) || '古风人像',
-            type: settings.contentType,
-            thumbnail: persistentUrl,
-            fullUrl: persistentUrl,
-            prompt: promptText,
-            model: settings.model,
-            ratio: settings.ratio,
-            createdAt: new Date().toISOString(),
-            isFavorite: false,
-            isDeleted: false,
-            source: 'user',
-            ossUrl,
-            ossObjectKey,
-            ossUploaded,
-          };
-          if (!probe.ok) {
-            newItems.push({
-              ...baseItem,
-              status: 'failed',
-              errorMessage: probe.error || '图片链接已失效，无法显示',
-              failedAt: new Date().toISOString(),
-            });
-          } else {
-            newItems.push(baseItem);
-          }
-        }
-
-        newItems.forEach((item, idx) => {
-          setTimeout(() => onGenerate(item), idx * 100);
+    // ── 2) 后台异步跑生成/上传/探测 —— 不阻塞 UI，按完成顺序逐张替换 pending ──
+    (async () => {
+      try {
+        const genResult = await apiGenerate({
+          model: settings.model,
+          prompt: promptText,
+          ratio: settings.ratio,
+          resolution: settings.resolution || '1k',
+          count,
+          contentType: settings.contentType,
         });
-        onPromptChange('');
-        toast.success(`生成成功 · ${newItems.length} 张 · ${providerName}`);
-        logger.info(`图片生成成功（服务端分发），共 ${newItems.length} 张`);
-      } else {
-        const firstError = genResult.error || '生成失败：服务商返回异常';
-        toast.error(firstError, { duration: 5000 });
-        logger.warn(`生成失败 → 降级 mock：${firstError}`);
-        fillMockItems();
+        const resultImages = Array.isArray(genResult.images) ? genResult.images.filter(Boolean) : [];
+
+        if (resultImages.length > 0) {
+          for (let i = 0; i < resultImages.length && i < pendingIds.length; i++) {
+            const pendingId = pendingIds[i];
+            let ossUrl = '';
+            let ossObjectKey = '';
+            let ossUploaded = false;
+
+            // OSS 上传（保持原逻辑）
+            let imgBlob: Blob | null = null;
+            try {
+              if (resultImages[i].startsWith('data:')) {
+                imgBlob = await (await fetch(resultImages[i])).blob();
+              } else {
+                const proxied = await apiProxyFetch(resultImages[i]);
+                if (proxied.success && proxied.base64) {
+                  const byteChars = atob(proxied.base64);
+                  const byteArr = new Uint8Array(byteChars.length);
+                  for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
+                  imgBlob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
+                } else {
+                  logger.warn(`代理下载失败：${proxied.message}`);
+                }
+              }
+            } catch (e) {
+              logger.warn(`图片下载失败：${e instanceof Error ? e.message : String(e)}`);
+            }
+
+            if (ossConfig.enabled && imgBlob) {
+              const file = new File([imgBlob], `gen-${now}-${i}.jpg`, { type: 'image/jpeg' });
+              const MAX_ATTEMPTS = 3;
+              for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                try {
+                  const uploadResult = await uploadToOss(file, `gen-${now}-${i}.jpg`);
+                  if (uploadResult.success && uploadResult.url) {
+                    ossUrl = uploadResult.url;
+                    ossObjectKey = uploadResult.objectKey;
+                    ossUploaded = true;
+                    logger.info(`OSS 上传成功（第 ${attempt}/${MAX_ATTEMPTS} 次）：${ossUrl}`);
+                    break;
+                  }
+                } catch (e) {
+                  logger.warn(`OSS 上传异常（第 ${attempt}/${MAX_ATTEMPTS} 次）：${e instanceof Error ? e.message : String(e)}`);
+                }
+                if (attempt < MAX_ATTEMPTS) {
+                  await new Promise((r) => setTimeout(r, 800));
+                }
+              }
+              if (!ossUploaded) {
+                logger.warn(`OSS 上传经 ${MAX_ATTEMPTS} 次重试仍失败，回退到模型原始 URL：${resultImages[i].slice(0, 80)}`);
+                toast.warning(`图片 ${i + 1} 上传 OSS 失败，已回退使用服务商原始链接（链接可能随时过期）`, { duration: 4000 });
+              }
+            } else if (!ossConfig.enabled) {
+              toast.error('OSS 未开启，请到「模型 Hub → 存储配置」开启', { duration: 5000 });
+            }
+
+            const persistentUrl = ossUploaded ? ossUrl : resultImages[i];
+            const probe = await probeImageLoad(persistentUrl);
+
+            const finalItem: IMediaItem = {
+              id: pendingId,
+              title: promptText.slice(0, 20) || '生成结果',
+              type: settings.contentType,
+              thumbnail: persistentUrl,
+              fullUrl: persistentUrl,
+              prompt: promptText,
+              model: settings.model,
+              ratio: settings.ratio,
+              createdAt: new Date().toISOString(),
+              isFavorite: false,
+              isDeleted: false,
+              source: 'user',
+              ossUrl,
+              ossObjectKey,
+              ossUploaded,
+              progress: 100,
+            };
+            if (!probe.ok) {
+              finalItem.status = 'failed';
+              finalItem.errorMessage = probe.error || '图片链接已失效';
+              finalItem.failedAt = new Date().toISOString();
+            }
+            // 通知父级按 id 替换 pending → 真图
+            onGenerate(finalItem);
+          }
+          const successCount = resultImages.length;
+          const failCount = count - successCount;
+          if (failCount > 0) {
+            toast.warning(`生成成功 ${successCount} 张 / ${failCount} 张未返回`, { duration: 4000 });
+          } else {
+            toast.success(`生成完成 · ${successCount} 张`, { duration: 2500 });
+          }
+          logger.info(`图片生成成功（服务端分发），共 ${successCount} 张`);
+        } else {
+          const firstError = genResult.error || '生成失败：服务商返回异常';
+          toast.error(firstError, { duration: 5000 });
+          logger.warn(`生成失败 → 降级 mock：${firstError}`);
+          fillMockItems(pendingIds);
+        }
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        toast.error(`生成异常：${errMsg || '未知错误'}`, { duration: 5000 });
+        logger.error('图片生成异常:', errMsg);
+        fillMockItems(pendingIds);
       }
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      toast.error(`生成异常：${errMsg || '未知错误'}`, { duration: 5000 });
-      logger.error('图片生成异常:', errMsg);
-      fillMockItems();
-    } finally {
-      setGenerating(false);
-    }
+    })();
   };
 
   const handleOptimize = async () => {
@@ -522,10 +531,10 @@ function GenerationBar({
   };
 
   return (
-    <div className="px-4 pb-4 pt-2">
-      <div className="relative z-30 mx-auto max-w-5xl rounded-[2rem] bg-zinc-900/90 backdrop-blur-xl border border-zinc-800 shadow-xl">
-        {/* 顶部：类型切换 + 模型 + 数量 */}
-        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2.5">
+    <div className="px-4 pb-6 pt-2">
+      <div className="relative z-30 mx-auto max-w-3xl rounded-3xl bg-zinc-900/90 backdrop-blur-xl border border-zinc-800 shadow-2xl shadow-black/40">
+        {/* 顶部：类型切换 + 模型 + 数量（紧凑 pill 行） */}
+        <div className="flex items-center justify-between gap-2 border-b border-zinc-800/80 px-3 py-2">
           <div className="flex items-center gap-1">
             <button
               onClick={toggleContentType}
@@ -792,9 +801,9 @@ function GenerationBar({
               ref={inputRef}
               value={promptText}
               onChange={(e) => onPromptChange(e.target.value)}
-              placeholder="描述你想生成的古风人像..."
+              placeholder="您希望创作什么内容？"
               rows={1}
-              className="w-full resize-none bg-transparent py-2 pr-8 text-sm text-white placeholder:text-zinc-600 focus:outline-none max-h-32 [&::-webkit-resizer]:hidden"
+              className="w-full resize-none bg-transparent py-2 pr-8 text-sm text-white placeholder:text-zinc-500 focus:outline-none max-h-32 [&::-webkit-resizer]:hidden"
               style={{ minHeight: '40px', resize: 'none' }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -826,30 +835,12 @@ function GenerationBar({
             <button
               type="button"
               onClick={handleGenerate}
-              disabled={generating || !promptText.trim()}
+              disabled={!promptText.trim()}
               className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-500 text-black shadow-lg shadow-emerald-500/20 hover:bg-emerald-400 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 pointer-events-auto transition-all duration-200"
-              title="生成"
+              title="生成（提交后立即释放，可连续提交）"
             >
-              {generating ? (
-                <div className="size-4 animate-spin rounded-full border-2 border-black/30 border-t-black" />
-              ) : (
-                <ArrowUp className="size-4" />
-              )}
+              <ArrowUp className="size-4" />
             </button>
-          </div>
-        </div>
-
-        {/* 底部提示 */}
-        <div className="flex items-center justify-between px-4 pb-3 pt-0">
-          <div className="flex items-center gap-3 text-[11px] text-zinc-600">
-            <span>提示词优化</span>
-            <span>·</span>
-            <span>角色一致性</span>
-            <span>·</span>
-            <span>风格迁移</span>
-          </div>
-          <div className="text-[11px] text-zinc-600">
-            {promptText.length} 字符 · 消耗 {settings.count * 10} 点数
           </div>
         </div>
 
@@ -865,9 +856,9 @@ function GenerationBar({
             <textarea
               value={promptText}
               onChange={(e) => onPromptChange(e.target.value)}
-              placeholder="描述你想生成的古风人像..."
+              placeholder="您希望创作什么内容？"
               autoFocus
-              className="mt-3 w-full min-h-[320px] resize-none rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none"
+              className="mt-3 w-full min-h-[320px] resize-none rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-white placeholder:text-zinc-500 focus:border-emerald-500/50 focus:outline-none"
             />
             <div className="mt-3 flex items-center justify-between text-[11px] text-zinc-500">
               <span>{promptText.length} 字符</span>

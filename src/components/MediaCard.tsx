@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Heart,
   RefreshCw,
@@ -17,6 +17,8 @@ import {
   Maximize2,
   AlertCircle,
   RotateCw,
+  Loader2,
+  X,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Image from '@/components/ui/image';
@@ -60,13 +62,30 @@ export default function MediaCard({
   // 探测失败（破图/过期/平台专有路径）→ 切到 failed 占位 + 回调父级汇总
   const probe = useImageProbe(
     item.thumbnail,
-    item.status === 'failed' ? undefined : {
+    item.status === 'pending' || item.status === 'failed' ? undefined : {
       onProbeFailed: (info) => onProbeFailed?.(item, info.error),
     },
   );
   const isFailed = item.status === 'failed' || probe.status === 'failed';
+  const isPending = item.status === 'pending';
   const failedError = item.status === 'failed' ? item.errorMessage : probe.error;
   const failedAt = item.status === 'failed' ? item.failedAt : undefined;
+
+  // ── pending 自我涨进度：父级不传 progress 时，200ms 自增到 95% 后停（模拟真实生成节奏）──
+  // 父级传了 progress 则优先用父级（精确控制）
+  const [selfProgress, setSelfProgress] = useState(0);
+  useEffect(() => {
+    if (!isPending) return;
+    if (typeof item.progress === 'number' && item.progress >= 100) return;
+    const tid = setInterval(() => {
+      setSelfProgress((prev) => {
+        if (prev >= 95) return prev; // 到 95% 停下，等图片回来再切 100
+        return prev + 1; // 200ms +1% ≈ 19s 到 95%
+      });
+    }, 200);
+    return () => clearInterval(tid);
+  }, [isPending, item.progress]);
+  const progressValue = typeof item.progress === 'number' ? item.progress : selfProgress;
 
   const moreItems = [
     { icon: Heart, label: item.isFavorite ? '取消收藏' : '收藏' },
@@ -101,7 +120,61 @@ export default function MediaCard({
       }}
     >
       <div className={`relative w-full ${sizeClasses[gridSize]} overflow-hidden`}>
-        {isFailed ? (
+        {isPending ? (
+          /* ─── 生成中占位：灰色模糊渐变 + 进度条 + 右上角百分比 ─── */
+          <div
+            className="relative flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-zinc-800/80 via-zinc-900 to-zinc-800/60"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(item.id); // pending 状态点击图片区域 → 取消任务（删除占位）
+            }}
+          >
+            {/* 模拟生成中：中央模糊球+spinner，参考 Nano Banana Pro 风格 */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="size-32 rounded-full bg-gradient-to-br from-zinc-700/40 via-zinc-600/20 to-zinc-800/40 blur-2xl animate-pulse" />
+            </div>
+            <div className="relative z-10 flex flex-col items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-800/60 backdrop-blur-sm ring-1 ring-zinc-700/50">
+                <Loader2 className="size-5 animate-spin text-emerald-400" />
+              </div>
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                生成中
+              </div>
+            </div>
+
+            {/* 右上角：百分比 */}
+            <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded-full bg-black/40 backdrop-blur-sm px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
+              <span>{Math.min(99, Math.round(progressValue))}%</span>
+            </div>
+
+            {/* 右上角：取消按钮（hover 显著，平时半透明） */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(item.id);
+              }}
+              className="absolute right-2 top-9 z-20 flex h-6 w-6 items-center justify-center rounded-full bg-zinc-900/60 backdrop-blur-md text-zinc-400 ring-1 ring-zinc-700/30 opacity-50 transition-all hover:bg-red-500/40 hover:text-red-100 hover:opacity-100"
+              title="取消"
+            >
+              <X className="size-3" />
+            </button>
+
+            {/* 左下角：Image 图标（参考 Nano Banana Pro 风格） */}
+            <div className="absolute left-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-lg bg-black/40 backdrop-blur-sm text-zinc-300">
+              <ImageIcon className="size-3.5" />
+            </div>
+
+            {/* 底部进度条 */}
+            <div className="absolute inset-x-0 bottom-0 z-20 p-2.5">
+              <div className="h-1 w-full overflow-hidden rounded-full bg-zinc-800/80">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-teal-400 transition-all duration-200 ease-out"
+                  style={{ width: `${progressValue}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        ) : isFailed ? (
           /* ─── 失败占位：不再渲染 <img>，避免浏览器显示裂图 ─── */
           <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-red-950/60 via-zinc-900 to-orange-950/40 p-3 text-center">
             {/* 失败时也支持删除：右上角红 Trash 按钮（hover 显著，平时半透明） */}
