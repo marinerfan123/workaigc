@@ -231,6 +231,33 @@ async function handleAPI(req, res) {
     writeJSON('media', readJSON('media').filter(m => m.id !== id));
     return sendJSON(res, 200, { ok: true });
   }
+  // 单条部分更新：用于探测失败后回写 status/errorMessage/failed_at
+  if (url.startsWith('/api/media/') && method === 'PUT') {
+    const id = url.split('/api/media/')[1];
+    const body = await parseBody(req);
+    if (!body || !id) return sendJSON(res, 400, { error: 'Invalid request' });
+    const s = toSnake(body);
+    if (pgPool) {
+      // 动态拼 UPDATE：只更新传入的字段
+      const fields = [];
+      const vals = [];
+      let i = 1;
+      for (const [k, v] of Object.entries(s)) {
+        if (v === undefined) continue;
+        fields.push(`${k}=$${i}`);
+        vals.push(v);
+        i++;
+      }
+      if (fields.length === 0) return sendJSON(res, 200, { ok: true, noop: true });
+      vals.push(id);
+      await pgPool.query(`UPDATE media SET ${fields.join(',')} WHERE id=$${i}`, vals);
+      return sendJSON(res, 200, { ok: true });
+    }
+    const list = readJSON('media');
+    const idx = list.findIndex(m => m.id === id);
+    if (idx >= 0) { list[idx] = { ...list[idx], ...body }; writeJSON('media', list); }
+    return sendJSON(res, 200, { ok: true });
+  }
 
   // ── Providers ──
   // ── 代理下载图片（绕过浏览器 CORS）──

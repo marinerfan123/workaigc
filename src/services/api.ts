@@ -2,6 +2,8 @@
 // 所有数据（媒体/供应商/模型/设置/OSS/角色）一律存后端，浏览器本地不落盘。
 // 用法：在需要数据的地方先 `await ensureApi()`，成功后各 apiGet* 才有数据可读。
 
+import type { IMediaItem } from '@/data/media';
+
 let API_BASE = '';
 let API_TOKEN = '';
 let discoverPromise: Promise<boolean> | null = null;
@@ -71,6 +73,13 @@ export async function apiSaveMedia(items: any[]) {
 }
 export async function apiDeleteMedia(id: string) {
   try { await apiFetch(`/api/media/${id}`, { method: 'DELETE' }); } catch {}
+}
+/**
+ * 单条部分更新（探测失败时回写 status/errorMessage/failedAt 用）
+ * 后端只更新传入的非空字段，不破坏其他字段
+ */
+export async function apiUpdateMedia(id: string, patch: Partial<IMediaItem>) {
+  try { await apiFetch(`/api/media/${id}`, { method: 'PUT', body: JSON.stringify(patch) }); } catch {}
 }
 /** 媒体分类计数（侧边栏角标用） */
 export interface MediaCounts {

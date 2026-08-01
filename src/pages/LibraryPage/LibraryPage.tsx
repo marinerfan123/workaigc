@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Image as ImageIcon,
@@ -21,7 +21,7 @@ import {
 import { toast } from 'sonner';
 import MediaCard from '@/components/MediaCard';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
-import { apiGetMedia, apiSaveMedia, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiUpdateMedia, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
 
 const CATEGORY_LABELS: Record<string, { label: string; icon: typeof ImageIcon }> = {
   all: { label: '全部素材', icon: Grid3X3 },
@@ -51,6 +51,49 @@ export default function LibraryPage() {
     navigate('/workspace', { state: { retryItem: item } });
   };
 
+  /**
+   * MediaCard 探测图片失败时回调：把对应 item 标为 failed，并写回后端。
+   * 同时自动开启"显示失败"开关并 toast 提醒用户。
+   * 用 ref + 写后端合并去抖，避免同一 item 重复触发（探测可能跨卡片实例）。
+   */
+  const probeFailedItemsRef = useRef<Map<string, IMediaItem>>(new Map());
+  const probeWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleProbeFailed = (item: IMediaItem, error: string) => {
+    // 已经是 failed（status 已对）→ 跳过
+    if (item.status === 'failed') return;
+    // 合并去抖：同一 id 多次触发只记一次
+    probeFailedItemsRef.current.set(item.id, { ...item, status: 'failed', errorMessage: error, failedAt: new Date().toISOString() });
+
+    // 立即更新本地 state（UI 立刻反映，不等后端）
+    setMediaList((prev) => prev.map((m) => (m.id === item.id
+      ? { ...m, status: 'failed', errorMessage: error, failedAt: new Date().toISOString() }
+      : m)));
+    // 自动打开"显示失败"开关
+    setShowFailed(true);
+    // 合并写后端：500ms 内只发一次（按 id 单条 PUT，不破坏其他字段）
+    if (probeWriteTimerRef.current) clearTimeout(probeWriteTimerRef.current);
+    probeWriteTimerRef.current = setTimeout(async () => {
+      const toMark = Array.from(probeFailedItemsRef.current.values());
+      probeFailedItemsRef.current.clear();
+      if (toMark.length === 0) return;
+      try {
+        for (const m of toMark) {
+          await apiUpdateMedia(m.id, { status: 'failed', errorMessage: m.errorMessage, failedAt: m.failedAt });
+        }
+        toast.warning(`已标记 ${toMark.length} 张图链接失效`, { description: '已自动切到「显示失败」模式，可点击卡片右上角删除', duration: 4000 });
+      } catch (e) {
+        toast.error(`写回失败标记失败：${e instanceof Error ? e.message : String(e)}`);
+      }
+    }, 500);
+  };
+
+  // 组件卸载时清掉未触发的写后端定时器
+  useEffect(() => {
+    return () => {
+      if (probeWriteTimerRef.current) clearTimeout(probeWriteTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -60,11 +103,25 @@ export default function LibraryPage() {
         try { list = await apiGetMedia(); } catch { list = []; }
       }
       const validItems = stripBlobItems(list); // 过滤 blob 临时项
-      const finalList = validItems.length > 0 ? validItems : MOCK_MEDIA_LIST;
+      // 空数据时把 MOCK 标 failed 后再用（避免本地 dev 显示破图）
+      // MOCK 数据的 thumbnail 是平台专有路径（/spark/app/...），本地永远 404
+      let finalList: IMediaItem[];
+      if (validItems.length > 0) {
+        finalList = validItems;
+      } else {
+        finalList = stripBlobItems(MOCK_MEDIA_LIST).map((m) => ({
+          ...m,
+          status: 'failed' as const,
+          errorMessage: '本地占位示例（首次访问的 mock 数据，链接在本地无效）',
+          failedAt: new Date().toISOString(),
+        }));
+        // 异步写后端，失败也不影响渲染
+        if (ok) {
+          try { apiSaveMedia(finalList); } catch {}
+        }
+      }
       if (cancelled) return;
       setMediaList(finalList);
-      // 空数据时把 MOCK 写回后端，保证所有设备一致
-      if (ok && validItems.length === 0) { try { apiSaveMedia(stripBlobItems(finalList)); } catch {} }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -441,6 +498,7 @@ export default function LibraryPage() {
                       onToggleFavorite={handleToggleFavorite}
                       onDelete={handleDelete}
                       onRetry={handleRetry}
+                      onProbeFailed={handleProbeFailed}
                       gridSize="M"
                     />
                     {batchMode && (
@@ -595,6 +653,7 @@ export default function LibraryPage() {
                   onToggleFavorite={handleToggleFavorite}
                   onDelete={handleDelete}
                   onRetry={handleRetry}
+                  onProbeFailed={handleProbeFailed}
                   gridSize="M"
                 />
                 {batchMode && (

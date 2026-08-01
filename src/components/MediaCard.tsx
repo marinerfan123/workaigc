@@ -21,6 +21,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
+import { useImageProbe } from '@/hooks/useImageProbe';
 
 interface MediaCardProps {
   item: IMediaItem;
@@ -30,6 +31,11 @@ interface MediaCardProps {
   onToggleFavorite: (id: string) => void;
   onDelete: (id: string) => void;
   onRetry?: (item: IMediaItem) => void;
+  /**
+   * 探测图片失败时回调（父级汇总 id 写后端）。
+   * 命中条件：item.status 不是 'failed' 但图片 URL 实际加载失败（破图/404/超时）。
+   */
+  onProbeFailed?: (item: IMediaItem, error: string) => void;
   gridSize: 'S' | 'M' | 'L';
 }
 
@@ -41,11 +47,26 @@ export default function MediaCard({
   onToggleFavorite,
   onDelete,
   onRetry,
+  onProbeFailed,
   gridSize,
 }: MediaCardProps) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const navigate = useNavigate();
+
+  // ── 探测图片可用性 ──
+  // item.status === 'failed' → 直接渲染占位，不探测
+  // item.status === 'success' 或 undefined → 探测实际链接可用性
+  // 探测失败（破图/过期/平台专有路径）→ 切到 failed 占位 + 回调父级汇总
+  const probe = useImageProbe(
+    item.thumbnail,
+    item.status === 'failed' ? undefined : {
+      onProbeFailed: (info) => onProbeFailed?.(item, info.error),
+    },
+  );
+  const isFailed = item.status === 'failed' || probe.status === 'failed';
+  const failedError = item.status === 'failed' ? item.errorMessage : probe.error;
+  const failedAt = item.status === 'failed' ? item.failedAt : undefined;
 
   const moreItems = [
     { icon: Heart, label: item.isFavorite ? '取消收藏' : '收藏' },
@@ -80,19 +101,36 @@ export default function MediaCard({
       }}
     >
       <div className={`relative w-full ${sizeClasses[gridSize]} overflow-hidden`}>
-        {item.status === 'failed' ? (
+        {isFailed ? (
           /* ─── 失败占位：不再渲染 <img>，避免浏览器显示裂图 ─── */
-          <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-red-950/60 via-zinc-900 to-orange-950/40 p-3 text-center">
+          <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-red-950/60 via-zinc-900 to-orange-950/40 p-3 text-center">
+            {/* 失败时也支持删除：右上角红 Trash 按钮（hover 显著，平时半透明） */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete(item.id);
+              }}
+              className="absolute right-2 top-2 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-red-500/20 backdrop-blur-md text-red-300 ring-1 ring-red-500/30 opacity-60 transition-all hover:bg-red-500/40 hover:text-red-100 hover:opacity-100"
+              title="删除（移至回收站）"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/15 text-red-400 ring-1 ring-red-500/20">
               <AlertCircle className="size-5" />
             </div>
             <div className="text-[11px] font-semibold uppercase tracking-wider text-red-300/80">生成失败</div>
             <p
               className="line-clamp-3 max-w-full text-[11px] leading-snug text-zinc-400"
-              title={item.errorMessage || '图片链接已失效'}
+              title={failedError || '图片链接已失效'}
             >
-              {item.errorMessage || '图片链接已失效，无法显示'}
+              {failedError || '图片链接已失效，无法显示'}
             </p>
+            {failedAt && (
+              <p className="text-[9px] text-zinc-600">
+                {new Date(failedAt).toLocaleString('zh-CN', { hour12: false })}
+              </p>
+            )}
             {onRetry && (
               <button
                 onClick={(e) => {
@@ -106,6 +144,14 @@ export default function MediaCard({
                 重新生成
               </button>
             )}
+          </div>
+        ) : probe.status === 'pending' ? (
+          /* ─── 探测中占位：避免裂图/未确定状态时显示破图 ─── */
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-zinc-900/80 p-3 text-center">
+            <div className="flex h-8 w-8 items-center justify-center">
+              <div className="size-5 animate-spin rounded-full border-2 border-zinc-700 border-t-emerald-400" />
+            </div>
+            <p className="text-[10px] text-zinc-500">检测链接…</p>
           </div>
         ) : (
           <Image
