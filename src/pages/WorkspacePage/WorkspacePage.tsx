@@ -170,13 +170,14 @@ export default function WorkspacePage() {
     pendingTimeoutRef.current.clear();
   }, []);
 
-  // 后台补传遗漏素材：每次刷新/登录时自动尝试补传之前 OSS 失败的图片
+  // 后台补传遗漏素材: 每次刷新/登录时自动尝试补传之前 OSS 失败的图片
+  // 关键约束: 跳过当前选中的 item + pending 卡片, 避免抢用户正在看的图 (右栏会瞬间裂图)
   const backfillRef = useRef(false);
   useEffect(() => {
     if (backfillRef.current) return;
     if (!ossConfig.enabled || mediaList.length === 0) return;
     const needsUpload = mediaList.filter(
-      (m) => !m.ossUploaded && !m.isDeleted && m.source !== 'mock' && m.fullUrl && !m.fullUrl.startsWith('data:'),
+      (m) => m.id !== selectedId && !m.ossUploaded && !m.isDeleted && m.source !== 'mock' && m.status !== 'pending' && m.fullUrl && !m.fullUrl.startsWith('data:'),
     );
     if (needsUpload.length === 0) return;
     backfillRef.current = true;

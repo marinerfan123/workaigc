@@ -22,6 +22,7 @@ import {
 import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
 import { toast } from 'sonner';
+import { useImageProbe } from '@/hooks/useImageProbe';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiProxyFetch } from '@/services/api';
 
@@ -40,6 +41,9 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
   const [copied, setCopied] = useState(false); // OSS 链接复制成功的瞬时反馈
   const { config: ossConfig, uploadFile: uploadToOss, buildOssUrl } = useOssConfig();
   const [uploadingToOss, setUploadingToOss] = useState(false);
+
+  // 顶部预览图探测: 失败/加载中显示友好占位, 不依赖 Image 组件的 onError (后者会切到 src=undefined 显示裂开图)
+  const previewProbe = useImageProbe(item?.fullUrl || '', { timeoutMs: 4000 });
 
   // 复制成功后 2s 内变对号, 然后自动复位
   const flashCopied = () => {
@@ -303,8 +307,16 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
       {/* 图片预览区 */}
       <div className="flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div className="p-4">
-          <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900">
-            <Image src={item.fullUrl} alt={item.title} className="w-full object-cover" />
+          <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900 aspect-square flex items-center justify-center">
+            {previewProbe.status === 'failed' ? (
+              <div className="flex flex-col items-center gap-2 p-6 text-center">
+                <ImageIcon className="size-10 text-zinc-600" />
+                <p className="text-xs text-zinc-500">图片链接已失效</p>
+                <p className="text-[10px] text-zinc-600">后端 OSS 签名 URL 7 天硬过期 (待做 #41-43 代理)</p>
+              </div>
+            ) : previewProbe.status === 'pending' && !item?.fullUrl ? null : (
+              <Image src={item.fullUrl} alt={item.title} className="w-full object-cover" />
+            )}
           </div>
         </div>
 
