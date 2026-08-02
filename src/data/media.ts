@@ -3,7 +3,7 @@
 export interface IMediaItem {
   id: string;
   title: string;
-  type: 'image' | 'video';
+  type: 'image' | 'video' | 'audio';
   thumbnail: string;
   fullUrl: string;
   prompt: string;
