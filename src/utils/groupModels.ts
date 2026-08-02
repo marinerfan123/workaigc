@@ -12,6 +12,8 @@ export interface GroupedModel {
   modelId: string;
   /** 展示名：取首个启用行的 displayName（编辑时整组同步） */
   displayName: string;
+  /** 映射名：取首个非空 mappingName（编辑时整组同步），用于 getEffectiveModelName 解析 */
+  mappingName?: string;
   type: ModelType;
   /** 任一启用行启用即视为可用 */
   enabled: boolean;
@@ -65,6 +67,10 @@ export function groupModelsByModelId(models: IAiModel[]): GroupedModel[] {
     if (!g.displayName) g.displayName = m.displayName;
     if (m.enabled && g.rows.filter((r) => r.enabled).length === 1) {
       g.displayName = m.displayName;
+    }
+    // mappingName：取第一个非空的（编辑面板会整组同步，所以聚合后值稳定）
+    if (!g.mappingName && m.mappingName && m.mappingName.trim()) {
+      g.mappingName = m.mappingName;
     }
 
     if (m.supportedResolutions) {
