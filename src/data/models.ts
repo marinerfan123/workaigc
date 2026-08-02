@@ -119,6 +119,9 @@ export interface IAiModel {
   paired?: IModelPaired;
   /** 单模型覆盖服务商的接口配置 */
   endpoint?: IModelEndpoint;
+  /** 单次生成消耗的积分数（0 = 不扣；后台编辑；前台展示在模型名旁）。
+   *  旧版本未设置时默认为 1。 */
+  creditCost?: number;
 }
 
 /**

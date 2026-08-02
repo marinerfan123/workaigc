@@ -159,3 +159,13 @@ export function getModelDisplayNameByDisplayName(displayName: string): string {
   const m = modelsState.find((x) => x.displayName === displayName);
   return getEffectiveModelName(m);
 }
+
+/**
+ * 非 hook 查询：按 displayName 找到模型行，返回其单次生成消耗的积分数。
+ * 找不到或未设置时返回 0。
+ */
+export function getModelCreditCostByDisplayName(displayName: string): number {
+  if (!displayName) return 0;
+  const m = modelsState.find((x) => x.displayName === displayName);
+  return typeof m?.creditCost === 'number' ? m.creditCost : 0;
+}

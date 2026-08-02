@@ -22,6 +22,8 @@ export interface GroupedModel {
   rows: IAiModel[];
   /** 合并去重后的支持分辨率 */
   supportedResolutions: Resolution[];
+  /** 合并后的积分数（取 max，便于用户感知最高成本） */
+  creditCost: number;
 }
 
 /**
@@ -46,12 +48,14 @@ export function groupModelsByModelId(models: IAiModel[]): GroupedModel[] {
         providerCount: 0,
         rows: [],
         supportedResolutions: [],
+        creditCost: 0,
       };
       map.set(m.modelId, g);
     }
 
     g.rows.push(m);
     if (m.enabled) g.enabled = true;
+    if (typeof m.creditCost === 'number' && m.creditCost > g.creditCost) g.creditCost = m.creditCost;
 
     if (!g.providerIds.includes(m.providerId)) {
       g.providerIds.push(m.providerId);

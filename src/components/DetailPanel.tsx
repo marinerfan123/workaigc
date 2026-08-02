@@ -25,7 +25,7 @@ import { toast } from 'sonner';
 import { useImageProbe } from '@/hooks/useImageProbe';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiProxyFetch } from '@/services/api';
-import { getModelDisplayNameByDisplayName } from '@/hooks/useModelHub';
+import { getModelDisplayNameByDisplayName, getModelCreditCostByDisplayName } from '@/hooks/useModelHub';
 
 interface DetailPanelProps {
   item: IMediaItem | null;
@@ -335,7 +335,17 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
           </div>
           <div className="flex items-center justify-between">
             <span className="text-xs text-zinc-500">使用模型</span>
-            <span className="text-xs font-medium text-white">{getModelDisplayNameByDisplayName(item.model) || item.model}</span>
+            <span className="flex items-center gap-1.5">
+              <span className="text-xs font-medium text-white">{getModelDisplayNameByDisplayName(item.model) || item.model}</span>
+              {(() => {
+                const cost = getModelCreditCostByDisplayName(item.model);
+                return cost > 0 ? (
+                  <span className="rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold">
+                    {cost} 积分
+                  </span>
+                ) : null;
+              })()}
+            </span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-xs text-zinc-500">画面比例</span>

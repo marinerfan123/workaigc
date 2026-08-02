@@ -117,14 +117,15 @@ export default function ModelHubPage() {
   // 获取模型列表相关
   const [fetchingModels, setFetchingModels] = useState(false);
   const [modelSelectOpen, setModelSelectOpen] = useState(false);
-  const [fetchedModels, setFetchedModels] = useState<Array<{ id: string; modelId: string; displayName: string; mappingName?: string; type: ModelType; selected: boolean; supportedResolutions: Resolution[] }>>([]);
+  const [fetchedModels, setFetchedModels] = useState<Array<{ id: string; modelId: string; displayName: string; mappingName?: string; type: ModelType; selected: boolean; supportedResolutions: Resolution[]; creditCost?: number }>>([]);
   const [modelSearchQuery, setModelSearchQuery] = useState('');
   const [syncingProviderId, setSyncingProviderId] = useState<string | null>(null);
 
-  // 已保存模型卡的内联编辑（displayName + mappingName）
+  // 已保存模型卡的内联编辑（displayName + mappingName + creditCost）
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [editDisplayName, setEditDisplayName] = useState('');
   const [editMappingName, setEditMappingName] = useState('');
+  const [editCreditCost, setEditCreditCost] = useState<number>(0);
 
   // 表单状态
   const [formName, setFormName] = useState('');
@@ -434,6 +435,11 @@ export default function ModelHubPage() {
       prev.map((m) => (m.id === id ? { ...m, mappingName: name } : m)),
     );
   };
+  const updateModelCreditCost = (id: string, cost: number) => {
+    setFetchedModels((prev) =>
+      prev.map((m) => (m.id === id ? { ...m, creditCost: Math.max(0, Math.floor(cost) || 0) } : m)),
+    );
+  };
 
   /** 切换单个模型某档分辨率（多选） */
   const toggleModelResolution = (id: string, res: Resolution) => {
@@ -533,6 +539,7 @@ export default function ModelHubPage() {
         providerId: providerId!,
         enabled: true,
         supportedResolutions: m.supportedResolutions,
+        creditCost: typeof m.creditCost === 'number' ? m.creditCost : 0,
       }));
 
     if (newModels.length > 0) {
@@ -1444,6 +1451,14 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                       已映射
                                     </span>
                                   )}
+                                  {group.creditCost > 0 && (
+                                    <span
+                                      title={`单次生成消耗 ${group.creditCost} 积分`}
+                                      className="ml-1.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle"
+                                    >
+                                      {group.creditCost} 积分
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="truncate text-[10px] text-zinc-600">{group.modelId}</div>
                               </div>
@@ -1457,9 +1472,10 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                     setEditingGroupId(group.modelId);
                                     setEditDisplayName(group.displayName || '');
                                     setEditMappingName(rep?.mappingName || '');
+                                    setEditCreditCost(typeof rep?.creditCost === 'number' ? rep.creditCost : 0);
                                   }
                                 }}
-                                title={isEditing ? '取消编辑' : '编辑名称 / 映射名'}
+                                title={isEditing ? '取消编辑' : '编辑名称 / 映射名 / 积分'}
                                 className={`flex h-6 w-6 items-center justify-center rounded-md transition-all ${
                                   isEditing
                                     ? 'bg-emerald-500/20 text-emerald-400'
@@ -1517,6 +1533,29 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                   前台所有模型展示会优先用此名。分发仍按 model_id，不影响。
                                 </p>
                               </div>
+                              <div>
+                                <label className="mb-1 block text-[10px] uppercase tracking-wider text-zinc-500">
+                                  积分消耗（单次生成）
+                                </label>
+                                <div className="flex items-center gap-1.5">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={1}
+                                    value={Number.isFinite(editCreditCost) ? editCreditCost : 0}
+                                    onChange={(e) => {
+                                      const v = parseInt(e.target.value, 10);
+                                      setEditCreditCost(Number.isFinite(v) && v >= 0 ? v : 0);
+                                    }}
+                                    placeholder="0"
+                                    className="w-24 rounded-lg border border-zinc-700 bg-zinc-800/60 px-2 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none"
+                                  />
+                                  <span className="text-[10px] text-zinc-500">积分 / 张</span>
+                                </div>
+                                <p className="mt-1 text-[10px] text-zinc-500">
+                                  前台下拉和详情会显示此值。同一 modelId 多供应商时，整组同步；提交 N 张请求时实际扣 N × 此值。
+                                </p>
+                              </div>
                               <div className="flex items-center justify-end gap-1.5 pt-1">
                                 <button
                                   onClick={() => setEditingGroupId(null)}
@@ -1528,10 +1567,11 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                   onClick={() => {
                                     const newDisplay = editDisplayName.trim() || group.displayName || group.modelId;
                                     const newMapping = editMappingName.trim();
+                                    const newCost = Math.max(0, Math.floor(Number(editCreditCost) || 0));
                                     setModels((prev) =>
                                       prev.map((m) =>
                                         m.modelId === group.modelId
-                                          ? { ...m, displayName: newDisplay, mappingName: newMapping }
+                                          ? { ...m, displayName: newDisplay, mappingName: newMapping, creditCost: newCost }
                                           : m,
                                       ),
                                     );
@@ -1728,6 +1768,23 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                         className="w-full bg-zinc-800/40 text-xs text-emerald-300 placeholder:text-zinc-600 focus:outline-none focus:bg-zinc-800/70 rounded-lg px-2 py-0.5 -mx-2 transition-colors"
                         placeholder="映射名称（前台展示名，可选）"
                       />
+                      {/* 积分消耗：单次生成扣多少积分 */}
+                      <div className="flex items-center gap-1.5 pt-1 px-2 -mx-2">
+                        <span className="text-[10px] text-zinc-500 shrink-0">积分：</span>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={Number.isFinite(model.creditCost) ? model.creditCost : 0}
+                          onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            updateModelCreditCost(model.id, Number.isFinite(v) && v >= 0 ? v : 0);
+                          }}
+                          className="w-20 bg-zinc-800/40 text-xs text-amber-300 placeholder:text-zinc-600 focus:outline-none focus:bg-zinc-800/70 rounded-lg px-2 py-0.5 transition-colors"
+                          placeholder="0"
+                        />
+                        <span className="text-[10px] text-zinc-500">/ 次</span>
+                      </div>
                       {/* 分辨率多选：仅图片模型显示 */}
                       {model.type === 'image' && (
                         <div className="flex items-center gap-1 pt-1 px-2 -mx-2 flex-wrap">

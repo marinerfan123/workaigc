@@ -606,6 +606,11 @@ function GenerationBar({
                 <span className="max-w-[140px] truncate font-medium">
                   {currentModelLabel}
                 </span>
+                {currentModel && currentModel.creditCost ? (
+                  <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold">
+                    {currentModel.creditCost} 积分
+                  </span>
+                ) : null}
                 <ChevronDown className="size-3 text-zinc-500" />
               </button>
               {modelMenuOpen && (
@@ -654,18 +659,15 @@ function GenerationBar({
                               }`}
                             >
                               <span className="flex-1 truncate">{getEffectiveModelName(g) || g.displayName}</span>
-                              {g.providerCount > 1 && (
-                                <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold">
-                                  {g.providerCount}家
+                              {typeof g.creditCost === 'number' && g.creditCost > 0 ? (
+                                <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                                  active
+                                    ? 'bg-amber-400/15 text-amber-300'
+                                    : 'bg-zinc-800 text-zinc-500'
+                                }`}>
+                                  {g.creditCost} 积分
                                 </span>
-                              )}
-                              <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold ${
-                                g.type === 'image' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
-                                g.type === 'video' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
-                                'bg-purple-500/10 text-purple-400 border-purple-500/20'
-                              }`}>
-                                {g.type === 'image' ? '图' : g.type === 'video' ? '视' : '文'}
-                              </span>
+                              ) : null}
                             </button>
                           );
                         })
