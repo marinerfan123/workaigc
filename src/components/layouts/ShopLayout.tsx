@@ -4,6 +4,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { ShoppingBag, Search, ShoppingCart } from 'lucide-react';
 import { useAuth, logout } from '@/services/authStore';
 import { cn } from '@/components/skeleton';
+import { ProductSwitcher } from '@/components/ProductSwitcher';
 
 const SHOP_CATS = [
   { to: '/shop', label: '全部', end: true },
@@ -29,6 +30,8 @@ export function ShopLayout() {
             <ShoppingBag className="size-5 text-emerald-400" />
             <span className="text-sm font-semibold text-white">AI 市集</span>
           </button>
+
+          <ProductSwitcher className="hidden lg:flex" />
 
           {/* 搜索 */}
           <div className="relative hidden flex-1 md:block">

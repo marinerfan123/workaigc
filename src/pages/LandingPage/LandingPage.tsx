@@ -21,7 +21,7 @@ import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authS
 
 /* ── 整个计划：创意生产流水线（M5：点子→剧本→分镜→视频→剧集，五阶段可回退）──
    生图/视频生成是驱动第 3–4 步产出的引擎，而非独立终点。
-   /studio 系列为规划中（Phase 4），此处仅作蓝图展示，不跳转避免 404；
+   /studio（创作工作室）、/shop（AI 市集）均为已上线的独立大项目页面，可直接跳转；
    现已具备生成能力的环节指向 /workspace。 */
 const PIPELINE = [
   { n: 1, title: '点子孵化', desc: '头脑风暴与世界观设定，把模糊的灵感沉淀成可延展的创意方向。', icon: Lightbulb, status: '规划中' },

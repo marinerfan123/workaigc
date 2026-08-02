@@ -1,8 +1,9 @@
 // 创作工作室 Layout 壳（M5 创意生产流水线 / Phase 4）
 // 外层壳：品牌条 + 返回前台 + 用户菜单；项目头与五阶段 Tab 由 StudioStagePage 内部渲染。
 import { Outlet, useNavigate } from 'react-router-dom';
-import { Clapperboard, ArrowLeft } from 'lucide-react';
+import { Clapperboard } from 'lucide-react';
 import { useAuth, logout } from '@/services/authStore';
+import { ProductSwitcher } from '@/components/ProductSwitcher';
 
 export function StudioLayout() {
   const { user } = useAuth();
@@ -11,15 +12,9 @@ export function StudioLayout() {
   return (
     <div className="flex h-screen w-full flex-col overflow-hidden bg-black text-white">
       {/* 顶部品牌条 */}
-      <header className="flex shrink-0 items-center justify-between border-b border-zinc-800 px-5 py-3">
+      <header className="flex shrink-0 items-center justify-between gap-4 border-b border-zinc-800 px-5 py-3">
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate('/')}
-            className="flex size-8 items-center justify-center rounded-xl text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
-            title="返回前台"
-          >
-            <ArrowLeft className="size-4" />
-          </button>
+          <ProductSwitcher />
           <div className="flex items-center gap-2">
             <Clapperboard className="size-5 text-emerald-400" />
             <span className="text-sm font-semibold text-white">创作工作室</span>

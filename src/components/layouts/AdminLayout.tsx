@@ -12,6 +12,9 @@ import {
   ArrowLeft,
   ShieldAlert,
   LogOut,
+  LayoutGrid,
+  Clapperboard,
+  ShoppingBag,
 } from 'lucide-react';
 import { useAuth, logout } from '@/services/authStore';
 import { cn } from '@/components/skeleton';
@@ -46,6 +49,38 @@ export function AdminLayout() {
         </div>
 
         <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-2">
+          {/* 产品区：从后台直达各前台大项目（承接） */}
+          <div className="mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">
+            产品
+          </div>
+          {[
+            { to: '/workspace', label: '工作台', icon: LayoutGrid },
+            { to: '/studio', label: '创作工作室', icon: Clapperboard },
+            { to: '/shop', label: 'AI 市集', icon: ShoppingBag },
+          ].map((item) => {
+            const Icon = item.icon;
+            const active =
+              location.pathname === item.to || location.pathname.startsWith(`${item.to}/`);
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={cn(
+                  'flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-200',
+                  active
+                    ? 'bg-emerald-500/10 text-emerald-300 ring-1 ring-emerald-500/20'
+                    : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white',
+                )}
+              >
+                <Icon className="size-4 shrink-0" />
+                <span className="flex-1 truncate">{item.label}</span>
+              </NavLink>
+            );
+          })}
+
+          <div className="my-1 px-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">
+            后台
+          </div>
           {ADMIN_NAV.map((item) => {
             const Icon = item.icon;
             const active =
