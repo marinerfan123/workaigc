@@ -1,0 +1,5 @@
+# deploy/userlist.txt — pgbouncer 认证用户表
+# 格式: "用户名" "md5<密码+用户名拼接的md5>"
+# 下面这行对应 默认开发账号 postgres / 0.0.1abcd（开箱即用）
+# 自定义密码后重新生成： printf '%s' '你的密码用户名' | md5sum  -> 前面加 md5
+"postgres" "md5b1dea9d7cbcd5419d50ef2010c9c4216"

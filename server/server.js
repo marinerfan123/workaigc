@@ -1,5 +1,6 @@
 // 纯 Node.js 后端 API — PostgreSQL 17 + Redis 7.2
 // 用法: node server.js
+import 'dotenv/config'; // Phase 0: 配置外置化（必须在读取 process.env 前加载）
 import http from 'http';
 import fs from 'fs';
 import crypto from 'crypto';
@@ -30,12 +31,20 @@ let pgPool = null;
 import dispatcher from './dispatcher.cjs';
 import session from './auth.cjs';   // Phase A 用户会话（cookie JWT，零依赖）
 import billing from './billing.cjs'; // Phase A 积分计费
+import redisStore from './redis.cjs';       // Phase 0 优雅 Redis 层（自动内存兜底）
+import rateLimitMod from './ratelimit.cjs'; // Phase 0 固定窗口限流
+const { initRedis, isRedisUp } = redisStore;
+const { clientIp, rateLimit } = rateLimitMod;
 
 async function initDB() {
   try {
     pgPool = new Pool({
-      host: 'localhost', port: 5432, database: 'huabu',
-      user: 'postgres', password: '0.0.1abcd', max: 10,
+      host: process.env.PG_HOST || 'localhost',
+      port: parseInt(process.env.PG_PORT || '5432', 10),
+      database: process.env.PG_DATABASE || 'huabu',
+      user: process.env.PG_USER || 'postgres',
+      password: process.env.PG_PASSWORD || '0.0.1abcd',
+      max: parseInt(process.env.PG_POOL_MAX || '10', 10),
     });
     await pgPool.query('SELECT 1');
     await pgPool.query(`
@@ -231,6 +240,12 @@ function appGateway(req) {
 // ══════════════════════════════════════════════════
 // ─── 认证路由处理 ────────────────────────────────
 async function handleRegister(req, res) {
+  // Phase 0 限流：同一 IP 60s 内最多 5 次注册
+  const rlReg = await rateLimit({ key: 'rl:register:' + clientIp(req), limit: 5, windowSec: 60 });
+  if (!rlReg.allowed) {
+    res.setHeader('Retry-After', String(rlReg.retryAfter));
+    return sendJSON(res, 429, { error: '注册请求过于频繁，请稍后再试' });
+  }
   const body = await parseBody(req);
   const email = ((body && body.email) || '').toString().trim().toLowerCase();
   const pw = (body && body.password) || '';
@@ -256,6 +271,12 @@ async function handleRegister(req, res) {
 }
 
 async function handleLogin(req, res) {
+  // Phase 0 限流：同一 IP 60s 内最多 10 次登录（防暴力破解）
+  const rlLogin = await rateLimit({ key: 'rl:login:' + clientIp(req), limit: 10, windowSec: 60 });
+  if (!rlLogin.allowed) {
+    res.setHeader('Retry-After', String(rlLogin.retryAfter));
+    return sendJSON(res, 429, { error: '登录请求过于频繁，请稍后再试' });
+  }
   const body = await parseBody(req);
   const email = ((body && body.email) || '').toString().trim().toLowerCase();
   const pw = (body && body.password) || '';
@@ -302,6 +323,18 @@ async function handleMe(req, res) {
 async function handleAPI(req, res) {
   const url = req.url.replace(/\/$/, '');
   const method = req.method;
+
+  // Phase 0 健康检查：公开端点，网关前放行，供 nginx/容器探针与压测使用
+  if (url === '/api/healthz' && method === 'GET') {
+    return sendJSON(res, 200, {
+      status: 'ok',
+      pg: !!pgPool,
+      redis: isRedisUp(),
+      uptime: Math.floor(process.uptime()),
+      version: process.env.npm_package_version || '0.1.0',
+      ts: Date.now(),
+    });
+  }
 
   // 公开路由（注册/登录/刷新在全局网关之前）
   if (url === '/api/auth/register' && method === 'POST') return handleRegister(req, res);
@@ -1001,6 +1034,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 await initDB();
+await initRedis();
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 服务: http://localhost:${PORT} | 📁 ${DATA_DIR} | 🐘 PG:${pgPool ? 'connected' : 'json-fallback'}`);
+  console.log(`🚀 服务: http://localhost:${PORT} | 📁 ${DATA_DIR} | 🐘 PG:${pgPool ? 'connected' : 'json-fallback'} | 🔴 Redis:${isRedisUp() ? 'up' : 'memory-fallback'}`);
 });
