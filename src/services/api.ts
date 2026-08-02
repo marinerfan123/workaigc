@@ -374,3 +374,101 @@ export async function apiMe(): Promise<{ user?: AuthUser }> {
     return {};
   }
 }
+
+// ─── 管理后台（M3 总控台 / M4 智能体层 / M2 账务）───
+// 走会话 cookie（管理员登录态），无需额外 header；ensureApi 已注入 API_TOKEN 兜底。
+export interface AdminUser {
+  id: string;
+  email: string;
+  displayName: string;
+  role: string;
+  credits: number;
+  createdAt: string;
+}
+export async function apiAdminUsers(params: { q?: string; role?: string; limit?: number; offset?: number } = {}): Promise<{ items: AdminUser[]; total: number }> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  try { return await apiFetch(`/api/admin/users?${qs.toString()}`); } catch { return { items: [], total: 0 }; }
+}
+
+export async function apiAdminRecharge(userId: string, amount: number, note?: string): Promise<{ ok: boolean; credits?: number; error?: string }> {
+  try {
+    return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/credits`, {
+      method: 'POST',
+      body: JSON.stringify({ amount, note }),
+    });
+  } catch (e) {
+    return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+export interface AdminTx {
+  id: number;
+  userId: string;
+  user: string;
+  kind: string;
+  amount: number;
+  balanceAfter: number | null;
+  ref?: string;
+  createdAt: string;
+}
+export async function apiAdminTransactions(params: { limit?: number; offset?: number; type?: string; userId?: string } = {}): Promise<{ items: AdminTx[]; total: number }> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  try { return await apiFetch(`/api/admin/transactions?${qs.toString()}`); } catch { return { items: [], total: 0 }; }
+}
+
+export interface AdminAgent {
+  key: string;
+  name: string;
+  enabled: boolean;
+  dailyBudget: number;
+  config: Record<string, unknown>;
+  createdAt: string;
+}
+export async function apiAdminAgents(): Promise<AdminAgent[]> {
+  try { return await apiFetch('/api/admin/agents'); } catch { return []; }
+}
+export async function apiAdminUpsertAgent(a: { key: string; name: string; enabled?: boolean; dailyBudget?: number; config?: Record<string, unknown> }): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch('/api/admin/agents', { method: 'POST', body: JSON.stringify(a) }); } catch (e) { return { ok: false, error: (e as Error).message }; }
+}
+export async function apiAdminToggleAgent(key: string, enabled: boolean): Promise<{ ok: boolean }> {
+  try { return await apiFetch(`/api/admin/agents/${encodeURIComponent(key)}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } catch { return { ok: false }; }
+}
+
+export interface AgentProvider {
+  id: string;
+  agentKey: string;
+  provider: string;
+  model: string;
+  weight: number;
+  priority: number;
+  costPerCall: number;
+  enabled: boolean;
+  createdAt: string;
+}
+export async function apiAdminAgentProviders(agentKey?: string): Promise<AgentProvider[]> {
+  try { return await apiFetch(agentKey ? `/api/admin/agents/${encodeURIComponent(agentKey)}/providers` : '/api/admin/agent-providers'); } catch { return []; }
+}
+export async function apiAdminUpsertAgentProvider(p: { id?: string; agentKey: string; provider: string; model: string; weight?: number; priority?: number; costPerCall?: number; enabled?: boolean }): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch('/api/admin/agent-providers', { method: 'POST', body: JSON.stringify(p) }); } catch (e) { return { ok: false, error: (e as Error).message }; }
+}
+
+export interface AgentRule {
+  id: string;
+  name: string;
+  trigger: string;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+  enabled: boolean;
+  createdAt: string;
+}
+export async function apiAdminAgentRules(): Promise<AgentRule[]> {
+  try { return await apiFetch('/api/admin/agent-rules'); } catch { return []; }
+}
+export async function apiAdminUpsertAgentRule(r: { id?: string; name: string; trigger: string; condition?: Record<string, unknown>; action?: Record<string, unknown>; enabled?: boolean }): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch('/api/admin/agent-rules', { method: 'POST', body: JSON.stringify(r) }); } catch (e) { return { ok: false, error: (e as Error).message }; }
+}
+export async function apiAdminToggleAgentRule(id: string, enabled: boolean): Promise<{ ok: boolean }> {
+  try { return await apiFetch(`/api/admin/agent-rules/${encodeURIComponent(id)}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } catch { return { ok: false }; }
+}

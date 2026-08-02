@@ -35,6 +35,7 @@ import redisStore from './redis.cjs';       // Phase 0 优雅 Redis 层（自动
 import rateLimitMod from './ratelimit.cjs'; // Phase 0 固定窗口限流
 const { initRedis, isRedisUp } = redisStore;
 const { clientIp, rateLimit } = rateLimitMod;
+import adminMod from './admin.cjs'; // Phase 2 运营总控台(M3) + 全局智能体层(M4) 后台接口
 
 async function initDB() {
   try {
@@ -130,6 +131,77 @@ async function initDB() {
         ON generation_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL;
     `);
     console.log('[DB] PostgreSQL 连接成功');
+
+    // === Phase 2：运营总控台(M3) + 全局智能体层(M4) 地基 ===
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS request_logs (
+        id BIGSERIAL PRIMARY KEY,
+        method TEXT, path TEXT, ip TEXT, status INT, latency_ms INT,
+        user_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id BIGSERIAL PRIMARY KEY,
+        actor_id TEXT, action TEXT, target TEXT, detail JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_audit_created ON audit_logs(created_at DESC);
+      CREATE TABLE IF NOT EXISTS agents (
+        key TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        enabled BOOLEAN DEFAULT TRUE,
+        daily_budget INT DEFAULT 0,
+        config JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS agent_providers (
+        id TEXT PRIMARY KEY,
+        agent_key TEXT NOT NULL REFERENCES agents(key) ON DELETE CASCADE,
+        provider TEXT DEFAULT '', model TEXT DEFAULT '',
+        weight INT DEFAULT 1, priority INT DEFAULT 10, cost_per_call INT DEFAULT 0,
+        enabled BOOLEAN DEFAULT TRUE, created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS agent_rules (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, trigger TEXT DEFAULT '',
+        condition JSONB DEFAULT '{}', action JSONB DEFAULT '{}',
+        enabled BOOLEAN DEFAULT TRUE, created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS agent_calls (
+        id BIGSERIAL PRIMARY KEY, agent_key TEXT, user_id TEXT, provider TEXT DEFAULT '',
+        ok BOOLEAN DEFAULT TRUE, latency_ms INT DEFAULT 0, cost_credits INT DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_ac_created ON agent_calls(created_at DESC);
+      CREATE TABLE IF NOT EXISTS agent_rule_logs (
+        id BIGSERIAL PRIMARY KEY, rule_id TEXT, fired_at TIMESTAMPTZ DEFAULT NOW(),
+        result JSONB DEFAULT '{}'
+      );
+    `);
+
+    // 种子：运营智能体 ops_bot + 三条自动化规则（§H.3）
+    await pgPool.query(`
+      INSERT INTO agents (key, name, enabled, daily_budget, config)
+      VALUES ('ops_bot','运营智能体 ops_bot', TRUE, 1000, '{"desc":"自动封禁IP / 错误率告警 / 咨询应答草稿"}')
+      ON CONFLICT (key) DO NOTHING;
+      INSERT INTO agent_rules (id, name, trigger, condition, action, enabled) VALUES
+        ('rule-ban-ip','登录失败封禁','login_fail','{"threshold":20,"window":"ip"}','{"type":"ban_ip"}', TRUE),
+        ('rule-error-rate','5xx 错误率告警','error_rate','{"threshold":0.02,"metric":"5xx"}','{"type":"alert"}', TRUE),
+        ('rule-auto-reply','客服咨询应答','support_query','{"kb_match":true}','{"type":"draft_reply"}', TRUE)
+      ON CONFLICT (id) DO NOTHING;
+    `);
+
+    // 种子：管理员账号（仅当尚无 admin 时；可用 ADMIN_SEED_EMAIL / ADMIN_SEED_PASSWORD 覆盖，公开仓库务必修改）
+    const existingAdmin = await pgPool.query("SELECT 1 FROM users WHERE role='admin' LIMIT 1");
+    if (existingAdmin.rows.length === 0) {
+      const adminEmail = process.env.ADMIN_SEED_EMAIL || 'admin@huabu.local';
+      const adminPw = process.env.ADMIN_SEED_PASSWORD || 'Admin@123456';
+      await pgPool.query(
+        `INSERT INTO users (id, email, display_name, password_hash, credits, role)
+         VALUES ($1,$2,'平台管理员',$3,1000,'admin')`,
+        ['u-' + crypto.randomUUID(), adminEmail, session.hashPassword(adminPw)]
+      );
+      console.log(`[Seed] 已创建管理员账号 ${adminEmail}（默认密码仅本地开发用，公开部署前请用 ADMIN_SEED_PASSWORD 覆盖并尽快修改）`);
+    }
+
     return true;
   } catch (e) {
     console.warn('[DB] PostgreSQL 不可用，降级 JSON 存储:', e.message);
@@ -221,6 +293,40 @@ function serveStatic(req, res) {
     res.end(fs.readFileSync(filePath));
   } catch { res.end(); }
 }
+
+// ─── Phase 2 实时流量采样（总控台 SSE 用，单实例内存环形缓冲）──
+const traffic = {
+  recent: [],
+  record(method, url, status, user, ms) {
+    const now = Date.now();
+    this.recent.push({ ts: now, user_id: user && user.id ? user.id : null, method, url, status, ms });
+    const cut = now - 60000;
+    if (this.recent.length > 4000) this.recent = this.recent.filter((r) => r.ts >= cut);
+  },
+  onlineUsers() {
+    const cut = Date.now() - 300000;
+    const s = new Set();
+    for (const r of this.recent) if (r.ts >= cut && r.user_id) s.add(r.user_id);
+    return s.size;
+  },
+  currentQps() {
+    const cut = Date.now() - 1000;
+    let n = 0;
+    for (const r of this.recent) if (r.ts >= cut) n++;
+    return n;
+  },
+};
+
+// ─── Phase 2 管理后台模块（注入依赖；pgPool 经 getter 取最新值）──
+const admin = adminMod.createAdmin({
+  getPg: () => pgPool,
+  session,
+  sendJSON,
+  fromSnake,
+  toSnake,
+  parseBody,
+  traffic: { onlineUsers: () => traffic.onlineUsers(), currentQps: () => traffic.currentQps() },
+});
 
 // ─── 应用网关（Phase A 改造）─────────────────────
 // 保留全局 API_TOKEN（后续阶段去 fallback，评审稿 ⑦）；同时接受用户会话 cookie。
@@ -323,6 +429,8 @@ async function handleMe(req, res) {
 async function handleAPI(req, res) {
   const url = req.url.replace(/\/$/, '');
   const method = req.method;
+  const reqUrl = new URL(req.url, 'http://localhost');
+  req.query = Object.fromEntries(reqUrl.searchParams);
 
   // Phase 0 健康检查：公开端点，网关前放行，供 nginx/容器探针与压测使用
   if (url === '/api/healthz' && method === 'GET') {
@@ -347,6 +455,10 @@ async function handleAPI(req, res) {
   // 需会话的认证路由
   if (url === '/api/auth/me' && method === 'GET') return handleMe(req, res);
   if (url === '/api/auth/logout' && method === 'POST') return handleLogout(req, res);
+
+  // ── 管理后台（M3 总控台 / M4 智能体层）──
+  if (url === '/api/admin/console/stream' && method === 'GET') return admin.streamConsole(req, res);
+  if (url.startsWith('/api/admin/') && method !== 'OPTIONS') return admin.handleAdmin(req, res, url.split('?')[0], method);
 
   const realUser = session.getUserFromCookie(req); // 真实用户身份（用于计费/owner）
 
@@ -1028,7 +1140,13 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (req.url === '/api/token' && req.method === 'GET') return sendJSON(res, 200, { token: API_TOKEN });
-  if (req.url.startsWith('/api/')) return handleAPI(req, res);
+  if (req.url.startsWith('/api/')) {
+    const t0 = Date.now();
+    res.on('finish', () => {
+      traffic.record(req.method, (req.url || '').split('?')[0], res.statusCode, req.user, Date.now() - t0);
+    });
+    return handleAPI(req, res);
+  }
   if (fs.existsSync(CLIENT_DIR)) return serveStatic(req, res);
   sendJSON(res, 404, { error: 'Not Found' });
 });
