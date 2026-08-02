@@ -1,5 +1,7 @@
 'use strict';
 // 服务端生成分发器
+const crypto = require('crypto');
+const billing = require('./billing.cjs'); // Phase A 计费（reserve/commit/release）
 // 负责：按 model_id 找到所有已启用的「模型行 × 服务商」组合，
 // 在「全局最大并发 maxThreads」+「每家服务商 max_concurrent」约束下，
 // round-robin 把 N 个生成请求均衡分配到不同服务商。
@@ -324,15 +326,15 @@ function getArrayByPath(obj, path) {
 // ─── 异步生成：返回 taskId 立即让前端可轮询，状态写入 PG ───
 async function generateAsync(pgPool, opts) {
   if (!pgPool) return { taskId: null, error: '数据库不可用' };
-  const { model, prompt, count, contentType, referenceImages, pendingIds = [], clientMeta = {} } = opts;
+  const { model, prompt, count, contentType, referenceImages, pendingIds = [], clientMeta = {}, user_id, idempotencyKey, cost = 0 } = opts;
   // 生成一个稳定 taskId：便于前端 localStorage 持久化关联
   const taskId = `gt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     await pgPool.query(
       `INSERT INTO generation_tasks
-         (task_id, status, model, prompt, count, content_type, pending_ids, client_meta)
-       VALUES ($1, 'running', $2, $3, $4, $5, $6, $7)`,
-      [taskId, model || '', prompt || '', count || 1, contentType || 'image', pendingIds, clientMeta],
+         (task_id, status, model, prompt, count, content_type, pending_ids, client_meta, user_id, idempotency_key, cost)
+       VALUES ($1, 'running', $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [taskId, model || '', prompt || '', count || 1, contentType || 'image', pendingIds, clientMeta, user_id || null, idempotencyKey || null, cost || 0],
     );
   } catch (e) {
     return { taskId: null, error: `写入任务表失败：${e.message}` };
@@ -340,31 +342,34 @@ async function generateAsync(pgPool, opts) {
   // 后台跑：完成后更新 PG（不再 await）
   generate(pgPool, opts)
     .then(async (result) => {
+      const ok = result && result.status === 'success' && Array.isArray(result.images) && result.images.length;
       try {
+        if (ok) {
+          // G3 结算点：成功 commit（reserve 已在 /api/generate handler 扣除）。
+          // 注意：media 由前端负责写入（含 OSS 上传 + 探活 + 永久化），后端不重复写，
+          // 避免双写重复行 + 原始服务商 URL 易过期（与 OSS 永久化目标冲突）。
+          await billing.commitCredits(pgPool, user_id, cost, idempotencyKey);
+        } else {
+          // 生成失败：释放 held 积分（G3 释放点）
+          await billing.releaseCredits(pgPool, user_id, cost, idempotencyKey);
+        }
         await pgPool.query(
-          `UPDATE generation_tasks
-             SET status=$2, result=$3, error=$4, completed_at=NOW()
+          `UPDATE generation_tasks SET status=$2, result=$3, error=$4, completed_at=NOW(), user_id=$5
            WHERE task_id=$1`,
-          [
-            taskId,
-            result && result.status === 'success' ? 'done' : 'failed',
-            JSON.stringify(result || {}),
-            (result && result.error) || '',
-          ],
+          [taskId, ok ? 'done' : 'failed', JSON.stringify(result || {}), (result && result.error) || '', user_id],
         );
       } catch (e) {
-        console.warn('[dispatcher] 任务完成写库失败:', e.message);
+        console.warn('[dispatcher] 完成回调失败:', e.message);
       }
     })
     .catch(async (e) => {
-      try {
-        await pgPool.query(
-          `UPDATE generation_tasks
-             SET status='failed', error=$2, completed_at=NOW()
-           WHERE task_id=$1`,
-          [taskId, String((e && e.message) || e)],
-        );
-      } catch {}
+      // 异常：释放 held 积分
+      await billing.releaseCredits(pgPool, user_id, cost, idempotencyKey).catch(() => {});
+      await pgPool.query(
+        `UPDATE generation_tasks SET status='failed', error=$2, completed_at=NOW(), user_id=$3
+         WHERE task_id=$1`,
+        [taskId, String((e && e.message) || e), user_id],
+      ).catch(() => {});
     });
   return { taskId };
 }
@@ -399,16 +404,23 @@ async function getTaskStatus(pgPool, taskId) {
   }
 }
 
-// 列出所有在途任务（status='running'，以及最近 1 小时内 done/failed 便于客户端发现刚完成但未及时拉到的事件）
-async function listActiveTasks(pgPool) {
+// 列出在途任务（status='running'，以及最近 1 小时内 done/failed 便于客户端发现刚完成但未及时拉到的事件）
+// userId 传入时仅返回该用户任务（防多用户串看，G1）；旧 user_id IS NULL 行全员可见
+async function listActiveTasks(pgPool, userId) {
   if (!pgPool) return { tasks: [] };
   try {
+    const params = [];
+    let where = `WHERE (status='running' OR (completed_at > NOW() - INTERVAL '1 hour'))`;
+    if (userId) {
+      params.push(userId);
+      where += ` AND (user_id=$${params.length} OR user_id IS NULL)`;
+    }
     const r = await pgPool.query(
       `SELECT task_id, status, result, error, pending_ids, client_meta, model, prompt, count, content_type, created_at, completed_at
-         FROM generation_tasks
-         WHERE status='running' OR (completed_at > NOW() - INTERVAL '1 hour')
+         FROM generation_tasks ${where}
          ORDER BY created_at DESC
          LIMIT 100`,
+      params,
     );
     return {
       tasks: r.rows.map((row) => ({

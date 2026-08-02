@@ -13,7 +13,11 @@ import {
   ShieldCheck,
   List,
   MonitorPlay,
+  LogIn,
+  LogOut,
+  RefreshCw,
 } from 'lucide-react';
+import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authStore';
 
 interface TopBarProps {
   onSettingsOpen: () => void;
@@ -22,6 +26,8 @@ interface TopBarProps {
 
 export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProps) {
   const [moreOpen, setMoreOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const { user } = useAuth();
 
   const moreItems = [
     { icon: Download, label: '下载项目' },
@@ -89,9 +95,52 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
             </>
           )}
         </div>
-        <div className="ml-2 flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 text-xs font-bold text-black">
-          ∞
-        </div>
+        {user ? (
+          <div className="relative ml-2">
+            <button
+              onClick={() => setMenuOpen(!menuOpen)}
+              className="flex items-center gap-2 rounded-full bg-zinc-800/60 py-1 pl-2 pr-1 hover:bg-zinc-800 transition-colors"
+              title="账户"
+            >
+              <span className="shrink-0 rounded-full border border-amber-500/20 bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-400">
+                {user.credits} 积分
+              </span>
+              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 text-xs font-bold text-black">
+                {(user.displayName || user.email || 'U')[0]?.toUpperCase() || 'U'}
+              </span>
+            </button>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+                <div className="absolute right-0 top-full z-50 mt-1 w-52 rounded-2xl border border-zinc-800 bg-zinc-900 p-2 shadow-2xl">
+                  <div className="truncate px-3 py-2 text-sm font-medium text-white">
+                    {user.displayName || user.email}
+                  </div>
+                  <div className="truncate px-3 pb-2 text-xs text-zinc-500">{user.email}</div>
+                  <button
+                    onClick={async () => { await refreshUser().catch(() => {}); }}
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 hover:bg-zinc-800/70 transition-colors"
+                  >
+                    <RefreshCw className="size-4 text-zinc-500" /> 刷新积分
+                  </button>
+                  <button
+                    onClick={async () => { await logout(); setMenuOpen(false); }}
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-red-400 hover:bg-zinc-800/70 transition-colors"
+                  >
+                    <LogOut className="size-4" /> 退出登录
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        ) : (
+          <button
+            onClick={() => setAuthModalOpen(true)}
+            className="ml-2 flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-colors"
+          >
+            <LogIn className="size-3.5" /> 登录
+          </button>
+        )}
       </div>
     </header>
   );

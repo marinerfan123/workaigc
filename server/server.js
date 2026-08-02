@@ -28,6 +28,8 @@ import pgLib from 'pg';
 const { Pool } = pgLib;
 let pgPool = null;
 import dispatcher from './dispatcher.cjs';
+import session from './auth.cjs';   // Phase A 用户会话（cookie JWT，零依赖）
+import billing from './billing.cjs'; // Phase A 积分计费
 
 async function initDB() {
   try {
@@ -70,6 +72,53 @@ async function initDB() {
       CREATE INDEX IF NOT EXISTS generation_tasks_created_at_idx ON generation_tasks (created_at);
       INSERT INTO oss_config (id, enabled) VALUES (1, TRUE) ON CONFLICT (id) DO NOTHING;
       INSERT INTO settings (key, value) VALUES ('app', '{}') ON CONFLICT (key) DO NOTHING;
+
+      -- === Phase A: 认证 + 积分计费地基 ===
+      CREATE TABLE IF NOT EXISTS users (
+        id            TEXT PRIMARY KEY DEFAULT 'u-' || gen_random_uuid()::text,
+        email         TEXT UNIQUE NOT NULL,
+        display_name  TEXT NOT NULL DEFAULT '',
+        password_hash TEXT NOT NULL,
+        credits       INT  NOT NULL DEFAULT 50,
+        role          TEXT NOT NULL DEFAULT 'user',
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS credit_transactions (
+        id            BIGSERIAL PRIMARY KEY,
+        user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        kind          TEXT NOT NULL,
+        amount        INT  NOT NULL,
+        ref           TEXT,
+        balance_after INT,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_ct_user ON credit_transactions(user_id);
+      CREATE INDEX IF NOT EXISTS ix_ct_ref  ON credit_transactions(ref);
+      CREATE TABLE IF NOT EXISTS refresh_tokens (
+        token_hash  TEXT PRIMARY KEY,
+        user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        revoked     BOOLEAN NOT NULL DEFAULT FALSE,
+        expires_at  TIMESTAMPTZ NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS outbox (
+        id          BIGSERIAL PRIMARY KEY,
+        aggregate   TEXT NOT NULL,
+        event_type  TEXT NOT NULL,
+        payload     JSONB NOT NULL,
+        published   BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_outbox_unpub ON outbox(published) WHERE published = FALSE;
+      ALTER TABLE media ADD COLUMN IF NOT EXISTS user_id TEXT REFERENCES users(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS ix_media_user ON media(user_id);
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS user_id         TEXT REFERENCES users(id);
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS cost            INT DEFAULT 0;
+      CREATE INDEX IF NOT EXISTS ix_gt_user ON generation_tasks(user_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_gt_idem
+        ON generation_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL;
     `);
     console.log('[DB] PostgreSQL 连接成功');
     return true;
@@ -164,19 +213,109 @@ function serveStatic(req, res) {
   } catch { res.end(); }
 }
 
-// ─── Auth ────────────────────────────────────────
-function auth(req) {
-  return req.headers['authorization'] === `Bearer ${API_TOKEN}`;
+// ─── 应用网关（Phase A 改造）─────────────────────
+// 保留全局 API_TOKEN（后续阶段去 fallback，评审稿 ⑦）；同时接受用户会话 cookie。
+// 任一通过即放行，并把身份挂到 req.user：API_TOKEN → {id:'__system__'}，会话 → {id, role}
+function appGateway(req) {
+  if (req.headers['authorization'] === `Bearer ${API_TOKEN}`) {
+    req.user = { id: '__system__', role: 'system' };
+    return true;
+  }
+  const u = session.getUserFromCookie(req);
+  if (u) { req.user = u; return true; }
+  return false;
 }
 
 // ══════════════════════════════════════════════════
 // API 路由（PG 优先，JSON 降级）
 // ══════════════════════════════════════════════════
-async function handleAPI(req, res) {
-  if (!auth(req)) return sendJSON(res, 401, { error: 'Unauthorized' });
+// ─── 认证路由处理 ────────────────────────────────
+async function handleRegister(req, res) {
+  const body = await parseBody(req);
+  const email = ((body && body.email) || '').toString().trim().toLowerCase();
+  const pw = (body && body.password) || '';
+  const displayName = ((body && body.displayName) || email.split('@')[0] || '').toString().trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendJSON(res, 400, { error: '邮箱格式不正确' });
+  if (!pw || pw.length < 6) return sendJSON(res, 400, { error: '密码至少 6 位' });
+  if (!pgPool) return sendJSON(res, 503, { error: '数据库不可用' });
+  const ex = await pgPool.query('SELECT id FROM users WHERE email=$1', [email]);
+  if (ex.rows.length) return sendJSON(res, 409, { error: '该邮箱已注册' });
+  const id = 'u-' + crypto.randomUUID();
+  await pgPool.query(
+    `INSERT INTO users (id, email, display_name, password_hash, credits, role)
+     VALUES ($1, $2, $3, $4, 50, 'user')`,
+    [id, email, displayName, session.hashPassword(pw)],
+  );
+  await pgPool.query( // 注册赠送 50 credits（审计留痕）
+    `INSERT INTO credit_transactions (user_id, kind, amount, ref) VALUES ($1, 'grant', 50, 'signup-bonus')`,
+    [id],
+  );
+  const token = session.signSession({ id, role: 'user' });
+  session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
+  return sendJSON(res, 200, { ok: true, user: { id, email, displayName, credits: 50, role: 'user' } });
+}
 
+async function handleLogin(req, res) {
+  const body = await parseBody(req);
+  const email = ((body && body.email) || '').toString().trim().toLowerCase();
+  const pw = (body && body.password) || '';
+  if (!pgPool) return sendJSON(res, 503, { error: '数据库不可用' });
+  const r = await pgPool.query(
+    'SELECT id, email, display_name, password_hash, credits, role FROM users WHERE email=$1', [email]);
+  if (!r.rows.length) return sendJSON(res, 401, { error: '邮箱或密码错误' });
+  const u = r.rows[0];
+  if (!session.verifyPassword(pw, u.password_hash)) return sendJSON(res, 401, { error: '邮箱或密码错误' });
+  const token = session.signSession({ id: u.id, role: u.role });
+  session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
+  return sendJSON(res, 200, {
+    ok: true,
+    user: { id: u.id, email: u.email, displayName: u.display_name, credits: u.credits, role: u.role },
+  });
+}
+
+async function handleLogout(req, res) {
+  session.clearCookie(res, session.COOKIE_NAME);
+  return sendJSON(res, 200, { ok: true });
+}
+
+async function handleRefresh(req, res) {
+  const user = session.getUserFromCookie(req);
+  if (!user) return sendJSON(res, 401, { error: '会话无效' });
+  const token = session.signSession({ id: user.id, role: user.role });
+  session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
+  return sendJSON(res, 200, { ok: true });
+}
+
+async function handleMe(req, res) {
+  const user = session.getUserFromCookie(req);
+  if (!user) return sendJSON(res, 401, { error: '未登录' });
+  if (!pgPool) return sendJSON(res, 503, { error: '数据库不可用' });
+  const r = await pgPool.query(
+    'SELECT id, email, display_name, credits, role FROM users WHERE id=$1', [user.id]);
+  if (!r.rows.length) return sendJSON(res, 401, { error: '用户不存在' });
+  const u = r.rows[0];
+  return sendJSON(res, 200, {
+    user: { id: u.id, email: u.email, displayName: u.display_name, credits: u.credits, role: u.role },
+  });
+}
+
+async function handleAPI(req, res) {
   const url = req.url.replace(/\/$/, '');
   const method = req.method;
+
+  // 公开路由（注册/登录/刷新在全局网关之前）
+  if (url === '/api/auth/register' && method === 'POST') return handleRegister(req, res);
+  if (url === '/api/auth/login' && method === 'POST') return handleLogin(req, res);
+  if (url === '/api/auth/refresh' && method === 'POST') return handleRefresh(req, res);
+
+  // 应用网关：API_TOKEN 或 用户会话 cookie 任一通过
+  if (!appGateway(req)) return sendJSON(res, 401, { error: 'Unauthorized' });
+
+  // 需会话的认证路由
+  if (url === '/api/auth/me' && method === 'GET') return handleMe(req, res);
+  if (url === '/api/auth/logout' && method === 'POST') return handleLogout(req, res);
+
+  const realUser = session.getUserFromCookie(req); // 真实用户身份（用于计费/owner）
 
   // ── Media ──
   // 同步预扫：探测前 16 张未标 failed 的图，限并发 4 + 3s 超时
@@ -282,7 +421,11 @@ async function handleAPI(req, res) {
 
   if (url === '/api/media' && method === 'GET') {
     if (pgPool) {
-      const r = await pgPool.query('SELECT * FROM media WHERE is_deleted=FALSE ORDER BY created_at DESC');
+      let mediaSql = 'SELECT * FROM media WHERE is_deleted=FALSE';
+      const mediaParams = [];
+      if (realUser) { mediaSql += ' AND (user_id=$1 OR user_id IS NULL)'; mediaParams.push(realUser.id); } // G2 owner 隔离；历史 NULL 行全员可见
+      mediaSql += ' ORDER BY created_at DESC';
+      const r = await pgPool.query(mediaSql, mediaParams);
       const list = r.rows.map(fromSnake);
       // 同步预扫：只阻塞这一批，超出部分由前端 useImageProbe 异步兜底
       await probeBatchAndMarkFailed(list, pgPool);
@@ -336,9 +479,10 @@ async function handleAPI(req, res) {
     if (pgPool) {
       for (const it of arr) {
         const s = toSnake(it);
+        const ownerId = realUser ? realUser.id : null; // G2 owner 归属：登录用户写入自己的素材
         await pgPool.query(
-          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,full_url=EXCLUDED.full_url,thumbnail=EXCLUDED.thumbnail,oss_url=EXCLUDED.oss_url,oss_object_key=EXCLUDED.oss_object_key,oss_uploaded=EXCLUDED.oss_uploaded,is_deleted=EXCLUDED.is_deleted,status=EXCLUDED.status,error_message=EXCLUDED.error_message,failed_at=EXCLUDED.failed_at`,
-          [s.id, s.title, s.type, s.thumbnail, s.full_url, s.prompt, s.model, s.ratio, s.source, s.is_favorite || false, s.is_deleted || false, s.oss_url, s.oss_object_key, s.oss_uploaded || false, s.category || 'generated', s.status || 'success', s.error_message || '', s.failed_at || null, s.created_at || new Date().toISOString()]
+          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,created_at,user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,full_url=EXCLUDED.full_url,thumbnail=EXCLUDED.thumbnail,oss_url=EXCLUDED.oss_url,oss_object_key=EXCLUDED.oss_object_key,oss_uploaded=EXCLUDED.oss_uploaded,is_deleted=EXCLUDED.is_deleted,status=EXCLUDED.status,error_message=EXCLUDED.error_message,failed_at=EXCLUDED.failed_at,user_id=EXCLUDED.user_id`,
+          [s.id, s.title, s.type, s.thumbnail, s.full_url, s.prompt, s.model, s.ratio, s.source, s.is_favorite || false, s.is_deleted || false, s.oss_url, s.oss_object_key, s.oss_uploaded || false, s.category || 'generated', s.status || 'success', s.error_message || '', s.failed_at || null, s.created_at || new Date().toISOString(), ownerId]
         );
       }
       return sendJSON(res, 200, { ok: true, count: arr.length });
@@ -448,43 +592,85 @@ async function handleAPI(req, res) {
     if (!pgPool) return sendJSON(res, 200, { status: 'failed', error: '数据库不可用，无法分发生成任务' });
     const body = await parseBody(req);
     if (!body || !body.model || !body.prompt) return sendJSON(res, 400, { error: '缺少 model 或 prompt' });
-    // 兼容旧调用：sync=1 时直接返回完整结果（用于一次性同步测试/老客户端）
+    // 身份：必须是真实登录用户（cookie 会话），否则无法归属计费/owner（G1/G2）
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    // 幂等键（G4）：前端每次生成请求生成一个 UUID，重试复用，防止网络抖动双扣
+    const idemKey = (body.idempotencyKey || '').toString().trim();
+    if (!idemKey) return sendJSON(res, 400, { error: '缺少 idempotencyKey' });
+
+    // 幂等：已存在同键任务？
+    const ex = await pgPool.query(
+      'SELECT task_id, status, cost FROM generation_tasks WHERE idempotency_key=$1', [idemKey]);
+    if (ex.rows.length) {
+      const row = ex.rows[0];
+      if (row.status === 'failed') {
+        // 失败的可复用同一键重试：先释放旧 held，再删行腾出唯一约束
+        await billing.releaseCredits(pgPool, realUser.id, row.cost || 0, idemKey).catch(() => {});
+        await pgPool.query('DELETE FROM generation_tasks WHERE idempotency_key=$1', [idemKey]);
+      } else {
+        // running/done：直接返回原 taskId，绝不重复 reserve（防双扣）
+        return sendJSON(res, 200, {
+          status: row.status === 'done' ? 'done' : 'pending',
+          taskId: row.task_id, idempotent: true,
+        });
+      }
+    }
+
+    // 成本解析（L5）：用与 dispatcher 相同的 model 标识查 credit_cost
+    const costRes = await pgPool.query(
+      'SELECT credit_cost FROM models WHERE id=$1 OR model_id=$1 LIMIT 1', [body.model]);
+    const cost = costRes.rows.length ? Number(costRes.rows[0].credit_cost) || 0 : 0;
+
+    // reserve（G3 时序：仅在此扣，结算留给 dispatcher 后台回调）
+    try {
+      await billing.reserveCredits(pgPool, realUser.id, cost, idemKey);
+    } catch (e) {
+      return sendJSON(res, 402, { status: 'failed', error: '积分不足' });
+    }
+
+    const genOpts = {
+      model: body.model,
+      prompt: body.prompt,
+      ratio: body.ratio || '1:1',
+      resolution: body.resolution || '1k',
+      count: body.count || 1,
+      contentType: body.contentType || 'image',
+      referenceImages: body.referenceImages || [],
+      pendingIds: body.pendingIds || [],
+      user_id: realUser.id,
+      idempotencyKey: idemKey,
+      cost,
+      clientMeta: {
+        ratio: body.ratio || '1:1',
+        resolution: body.resolution || '1k',
+        contentType: body.contentType || 'image',
+      },
+    };
+    // 兼容旧调用：sync=1 时直接返回完整结果（用于一次性同步测试/老客户端）——同样走计费（L9）
     if (body.sync) {
       try {
-        const result = await dispatcher.generate(pgPool, {
-          model: body.model,
-          prompt: body.prompt,
-          ratio: body.ratio || '1:1',
-          resolution: body.resolution || '1k',
-          count: body.count || 1,
-          contentType: body.contentType || 'image',
-          referenceImages: body.referenceImages || [],
-        });
+        const result = await dispatcher.generate(pgPool, genOpts);
+        if (result && result.status === 'success') {
+          await billing.commitCredits(pgPool, realUser.id, cost, idemKey);
+        } else {
+          await billing.releaseCredits(pgPool, realUser.id, cost, idemKey).catch(() => {});
+        }
         return sendJSON(res, 200, result);
       } catch (e) {
+        await billing.releaseCredits(pgPool, realUser.id, cost, idemKey).catch(() => {});
         return sendJSON(res, 200, { status: 'failed', error: `分发异常：${(e && e.message) || String(e)}` });
       }
     }
-    // 异步：插入任务表，后台跑，前端轮询
+    // 异步：插入任务表，后台跑，前端轮询（完成回调里 commit/release）
     try {
-      const { taskId, error } = await dispatcher.generateAsync(pgPool, {
-        model: body.model,
-        prompt: body.prompt,
-        ratio: body.ratio || '1:1',
-        resolution: body.resolution || '1k',
-        count: body.count || 1,
-        contentType: body.contentType || 'image',
-        referenceImages: body.referenceImages || [],
-        pendingIds: body.pendingIds || [],
-        clientMeta: {
-          ratio: body.ratio || '1:1',
-          resolution: body.resolution || '1k',
-          contentType: body.contentType || 'image',
-        },
-      });
-      if (error) return sendJSON(res, 200, { status: 'failed', error });
+      const { taskId, error } = await dispatcher.generateAsync(pgPool, genOpts);
+      if (error) {
+        await billing.releaseCredits(pgPool, realUser.id, cost, idemKey).catch(() => {});
+        return sendJSON(res, 200, { status: 'failed', error });
+      }
       return sendJSON(res, 200, { status: 'pending', taskId });
     } catch (e) {
+      await billing.releaseCredits(pgPool, realUser.id, cost, idemKey).catch(() => {});
       return sendJSON(res, 200, { status: 'failed', error: `分发异常：${(e && e.message) || String(e)}` });
     }
   }
@@ -500,7 +686,8 @@ async function handleAPI(req, res) {
   // GET /api/generate/active — 列出在途任务（用于页面刷新后批量恢复）
   if (url === '/api/generate/active' && method === 'GET') {
     if (!pgPool) return sendJSON(res, 200, { tasks: [], error: '数据库不可用' });
-    const r = await dispatcher.listActiveTasks(pgPool);
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    const r = await dispatcher.listActiveTasks(pgPool, realUser.id);
     return sendJSON(res, 200, r);
   }
 

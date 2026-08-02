@@ -30,6 +30,7 @@ import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, apiListActiveGenerations } from '@/services/api';
+import { refreshUser, setAuthModalOpen } from '@/services/authStore';
 import { ALL_RESOLUTIONS, type Resolution, getEffectiveModelName } from '@/data/models';
 import {
   Dialog,
@@ -464,6 +465,17 @@ function GenerationBar({
 
     // ── 2) 异步：先提交拿 taskId（不阻塞 UI，刷新也能恢复）──
     (async () => {
+      // 幂等键：每次生成请求一个 UUID，防网络抖动双扣（后端必需）。
+      // 非安全上下文（如纯 HTTP 局域网 IP）下 crypto.randomUUID 不可用，用降级方案。
+      let idempotencyKey: string;
+      try {
+        idempotencyKey =
+          typeof crypto !== 'undefined' && crypto.randomUUID && window.isSecureContext
+            ? crypto.randomUUID()
+            : 'idem-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+      } catch {
+        idempotencyKey = 'idem-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+      }
       try {
         const r = await apiGenerate({
           model: settings.model,
@@ -474,9 +486,32 @@ function GenerationBar({
           contentType: settings.contentType,
           referenceImages: referenceImages && referenceImages.length > 0 ? referenceImages : undefined,
           pendingIds,
+          idempotencyKey,
         });
+
+        // 失败分支优先处理鉴权/计费类错误（避免误走 mock 兜底）
+        if (r.status === 'failed') {
+          const err = (r as { error?: string }).error || '';
+          if (/401|未登录/.test(err)) {
+            // 未登录：打开登录弹窗，不消耗 mock
+            setAuthModalOpen(true);
+            toast.error('请先登录后再生成', { duration: 4000 });
+            return;
+          }
+          if (/402|积分不足/.test(err)) {
+            toast.error('积分不足，无法生成', { duration: 4000 });
+            fillMockItems(pendingIds);
+            return;
+          }
+          toast.error(err.slice(0, 120) || '生成失败');
+          fillMockItems(pendingIds);
+          return;
+        }
+
         // 新异步通道：返回 { status: 'pending', taskId }
         if ('taskId' in r && r.taskId && r.status === 'pending') {
+          // 扣费已发生，刷新顶部积分显示
+          void refreshUser().catch(() => {});
           // 写 localStorage 持久化，刷新后由下方 useEffect 续上
           appendPersistedTask({
             taskId: r.taskId,
@@ -502,6 +537,7 @@ function GenerationBar({
         // 老同步通道：直接拿 images 走原流程（兼容 sync=1）
         const resultImages = (r as { images?: string[] }).images || [];
         if (resultImages.length > 0) {
+          void refreshUser().catch(() => {});
           await processResultImages(resultImages, pendingIds, {
             prompt: promptText,
             model: settings.model,
@@ -517,6 +553,17 @@ function GenerationBar({
         }
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
+        // 网络层 401/402 也能识别（apiFetch 抛 "API 401/402"）
+        if (/401|未登录/.test(errMsg)) {
+          setAuthModalOpen(true);
+          toast.error('请先登录后再生成', { duration: 4000 });
+          return;
+        }
+        if (/402|积分不足/.test(errMsg)) {
+          toast.error('积分不足，无法生成', { duration: 4000 });
+          fillMockItems(pendingIds);
+          return;
+        }
         toast.error(`生成异常：${errMsg || '未知错误'}`, { duration: 5000 });
         logger.error('图片生成异常:', errMsg);
         fillMockItems(pendingIds);

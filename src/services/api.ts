@@ -24,7 +24,8 @@ function headers(): Record<string, string> {
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   // 确保 API 已连接（首次调用时自动发现后端 + 获取 token）
   if (!API_TOKEN) await ensureApi();
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers: { ...headers(), ...options?.headers } });
+  // credentials:'include' → 浏览器自动携带会话 cookie（后端 set-cookie 的 sid），用于 /api/generate 等需登录接口归属用户
+  const res = await fetch(`${API_BASE}${path}`, { ...options, credentials: 'include', headers: { ...headers(), ...options?.headers } });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new Error(`API ${res.status}: ${text.slice(0, 200)}`);
@@ -48,7 +49,7 @@ export function ensureApi(): Promise<boolean> {
           const { protocol, host } = window.location;
           apiBase = `${protocol}//${host}`;
         }
-        const res = await fetch(`${apiBase}/api/token`, { headers: { 'Content-Type': 'application/json' } });
+        const res = await fetch(`${apiBase}/api/token`, { headers: { 'Content-Type': 'application/json' }, credentials: 'include' });
         if (res.ok) {
           const { token } = await res.json();
           initApi(apiBase, token);
@@ -218,6 +219,7 @@ export async function apiGenerate(payload: {
   contentType?: 'image' | 'video';
   referenceImages?: string[];
   pendingIds?: string[]; // 把前端的 pending 占位 id 告诉后端，便于刷新恢复
+  idempotencyKey?: string; // 幂等键：每次生成请求一个 UUID，防网络抖动双扣（后端必需）
   sync?: boolean;         // 兼容旧测试：传 true 后端一次性返回结果
 }): Promise<GenerateResponse> {
   try {
@@ -330,5 +332,45 @@ export async function apiTestProviderDefault(
     return await apiFetch(`/api/providers/${id}/test-default`, { method: 'POST', body: JSON.stringify({ testInput }) });
   } catch (e) {
     return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// ─── Auth（cookie 会话；fetch 带 credentials:'include' 自动携带 sid）───
+export interface AuthUser {
+  id: string;
+  email: string;
+  displayName: string;
+  credits: number;
+  role: string;
+}
+
+/** 注册：成功后后端种下会话 cookie，返回用户（含赠送积分） */
+export async function apiRegister(
+  email: string,
+  password: string,
+  displayName?: string,
+): Promise<{ ok: boolean; user: AuthUser }> {
+  return apiFetch('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, displayName }),
+  });
+}
+
+/** 登录：成功后后端种下会话 cookie */
+export async function apiLogin(email: string, password: string): Promise<{ ok: boolean; user: AuthUser }> {
+  return apiFetch('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+}
+
+/** 登出：清除会话 cookie */
+export async function apiLogout(): Promise<{ ok: boolean }> {
+  return apiFetch('/api/auth/logout', { method: 'POST' });
+}
+
+/** 当前登录用户（无 cookie 时 401，已被 apiFetch 抛错，这里兜底返回空） */
+export async function apiMe(): Promise<{ user?: AuthUser }> {
+  try {
+    return await apiFetch('/api/auth/me');
+  } catch {
+    return {};
   }
 }
