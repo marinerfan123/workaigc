@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Download,
   Undo2,
@@ -18,6 +18,8 @@ import {
   Cloud,
   Link,
   UploadCloud,
+  Loader2,
+  X,
 } from 'lucide-react';
 import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
@@ -45,6 +47,19 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
 
   // 顶部预览图探测: 失败/加载中显示友好占位, 不依赖 Image 组件的 onError (后者会切到 src=undefined 显示裂开图)
   const previewProbe = useImageProbe(item?.fullUrl || '', { timeoutMs: 4000 });
+
+  // ── pending 进度显示：父级传 progress 则用精确值, 否则自增到 95% (和左侧 MediaCard 保持一致) ──
+  const isPending = item?.status === 'pending';
+  const [selfProgress, setSelfProgress] = useState(0);
+  useEffect(() => {
+    if (!isPending) return;
+    if (typeof item?.progress === 'number' && item.progress >= 100) return;
+    const tid = setInterval(() => {
+      setSelfProgress((prev) => (prev >= 95 ? prev : prev + 1));
+    }, 200);
+    return () => clearInterval(tid);
+  }, [isPending, item?.progress]);
+  const progressValue = typeof item?.progress === 'number' ? item.progress : selfProgress;
 
   // 复制成功后 2s 内变对号, 然后自动复位
   const flashCopied = () => {
@@ -309,7 +324,49 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
       <div className="flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div className="p-4">
           <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900 aspect-square flex items-center justify-center">
-            {previewProbe.status === 'failed' ? (
+            {isPending ? (
+              /* ─── 生成中占位：和左侧 MediaCard 风格一致 ─── spinner + 进度条 + 百分比 + 取消按钮 */
+              <div className="relative flex h-full w-full flex-col items-center justify-center bg-gradient-to-br from-zinc-800/80 via-zinc-900 to-zinc-800/60">
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="size-40 rounded-full bg-gradient-to-br from-zinc-700/40 via-zinc-600/20 to-zinc-800/40 blur-2xl animate-pulse" />
+                </div>
+                <div className="relative z-10 flex flex-col items-center gap-3">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-zinc-800/60 backdrop-blur-sm ring-1 ring-zinc-700/50">
+                    <Loader2 className="size-6 animate-spin text-emerald-400" />
+                  </div>
+                  <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                    生成中
+                  </div>
+                  <div className="text-[10px] text-zinc-500">
+                    约 {Math.round(progressValue * 0.4)}s · {getModelDisplayNameByDisplayName(item.model) || item.model}
+                  </div>
+                </div>
+
+                {/* 右上角：百分比 */}
+                <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded-full bg-black/40 backdrop-blur-sm px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
+                  <span>{Math.min(99, Math.round(progressValue))}%</span>
+                </div>
+
+                {/* 右上角：取消按钮 */}
+                <button
+                  onClick={() => onDelete(item.id)}
+                  className="absolute right-2 top-9 z-20 flex h-6 w-6 items-center justify-center rounded-full bg-zinc-900/60 backdrop-blur-md text-zinc-400 ring-1 ring-zinc-700/30 opacity-50 transition-all hover:bg-red-500/40 hover:text-red-100 hover:opacity-100"
+                  title="取消"
+                >
+                  <X className="size-3" />
+                </button>
+
+                {/* 底部进度条 */}
+                <div className="absolute inset-x-0 bottom-0 z-20 p-2.5">
+                  <div className="h-1 w-full overflow-hidden rounded-full bg-zinc-800/80">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-teal-400 transition-all duration-200 ease-out"
+                      style={{ width: `${progressValue}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : previewProbe.status === 'failed' ? (
               <div className="flex flex-col items-center gap-2 p-6 text-center">
                 <ImageIcon className="size-10 text-zinc-600" />
                 <p className="text-xs text-zinc-500">图片链接已失效</p>
@@ -394,13 +451,30 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
         {/* 操作按钮 */}
         <div className="px-4 pb-6 space-y-2">
           <button
-            onClick={() => onUsePrompt?.(item.prompt)}
-            className="flex w-full items-center justify-center gap-2 rounded-full bg-emerald-500 px-4 py-2.5 text-sm font-bold text-black hover:bg-emerald-400 transition-colors"
+            onClick={() => !isPending && onUsePrompt?.(item.prompt)}
+            disabled={isPending}
+            className={`flex w-full items-center justify-center gap-2 rounded-full px-4 py-2.5 text-sm font-bold transition-colors ${
+              isPending
+                ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                : 'bg-emerald-500 text-black hover:bg-emerald-400'
+            }`}
           >
-            <Sparkles className="size-4" />
-            用此提示词创作
+            {isPending ? (
+              <>
+                <Loader2 className="size-4 animate-spin" />
+                生成中…
+              </>
+            ) : (
+              <>
+                <Sparkles className="size-4" />
+                用此提示词创作
+              </>
+            )}
           </button>
-          <button className="flex w-full items-center justify-center gap-2 rounded-full border border-zinc-800 px-4 py-2.5 text-sm font-medium text-white hover:bg-zinc-800/50 transition-colors">
+          <button
+            disabled={isPending}
+            className="flex w-full items-center justify-center gap-2 rounded-full border border-zinc-800 px-4 py-2.5 text-sm font-medium text-white hover:bg-zinc-800/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
             <Play className="size-4" />
             制作视频
           </button>
