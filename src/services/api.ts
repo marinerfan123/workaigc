@@ -221,6 +221,32 @@ export async function apiGenerate(payload: {
   }
 }
 
+// ─── 智能体 skill：AI 提示词优化 ─────────────────────
+/**
+ * 调用后端 /api/agent/optimize-prompt：后台自动选一个启用的 type=text 推理模型，
+ * 把用户原始 prompt 改写成更适合图像/视频生成的英文结构化提示词。
+ * 失败时：
+ *   - code='NO_REASONING_MODEL' → 提示用户去「模型 Hub」添加 text 类型模型
+ *   - 其他 error → 通用错误消息
+ */
+export async function apiOptimizePrompt(prompt: string): Promise<{
+  success: boolean;
+  content?: string;
+  error?: string;
+  code?: 'NO_REASONING_MODEL' | string;
+  modelUsed?: string;
+  providerId?: string;
+}> {
+  try {
+    return await apiFetch('/api/agent/optimize-prompt', {
+      method: 'POST',
+      body: JSON.stringify({ prompt }),
+    });
+  } catch (e) {
+    return { success: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
 // ─── 同步服务商模型列表（后端代理，避免前端持有真实 Key）───
 export async function apiSyncProviderModels(id: string): Promise<{ success: boolean; models?: Array<{ id: string; name: string }>; message?: string }> {
   try {

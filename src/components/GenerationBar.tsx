@@ -20,6 +20,7 @@ import {
   Settings2,
   Search,
   Maximize2,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { capabilityClient, logger } from '@/services/client-capabilities';
@@ -28,7 +29,7 @@ import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
-import { apiProxyFetch, apiGenerate } from '@/services/api';
+import { apiProxyFetch, apiGenerate, apiOptimizePrompt } from '@/services/api';
 import { ALL_RESOLUTIONS, type Resolution, getEffectiveModelName } from '@/data/models';
 import {
   Dialog,
@@ -386,30 +387,31 @@ function GenerationBar({
     })();
   };
 
+  // AI 提示词优化（智能体 skill：调后台启用的 text 推理模型）
+  // 替换原飞书 capabilityClient 实现，统一走服务端 /api/agent/optimize-prompt
   const handleOptimize = async () => {
-    if (!promptText.trim()) return;
+    if (!promptText.trim()) {
+      toast.error('请先输入提示词');
+      return;
+    }
+    if (optimizing) return;
     setOptimizing(true);
     try {
-      logger.info('开始优化提示词:', promptText.slice(0, 50));
-      const stream = capabilityClient
-        .load('ancient_style_portrait_prompt_optimizer_1')
-        .callStream('textGenerate', {
-          simple_description: promptText,
-          additional_requirements: '古风人像，电影级光影，东方古典审美',
+      const r = await apiOptimizePrompt(promptText);
+      if (r.success && r.content) {
+        onPromptChange(r.content);
+        toast.success(`已用「${r.modelUsed || '推理模型'}」优化提示词`, { duration: 2500 });
+      } else if (r.code === 'NO_REASONING_MODEL') {
+        toast.error('未配置文本推理模型', {
+          description: '请到「模型 Hub」添加一个 type=text 的模型（需要服务商已配置 API Key）',
+          duration: 5000,
         });
-      let full = '';
-      for await (const chunk of stream) {
-        const piece = (chunk as { content?: string })?.content;
-        if (piece) {
-          full += piece;
-          onPromptChange(full);
-        }
+      } else {
+        toast.error(`优化失败：${r.error || '未知错误'}`);
       }
-      logger.info('提示词优化完成');
-    } catch (error) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      toast.error(`优化失败：${errMsg || '服务暂不可用'}`);
-      logger.error('提示词优化失败:', errMsg);
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      toast.error(`优化异常：${errMsg.slice(0, 100)}`);
     } finally {
       setOptimizing(false);
     }
@@ -840,7 +842,29 @@ function GenerationBar({
         <Dialog open={promptEditorOpen} onOpenChange={setPromptEditorOpen}>
           <DialogContent className="max-w-3xl bg-zinc-900 border-zinc-800">
             <DialogHeader>
-              <DialogTitle className="text-white">编辑提示词</DialogTitle>
+              <DialogTitle className="flex items-center gap-2 text-white">
+                <span>编辑提示词</span>
+                {/* 智能体 skill 入口：用后台推理模型优化当前提示词 */}
+                <button
+                  type="button"
+                  onClick={handleOptimize}
+                  disabled={optimizing || !promptText.trim()}
+                  className="ml-1 inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-gradient-to-r from-emerald-500/15 to-teal-500/15 px-3 py-1 text-[11px] font-semibold text-emerald-400 hover:from-emerald-500/25 hover:to-teal-500/25 transition-all disabled:cursor-not-allowed disabled:opacity-40"
+                  title="调用后台启用的文本推理模型，把当前提示词改写成更适合图像/视频生成的英文结构化描述"
+                >
+                  {optimizing ? (
+                    <>
+                      <Loader2 className="size-3 animate-spin" />
+                      正在优化…
+                    </>
+                  ) : (
+                    <>
+                      <Wand2 className="size-3" />
+                      AI 优化提示词
+                    </>
+                  )}
+                </button>
+              </DialogTitle>
               <DialogDescription className="text-zinc-500">
                 在此撰写详细的生成提示词（支持 Enter 直接换行，Shift+Enter 同）
               </DialogDescription>
@@ -849,8 +873,8 @@ function GenerationBar({
               value={promptText}
               onChange={(e) => onPromptChange(e.target.value)}
               placeholder="您希望创作什么内容？"
-              autoFocus
-              className="mt-3 w-full min-h-[320px] resize-none rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-white placeholder:text-zinc-500 focus:border-emerald-500/50 focus:outline-none"
+              disabled={optimizing}
+              className="mt-3 w-full min-h-[320px] resize-none rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-white placeholder:text-zinc-500 focus:border-emerald-500/50 focus:outline-none disabled:opacity-60"
             />
             <div className="mt-3 flex items-center justify-between text-[11px] text-zinc-500">
               <span>{promptText.length} 字符</span>

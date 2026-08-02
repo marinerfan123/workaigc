@@ -446,6 +446,77 @@ async function handleAPI(req, res) {
     }
   }
 
+  // ── AI 提示词优化（智能体 skill：调后台启用的 text 类型推理模型）──
+  if (url === '/api/agent/optimize-prompt' && method === 'POST') {
+    if (!pgPool) return sendJSON(res, 200, { success: false, error: '数据库不可用' });
+    const body = await parseBody(req);
+    const userPrompt = ((body && body.prompt) || '').toString().trim();
+    if (!userPrompt) return sendJSON(res, 200, { success: false, error: '提示词为空' });
+      let model = null;
+      try {
+        // 选一个启用的 text 类型模型（按 .com 域名降序排最后、creditCost 升序、id 字典序取第一个）
+        // 备注：当前 Node 22 原生 fetch 在国内网络下对 agnes-ai.com 域名握手异常，优先用 .cn
+        const m = await pgPool.query(
+          "SELECT m.id AS m_id, m.model_id, m.display_name, m.credit_cost, " +
+          "p.id AS p_id, p.base_url, p.api_key, p.protocol " +
+          "FROM models m JOIN providers p ON p.id = m.provider_id " +
+          "WHERE m.type='text' AND m.enabled=true AND p.enabled=true " +
+          "AND p.api_key IS NOT NULL AND LENGTH(p.api_key) >= 6 " +
+          "ORDER BY (p.base_url LIKE '%agnes-ai.com%') ASC, m.credit_cost ASC, m.id ASC LIMIT 1"
+        );
+        if (m.rows.length === 0) {
+          return sendJSON(res, 200, {
+            success: false,
+            code: 'NO_REASONING_MODEL',
+            error: '未配置启用的文本推理模型，请到「模型 Hub」添加 type=text 的模型',
+          });
+        }
+        model = m.rows[0];
+        const base = (model.base_url || '').trim().replace(/\/+$/, '');
+        if (!base) return sendJSON(res, 200, { success: false, error: '推理服务商 base_url 未配置' });
+
+        const systemPrompt = [
+          '你是一个 AI 图像/视频生成提示词优化专家。',
+          '用户会给一段初步描述（可能简短或粗糙），',
+          '请在不改变用户核心意图的前提下，把它改写成更适合图像/视频生成模型的结构化英文提示词。',
+          '要求：',
+          '1) 用英文输出（除非用户明确要求中文）；',
+          '2) 包含主体、场景、风格、光照、镜头、构图、画质等关键元素；',
+          '3) 控制在 80-200 词；',
+          '4) 直接输出优化后的提示词正文，不要加任何解释、前缀、Markdown 代码块包裹。',
+        ].join('');
+        const r = await fetch(`${base}/chat/completions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${model.api_key}` },
+          body: JSON.stringify({
+            model: model.model_id,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+            max_tokens: 600,
+            temperature: 0.7,
+          }),
+        });
+        const raw = await r.text();
+        if (!r.ok) return sendJSON(res, 200, { success: false, error: `推理模型返回 HTTP ${r.status}：${raw.slice(0, 200)}` });
+        let data; try { data = JSON.parse(raw); } catch { return sendJSON(res, 200, { success: false, error: '推理模型返回非 JSON：' + raw.slice(0, 200) }); }
+        const content = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').toString().trim();
+        if (!content) return sendJSON(res, 200, { success: false, error: '推理模型返回为空' });
+        return sendJSON(res, 200, {
+          success: true,
+          content,
+          modelUsed: model.display_name,
+          providerId: model.p_id,
+        });
+      } catch (e) {
+        const cause = e && e.cause;
+        const detail = cause ? ` (cause: ${cause.code || cause.name || ''} ${cause.message || ''})` : '';
+        console.error('[agent/optimize-prompt] 异常:', e.message, detail, '\n  model:', model && model.model_id, 'base:', model && model.base_url);
+        return sendJSON(res, 200, { success: false, error: `优化异常：${e.message}${detail}`.slice(0, 200) });
+      }
+  }
+
   // ── 同步服务商模型列表（后端代理，避免前端持有真实 Key）──
   if (url.match(/^\/api\/providers\/[^/]+\/sync$/) && method === 'POST') {
     const id = url.split('/')[3];
