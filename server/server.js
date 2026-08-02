@@ -616,21 +616,21 @@ async function handleAPI(req, res) {
   }
 
   if (url === '/api/media' && method === 'GET') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' }); // 多租户红线：未登录一律拒绝
     if (pgPool) {
-      let mediaSql = 'SELECT * FROM media WHERE is_deleted=FALSE';
-      const mediaParams = [];
-      if (realUser) { mediaSql += ' AND (user_id=$1 OR user_id IS NULL)'; mediaParams.push(realUser.id); } // G2 owner 隔离；历史 NULL 行全员可见
-      mediaSql += ' ORDER BY created_at DESC';
-      const r = await pgPool.query(mediaSql, mediaParams);
+      // 多租户红线：只返回本人素材（删掉历史 NULL 行「全员可见」兜底）
+      const mediaSql = 'SELECT * FROM media WHERE is_deleted=FALSE AND user_id=$1 ORDER BY created_at DESC';
+      const r = await pgPool.query(mediaSql, [realUser.id]);
       const list = r.rows.map(fromSnake);
       // 同步预扫：只阻塞这一批，超出部分由前端 useImageProbe 异步兜底
       await probeBatchAndMarkFailed(list, pgPool);
       return sendJSON(res, 200, list);
     }
-    return sendJSON(res, 200, readJSON('media'));
+    return sendJSON(res, 401, { error: '未登录' });
   }
   // 媒体数量统计（按 type / category 分组，给侧边栏角标用）
   if (url === '/api/media/counts' && method === 'GET') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' }); // 多租户红线：未登录一律拒绝
     if (pgPool) {
       const r = await pgPool.query(`
         SELECT
@@ -642,8 +642,8 @@ async function handleAPI(req, res) {
           COUNT(*) FILTER (WHERE category='prop' AND NOT is_deleted)                     AS prop,
           COUNT(*) FILTER (WHERE category='other' AND NOT is_deleted)                    AS other,
           COUNT(*) FILTER (WHERE category='upload' AND NOT is_deleted)                   AS upload
-        FROM media
-      `);
+        FROM media WHERE user_id=$1
+      `, [realUser.id]);
       const row = r.rows[0];
       return sendJSON(res, 200, {
         total: parseInt(row.total, 10) || 0,
@@ -669,13 +669,14 @@ async function handleAPI(req, res) {
     });
   }
   if (url === '/api/media' && method === 'POST') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' }); // 多租户红线：写入必须登录
     const items = await parseBody(req);
     if (!items) return sendJSON(res, 400, { error: 'Invalid JSON' });
     const arr = Array.isArray(items) ? items : [items];
     if (pgPool) {
       for (const it of arr) {
         const s = toSnake(it);
-        const ownerId = realUser ? realUser.id : null; // G2 owner 归属：登录用户写入自己的素材
+        const ownerId = realUser.id; // 多租户红线：强制归属当前登录用户（已在前置校验确保 realUser 存在）
         await pgPool.query(
           `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,created_at,user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,full_url=EXCLUDED.full_url,thumbnail=EXCLUDED.thumbnail,oss_url=EXCLUDED.oss_url,oss_object_key=EXCLUDED.oss_object_key,oss_uploaded=EXCLUDED.oss_uploaded,is_deleted=EXCLUDED.is_deleted,status=EXCLUDED.status,error_message=EXCLUDED.error_message,failed_at=EXCLUDED.failed_at,user_id=EXCLUDED.user_id`,
           [s.id, s.title, s.type, s.thumbnail, s.full_url, s.prompt, s.model, s.ratio, s.source, s.is_favorite || false, s.is_deleted || false, s.oss_url, s.oss_object_key, s.oss_uploaded || false, s.category || 'generated', s.status || 'success', s.error_message || '', s.failed_at || null, s.created_at || new Date().toISOString(), ownerId]
@@ -690,13 +691,20 @@ async function handleAPI(req, res) {
   }
   if (url.startsWith('/api/media/') && method === 'DELETE') {
     const id = url.split('/api/media/')[1];
-    if (pgPool) { await pgPool.query('DELETE FROM media WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); }
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' }); // 多租户红线
+    if (pgPool) {
+      // 多租户红线：删前校验归属，非本人素材返回 404（不暴露存在性）
+      const r = await pgPool.query('DELETE FROM media WHERE id=$1 AND user_id=$2', [id, realUser.id]);
+      if (r.rowCount === 0) return sendJSON(res, 404, { error: '素材不存在或无权限' });
+      return sendJSON(res, 200, { ok: true });
+    }
     writeJSON('media', readJSON('media').filter(m => m.id !== id));
     return sendJSON(res, 200, { ok: true });
   }
   // 单条部分更新：用于探测失败后回写 status/errorMessage/failed_at
   if (url.startsWith('/api/media/') && method === 'PUT') {
     const id = url.split('/api/media/')[1];
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' }); // 多租户红线
     const body = await parseBody(req);
     if (!body || !id) return sendJSON(res, 400, { error: 'Invalid request' });
     const s = toSnake(body);
@@ -706,14 +714,18 @@ async function handleAPI(req, res) {
       const vals = [];
       let i = 1;
       for (const [k, v] of Object.entries(s)) {
-        if (v === undefined) continue;
+        // 多租户红线：禁止客户端篡改 user_id / id 字段（防越权转移归属）
+        if (v === undefined || k === 'user_id' || k === 'id') continue;
         fields.push(`${k}=$${i}`);
         vals.push(v);
         i++;
       }
       if (fields.length === 0) return sendJSON(res, 200, { ok: true, noop: true });
       vals.push(id);
-      await pgPool.query(`UPDATE media SET ${fields.join(',')} WHERE id=$${i}`, vals);
+      vals.push(realUser.id);
+      // 多租户红线：更新前校验归属，非本人素材返回 404
+      const r = await pgPool.query(`UPDATE media SET ${fields.join(',')} WHERE id=$${i} AND user_id=$${i + 1}`, vals);
+      if (r.rowCount === 0) return sendJSON(res, 404, { error: '素材不存在或无权限' });
       return sendJSON(res, 200, { ok: true });
     }
     const list = readJSON('media');
@@ -1107,6 +1119,7 @@ async function handleAPI(req, res) {
   if (url === '/api/oss/upload' && method === 'POST') {
     const body = await parseBody(req);
     if (!body?.objectKey) return sendJSON(res, 400, { success: false, message: '缺少 objectKey' });
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' }); // 多租户红线：上传必须登录
     const cfg = pgPool ? fromSnake((await pgPool.query('SELECT * FROM oss_config WHERE id=1')).rows[0]) : readJSON('oss');
     if (!cfg?.accessKeyId || !cfg?.accessKeySecret || !cfg?.bucket) {
       return sendJSON(res, 200, { success: false, message: 'OSS 配置不完整（缺 AccessKey 或 Bucket）' });
@@ -1116,7 +1129,10 @@ async function handleAPI(req, res) {
     }
 
     const prefix = cfg.pathPrefix || 'images/';
-    const objectKey = body.objectKey.startsWith(prefix) ? body.objectKey : `${prefix}${body.objectKey}`;
+    // 多租户红线：无论客户端传什么 key，都剥离路径前缀后强制塞进本人命名空间 users/{userId}/
+    // 杜绝「A 用户上传到 B 用户命名空间」或猜 key 越权访问他人资产
+    const rawFileName = (body.objectKey.split('/').pop() || body.objectKey).replace(/[/\\?%*:|"<>]/g, '_');
+    const objectKey = `users/${realUser.id}/${prefix}${rawFileName}`;
     const buffer = Buffer.from(body.contentBase64, 'base64');
     const size = buffer.length;
 

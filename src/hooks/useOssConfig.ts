@@ -4,6 +4,7 @@ import {
   DEFAULT_OSS_CONFIG,
 } from '@/data/oss';
 import { apiGetOss, apiSaveOss, apiTestOss, apiUploadToOss, ensureApi } from '@/services/api';
+import { useAuth } from '@/services/authStore';
 
 // 模块级共享状态（仅内存，持久化全部走后端 API）
 let ossState: IOssConfig = { ...DEFAULT_OSS_CONFIG };
@@ -73,6 +74,7 @@ function resetConfig() {
 export function useOssConfig() {
   // useSyncExternalStore 让 React 19 在并发渲染下正确跟踪外部状态
   const config = useSyncExternalStore(subscribe, getOssSnapshot, getOssSnapshot);
+  const { user } = useAuth(); // 多租户红线：拿当前用户 id 做 OSS key 命名空间
 
   /**
    * 测试 OSS 连接：调后端 /api/oss/test 验证连通性
@@ -107,6 +109,11 @@ export function useOssConfig() {
       fileName: string,
     ): Promise<{ success: boolean; url: string; objectKey: string }> => {
       const cfg = ossState;
+      const uid = user?.id;
+      if (!uid) {
+        // 多租户红线：未登录不允许上传（资产必须归属到具体客户 id）
+        return { success: false, url: '', objectKey: '' };
+      }
       if (!cfg.enabled) {
         return { success: false, url: '', objectKey: '' };
       }
@@ -126,16 +133,16 @@ export function useOssConfig() {
         reader.readAsDataURL(file);
       });
       const prefix = cfg.pathPrefix || 'images/';
-      // pathPrefix 已经包含 images/，objectKey 用 filename 即可
+      // 多租户红线：前端预置 user 命名空间（后端会二次强制 users/{uid}/，双重保险）
       const fileNameOnly = fileName.includes('/') ? fileName.split('/').pop()! : fileName;
-      const objectKey = `${prefix}${Date.now()}_${fileNameOnly}`;
+      const objectKey = `users/${uid}/${prefix}${Date.now()}_${fileNameOnly}`;
       const result = await apiUploadToOss(objectKey, base64);
       if (result.success) {
         return { success: true, url: result.url, objectKey: result.objectKey };
       }
       return { success: false, url: '', objectKey };
     },
-    [],
+    [user],
   );
 
   return {
