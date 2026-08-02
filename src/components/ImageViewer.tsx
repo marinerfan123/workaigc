@@ -8,10 +8,28 @@ import {
   RotateCcw,
   Download,
   Maximize2,
+  Ruler,
+  HardDrive,
 } from 'lucide-react';
 import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
 import { getModelDisplayNameByDisplayName } from '@/hooks/useModelHub';
+
+// 把字节数格式化为「1.2 MB / 345 KB / 678 B」
+function formatBytes(b?: number): string | null {
+  if (!b || b <= 0) return null;
+  if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(2)} MB`;
+  if (b >= 1024) return `${(b / 1024).toFixed(0)} KB`;
+  return `${b} B`;
+}
+
+// 根据像素估算文件大小（HEAD 拿不到 content-length 时兜底；按 JPG/PNG 平均）
+function estimateBytes(w?: number, h?: number): string | null {
+  if (!w || !h) return null;
+  // 经验值：1920x1080 JPG ≈ 400KB，比例外推
+  const bytes = Math.round((w * h * 0.2) / 1024) * 1024;
+  return formatBytes(bytes) + '（估）';
+}
 
 interface ImageViewerProps {
   items: IMediaItem[];
@@ -32,6 +50,12 @@ export default function ImageViewer({
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLDivElement>(null);
+  // 当前图片的像素尺寸（来自 naturalWidth/Height，可能为空直到 onLoad 触发）
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
+  // 当前图片的文件大小（字节），HEAD 拿不到时为 null
+  const [bytes, setBytes] = useState<number | null>(null);
+  // 上一张图 URL（用于切换时重置 dims/bytes）
+  const lastSrcRef = useRef<string>('');
 
   const current = items[currentIndex];
   const hasPrev = currentIndex > 0;
@@ -171,6 +195,40 @@ export default function ImageViewer({
     };
   }, []);
 
+  // 切换图片时：重置像素/大小 + 异步 HEAD 拉文件大小
+  useEffect(() => {
+    if (!current?.fullUrl || lastSrcRef.current === current.fullUrl) return;
+    lastSrcRef.current = current.fullUrl;
+    setDims(null);
+    setBytes(null);
+
+    const url = current.fullUrl;
+    // dataURL 直接转 base64 长度（KB/MB）
+    if (url.startsWith('data:')) {
+      const m = url.match(/^data:[^;]+;base64,(.+)$/);
+      if (m) setBytes(Math.round((m[1].length * 3) / 4));
+      return;
+    }
+    // 远程 URL：尝试 HEAD
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(url, { method: 'HEAD' });
+        if (cancelled) return;
+        const cl = r.headers.get('content-length');
+        if (cl) {
+          const n = parseInt(cl, 10);
+          if (Number.isFinite(n) && n > 0) setBytes(n);
+        }
+      } catch {
+        // CORS 或网络失败：忽略，留 null 让下方估算兜底
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [current?.fullUrl]);
+
   if (!current) return null;
 
   return (
@@ -287,17 +345,47 @@ export default function ImageViewer({
           alt={current.title}
           className="max-h-[85vh] max-w-[90vw] object-contain select-none pointer-events-none"
           draggable={false}
+          onLoad={(e) => {
+            const el = e.currentTarget as HTMLImageElement;
+            if (el.naturalWidth && el.naturalHeight) {
+              setDims({ w: el.naturalWidth, h: el.naturalHeight });
+            }
+          }}
         />
       </div>
 
       {/* 底部信息 */}
-      <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center gap-6 px-6 py-4 bg-gradient-to-t from-black/60 to-transparent">
-        <div className="flex items-center gap-4 text-xs text-zinc-500">
-          <span>{getModelDisplayNameByDisplayName(current.model) || current.model}</span>
-          <span>·</span>
-          <span>{current.ratio}</span>
-          <span>·</span>
-          <span>{new Date(current.createdAt).toLocaleDateString('zh-CN')}</span>
+      <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-center px-6 py-4 bg-gradient-to-t from-black/70 to-transparent">
+        <div className="flex items-center gap-3 rounded-full border border-zinc-800/80 bg-zinc-950/70 px-4 py-2 shadow-lg backdrop-blur">
+          <span className="text-sm font-medium text-zinc-200">
+            {getModelDisplayNameByDisplayName(current.model) || current.model}
+          </span>
+          <span className="text-zinc-700">·</span>
+          <span className="text-sm text-zinc-300">{current.ratio}</span>
+          {dims ? (
+            <>
+              <span className="text-zinc-700">·</span>
+              <span
+                className="inline-flex items-center gap-1 rounded-md bg-cyan-500/10 px-2 py-0.5 text-sm font-semibold text-cyan-300 border border-cyan-500/20"
+                title="图片像素尺寸"
+              >
+                <Ruler className="size-3.5" />
+                {dims.w}×{dims.h}
+              </span>
+            </>
+          ) : null}
+          <span className="text-zinc-700">·</span>
+          <span
+            className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-0.5 text-sm font-semibold text-amber-300 border border-amber-500/20"
+            title="文件大小"
+          >
+            <HardDrive className="size-3.5" />
+            {formatBytes(bytes) || estimateBytes(dims?.w, dims?.h) || '— KB'}
+          </span>
+          <span className="text-zinc-700">·</span>
+          <span className="text-sm text-zinc-400">
+            {new Date(current.createdAt).toLocaleDateString('zh-CN')}
+          </span>
         </div>
       </div>
     </div>

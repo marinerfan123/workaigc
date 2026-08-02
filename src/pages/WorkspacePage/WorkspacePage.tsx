@@ -376,6 +376,7 @@ export default function WorkspacePage() {
                     onOpenViewer={() => handleOpenViewer(index)}
                     onToggleFavorite={handleToggleFavorite}
                     onDelete={handleDelete}
+                    onAddAsReference={handleAddReference}
                     gridSize={gridSize}
                   />
                 ))}
@@ -416,6 +417,7 @@ export default function WorkspacePage() {
           onDelete={handleDelete}
           onClose={() => setSelectedId(null)}
           onUsePrompt={handleUsePrompt}
+          onAddAsReference={handleAddReference}
           onUpdate={(updated) => {
             setMediaList((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
             apiSaveMedia(stripBlobItems([updated]));
@@ -427,7 +429,8 @@ export default function WorkspacePage() {
       <MediaPicker
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
-        onAddToPrompt={handleAddReference}
+        onAddAsReference={handleAddReference}
+        referenceImages={referenceImages}
       />
 
       {/* 图片查看器（灯箱） */}

@@ -8,6 +8,7 @@ import {
   Play,
   Sparkles,
   Image as ImageIcon,
+  ImagePlus,
   Share2,
   Copy,
   Check,
@@ -35,11 +36,13 @@ interface DetailPanelProps {
   onDelete: (id: string) => void;
   onClose: () => void;
   onUsePrompt?: (prompt: string) => void;
+  /** 添加为参考图（推到生成栏 referenceImages） */
+  onAddAsReference?: (url: string) => void;
   /** 上传 OSS 后更新当前 item 的回调 */
   onUpdate?: (item: IMediaItem) => void;
 }
 
-export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose, onUsePrompt, onUpdate }: DetailPanelProps) {
+export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose, onUsePrompt, onAddAsReference, onUpdate }: DetailPanelProps) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false); // OSS 链接复制成功的瞬时反馈
   const { config: ossConfig, uploadFile: uploadToOss, buildOssUrl } = useOssConfig();
@@ -199,7 +202,7 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
   const moreItems = [
     { icon: Copy, label: '复制提示词', action: handleCopyPrompt },
     { icon: Sparkles, label: '重复使用提示', action: () => onUsePrompt?.(item.prompt) },
-    { icon: ImageIcon, label: '添加到提示' },
+    { icon: ImagePlus, label: '添加为参考图', action: () => onAddAsReference?.(item.fullUrl) },
     { icon: Edit3, label: '重命名' },
     { icon: FolderPlus, label: '添加到集合' },
     { icon: Share2, label: '分享' },

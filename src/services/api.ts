@@ -202,9 +202,13 @@ export function stripBlobItems<T extends { thumbnail?: string }>(items: T[]): T[
 
 // ─── 服务端生成分发 ─────────────────────────────
 /**
- * 调用后端 /api/generate：由后端按全局 maxThreads + 各供应商 max_concurrent
- * 把 N 个请求均衡分配到不同服务商，前端不再持有真实 API Key。
+ * 调用后端 /api/generate（默认异步）：立即返回 taskId，前端再用 taskId 轮询状态。
+ * 旧调用方式（同步返回完整结果）仍兼容：传 `sync: true` 时后端会一次性返回 images。
  */
+export type GenerateResponse =
+  | { status: 'pending'; taskId: string; error?: string }
+  | { status: 'success' | 'failed'; taskId?: string; images?: string[]; error?: string; source?: string; usedProviders?: string[] };
+
 export async function apiGenerate(payload: {
   model: string;
   prompt: string;
@@ -213,11 +217,60 @@ export async function apiGenerate(payload: {
   count?: number;
   contentType?: 'image' | 'video';
   referenceImages?: string[];
-}): Promise<{ status: string; images?: string[]; error?: string; source?: string }> {
+  pendingIds?: string[]; // 把前端的 pending 占位 id 告诉后端，便于刷新恢复
+  sync?: boolean;         // 兼容旧测试：传 true 后端一次性返回结果
+}): Promise<GenerateResponse> {
   try {
-    return await apiFetch('/api/generate', { method: 'POST', body: JSON.stringify(payload) });
+    return await apiFetch('/api/generate', { method: 'POST', body: JSON.stringify(payload) }) as GenerateResponse;
   } catch (e) {
     return { status: 'failed', error: (e instanceof Error ? e.message : String(e)).slice(0, 200), images: [] };
+  }
+}
+
+// 查询单个生成任务状态（用于前端轮询 / 刷新恢复）
+export async function apiGetGenerationStatus(taskId: string): Promise<{
+  taskId: string;
+  status: 'running' | 'done' | 'failed' | 'not_found' | 'unknown';
+  result?: { images?: string[]; source?: string; usedProviders?: string[] } | null;
+  error?: string;
+  pendingIds?: string[];
+  model?: string;
+  prompt?: string;
+  count?: number;
+  contentType?: string;
+  clientMeta?: Record<string, unknown>;
+  createdAt?: string;
+  completedAt?: string;
+}> {
+  try {
+    return await apiFetch(`/api/generate/status/${encodeURIComponent(taskId)}`);
+  } catch (e) {
+    return { taskId, status: 'unknown', error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// 列出在途任务（用于页面刷新后批量恢复）
+export async function apiListActiveGenerations(): Promise<{
+  tasks: Array<{
+    taskId: string;
+    status: 'running' | 'done' | 'failed';
+    result?: { images?: string[]; source?: string; usedProviders?: string[] } | null;
+    error?: string;
+    pendingIds?: string[];
+    model?: string;
+    prompt?: string;
+    count?: number;
+    contentType?: string;
+    clientMeta?: Record<string, unknown>;
+    createdAt?: string;
+    completedAt?: string;
+  }>;
+  error?: string;
+}> {
+  try {
+    return await apiFetch('/api/generate/active');
+  } catch (e) {
+    return { tasks: [], error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
   }
 }
 

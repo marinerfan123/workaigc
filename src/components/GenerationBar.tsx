@@ -29,7 +29,7 @@ import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
-import { apiProxyFetch, apiGenerate, apiOptimizePrompt } from '@/services/api';
+import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, apiListActiveGenerations } from '@/services/api';
 import { ALL_RESOLUTIONS, type Resolution, getEffectiveModelName } from '@/data/models';
 import {
   Dialog,
@@ -107,6 +107,201 @@ function GenerationBar({
   // 注意：handleGenerate 自身在本组件下方声明，不能在组件顶层提前读它（TDZ）。
   // 改在 handleGenerate 函数体首行自我注册到 ref.current。
   const handleGenerateRef = useRef<() => Promise<void>>(async () => {});
+
+  // ── 持久化：把进行中的 taskId+pending 写入 localStorage，刷新后能恢复 ──
+  // 跨页面/刷新后由下方 useEffect 读取并续上轮询
+  const PENDING_KEY = '__app_flow_pending_generations__';
+  type PersistedTask = {
+    taskId: string;
+    pendingItems: IMediaItem[];        // 恢复时回插到 mediaList 的占位（按 id 命中替换）
+    prompt: string;
+    model: string;
+    ratio: string;
+    resolution: string;
+    count: number;
+    contentType: 'image' | 'video';
+    referenceImages?: string[];
+    createdAt: string;
+  };
+  const loadPersistedTasks = (): PersistedTask[] => {
+    try {
+      const raw = localStorage.getItem(PENDING_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch { return []; }
+  };
+  const savePersistedTasks = (arr: PersistedTask[]) => {
+    try { localStorage.setItem(PENDING_KEY, JSON.stringify(arr)); } catch {}
+  };
+  const appendPersistedTask = (t: PersistedTask) => {
+    const arr = loadPersistedTasks();
+    arr.push(t);
+    savePersistedTasks(arr);
+  };
+  const removePersistedTask = (taskId: string) => {
+    savePersistedTasks(loadPersistedTasks().filter((x) => x.taskId !== taskId));
+  };
+
+  // ── 抽取结果处理为可复用函数（初始提交 / 刷新恢复两条路径都走这个）──
+  /**
+   * 把后端返回的图片 URL 列表逐张：下载 → 上传 OSS（若开启）→ 探活 → 替换 pending。
+   * 与同步流程保持完全一致：失败回填 mock；OSS 关闭有 toast 提示。
+   */
+  const processResultImages = async (
+    resultImages: string[],
+    pendingIds: string[],
+    ctx: { prompt: string; model: string; ratio: string; contentType: 'image' | 'video'; createdAt: number },
+  ): Promise<{ success: number; failed: number }> => {
+    let success = 0;
+    for (let i = 0; i < resultImages.length && i < pendingIds.length; i++) {
+      const pendingId = pendingIds[i];
+      let ossUrl = '';
+      let ossObjectKey = '';
+      let ossUploaded = false;
+      let imgBlob: Blob | null = null;
+      try {
+        if (resultImages[i].startsWith('data:')) {
+          imgBlob = await (await fetch(resultImages[i])).blob();
+        } else {
+          const proxied = await apiProxyFetch(resultImages[i]);
+          if (proxied.success && proxied.base64) {
+            const byteChars = atob(proxied.base64);
+            const byteArr = new Uint8Array(byteChars.length);
+            for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
+            imgBlob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
+          } else {
+            logger.warn(`代理下载失败：${proxied.message}`);
+          }
+        }
+      } catch (e) {
+        logger.warn(`图片下载失败：${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (ossConfig.enabled && imgBlob) {
+        const file = new File([imgBlob], `gen-${ctx.createdAt}-${i}.jpg`, { type: 'image/jpeg' });
+        const MAX_ATTEMPTS = 3;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            const uploadResult = await uploadToOss(file, `gen-${ctx.createdAt}-${i}.jpg`);
+            if (uploadResult.success && uploadResult.url) {
+              ossUrl = uploadResult.url;
+              ossObjectKey = uploadResult.objectKey;
+              ossUploaded = true;
+              logger.info(`OSS 上传成功（第 ${attempt}/${MAX_ATTEMPTS} 次）：${ossUrl}`);
+              break;
+            }
+          } catch (e) {
+            logger.warn(`OSS 上传异常（第 ${attempt}/${MAX_ATTEMPTS} 次）：${e instanceof Error ? e.message : String(e)}`);
+          }
+          if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 800));
+        }
+        if (!ossUploaded) {
+          logger.warn(`OSS 上传经 ${MAX_ATTEMPTS} 次重试仍失败，回退到模型原始 URL：${resultImages[i].slice(0, 80)}`);
+          toast.warning(`图片 ${i + 1} 上传 OSS 失败，已回退使用服务商原始链接（链接可能随时过期）`, { duration: 4000 });
+        }
+      } else if (!ossConfig.enabled) {
+        toast.error('OSS 未开启，请到「模型 Hub → 存储配置」开启', { duration: 5000 });
+      }
+      const persistentUrl = ossUploaded ? ossUrl : resultImages[i];
+      const probe = await probeImageLoad(persistentUrl);
+      const finalItem: IMediaItem = {
+        id: pendingId,
+        title: ctx.prompt.slice(0, 20) || '生成结果',
+        type: ctx.contentType,
+        thumbnail: persistentUrl,
+        fullUrl: persistentUrl,
+        prompt: ctx.prompt,
+        model: ctx.model,
+        ratio: ctx.ratio,
+        createdAt: new Date().toISOString(),
+        isFavorite: false,
+        isDeleted: false,
+        source: 'user',
+        ossUrl,
+        ossObjectKey,
+        ossUploaded,
+        progress: 100,
+      };
+      if (!probe.ok) {
+        finalItem.status = 'failed';
+        finalItem.errorMessage = probe.error || '图片链接已失效';
+        finalItem.failedAt = new Date().toISOString();
+      }
+      onGenerate(finalItem);
+      success++;
+    }
+    return { success, failed: pendingIds.length - success };
+  };
+
+  // ── 单个 task 的轮询：完成后调用 processResultImages；中断/失败有兜底 ──
+  // pendingItems 用于恢复时回插到 mediaList（首次提交通常 null，因为已经插好了）
+  const pollTaskUntilDone = async (
+    taskId: string,
+    pendingIds: string[],
+    ctx: { prompt: string; model: string; ratio: string; contentType: 'image' | 'video'; createdAt: number },
+    pendingItemsToRestore: IMediaItem[] | null,
+  ): Promise<void> => {
+    // 第一次进入轮询：若是恢复路径，先把 pending 占位回插到 mediaList
+    if (pendingItemsToRestore && pendingItemsToRestore.length > 0) {
+      onPendingCreate(pendingItemsToRestore);
+    }
+    const MAX_POLLS = 90; // 90 * 2s = 3 分钟
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const st = await apiGetGenerationStatus(taskId);
+      if (st.status === 'done' && st.result) {
+        const imgs = (st.result.images || []).filter(Boolean);
+        if (imgs.length > 0) {
+          await processResultImages(imgs, pendingIds, ctx);
+          toast.success(`生成完成 · ${imgs.length} 张`, { duration: 2500 });
+        } else {
+          // 任务完成但无图：按失败处理
+          markPendingAsFailed(pendingIds, st.error || '生成结果为空');
+        }
+        removePersistedTask(taskId);
+        return;
+      }
+      if (st.status === 'failed') {
+        markPendingAsFailed(pendingIds, st.error || '生成失败');
+        removePersistedTask(taskId);
+        return;
+      }
+      if (st.status === 'not_found') {
+        // 后端清掉了（重启/超期），按失败处理
+        markPendingAsFailed(pendingIds, '任务已被服务端清理');
+        removePersistedTask(taskId);
+        return;
+      }
+      // running/unknown：继续轮询
+    }
+    // 轮询超时（3 分钟还没完成）
+    markPendingAsFailed(pendingIds, '轮询超时（3 分钟未完成），请到「模型 Hub」查看服务商状态');
+    removePersistedTask(taskId);
+  };
+
+  // 把一组 pendingIds 标为 failed 状态（不删，让用户能看到失败占位以便重试）
+  const markPendingAsFailed = (pendingIds: string[], errorMessage: string) => {
+    for (const pid of pendingIds) {
+      onGenerate({
+        id: pid,
+        title: promptText.slice(0, 20) || '生成失败',
+        type: settings.contentType,
+        thumbnail: '',
+        fullUrl: '',
+        prompt: promptText,
+        model: settings.model,
+        ratio: settings.ratio,
+        createdAt: new Date().toISOString(),
+        isFavorite: false,
+        isDeleted: false,
+        source: 'user',
+        status: 'failed',
+        errorMessage,
+        failedAt: new Date().toISOString(),
+        progress: 100,
+      });
+    }
+  };
 
   useImperativeHandle(ref, () => ({
     retry: (payload: RetryPayload) => {
@@ -267,115 +462,57 @@ function GenerationBar({
       duration: 2500,
     });
 
-    // ── 2) 后台异步跑生成/上传/探测 —— 不阻塞 UI，按完成顺序逐张替换 pending ──
+    // ── 2) 异步：先提交拿 taskId（不阻塞 UI，刷新也能恢复）──
     (async () => {
       try {
-        const genResult = await apiGenerate({
+        const r = await apiGenerate({
           model: settings.model,
           prompt: promptText,
           ratio: settings.ratio,
           resolution: settings.resolution || '1k',
           count,
           contentType: settings.contentType,
+          referenceImages: referenceImages && referenceImages.length > 0 ? referenceImages : undefined,
+          pendingIds,
         });
-        const resultImages = Array.isArray(genResult.images) ? genResult.images.filter(Boolean) : [];
-
+        // 新异步通道：返回 { status: 'pending', taskId }
+        if ('taskId' in r && r.taskId && r.status === 'pending') {
+          // 写 localStorage 持久化，刷新后由下方 useEffect 续上
+          appendPersistedTask({
+            taskId: r.taskId,
+            pendingItems,
+            prompt: promptText,
+            model: settings.model,
+            ratio: settings.ratio,
+            resolution: settings.resolution || '1k',
+            count,
+            contentType: settings.contentType,
+            referenceImages: referenceImages && referenceImages.length > 0 ? referenceImages : undefined,
+            createdAt: new Date(now).toISOString(),
+          });
+          // 在本会话内启动轮询（这条 promise 完了就移除持久化条目）
+          await pollTaskUntilDone(
+            r.taskId,
+            pendingIds,
+            { prompt: promptText, model: settings.model, ratio: settings.ratio, contentType: settings.contentType, createdAt: now },
+            null,
+          );
+          return;
+        }
+        // 老同步通道：直接拿 images 走原流程（兼容 sync=1）
+        const resultImages = (r as { images?: string[] }).images || [];
         if (resultImages.length > 0) {
-          for (let i = 0; i < resultImages.length && i < pendingIds.length; i++) {
-            const pendingId = pendingIds[i];
-            let ossUrl = '';
-            let ossObjectKey = '';
-            let ossUploaded = false;
-
-            // OSS 上传（保持原逻辑）
-            let imgBlob: Blob | null = null;
-            try {
-              if (resultImages[i].startsWith('data:')) {
-                imgBlob = await (await fetch(resultImages[i])).blob();
-              } else {
-                const proxied = await apiProxyFetch(resultImages[i]);
-                if (proxied.success && proxied.base64) {
-                  const byteChars = atob(proxied.base64);
-                  const byteArr = new Uint8Array(byteChars.length);
-                  for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
-                  imgBlob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
-                } else {
-                  logger.warn(`代理下载失败：${proxied.message}`);
-                }
-              }
-            } catch (e) {
-              logger.warn(`图片下载失败：${e instanceof Error ? e.message : String(e)}`);
-            }
-
-            if (ossConfig.enabled && imgBlob) {
-              const file = new File([imgBlob], `gen-${now}-${i}.jpg`, { type: 'image/jpeg' });
-              const MAX_ATTEMPTS = 3;
-              for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-                try {
-                  const uploadResult = await uploadToOss(file, `gen-${now}-${i}.jpg`);
-                  if (uploadResult.success && uploadResult.url) {
-                    ossUrl = uploadResult.url;
-                    ossObjectKey = uploadResult.objectKey;
-                    ossUploaded = true;
-                    logger.info(`OSS 上传成功（第 ${attempt}/${MAX_ATTEMPTS} 次）：${ossUrl}`);
-                    break;
-                  }
-                } catch (e) {
-                  logger.warn(`OSS 上传异常（第 ${attempt}/${MAX_ATTEMPTS} 次）：${e instanceof Error ? e.message : String(e)}`);
-                }
-                if (attempt < MAX_ATTEMPTS) {
-                  await new Promise((r) => setTimeout(r, 800));
-                }
-              }
-              if (!ossUploaded) {
-                logger.warn(`OSS 上传经 ${MAX_ATTEMPTS} 次重试仍失败，回退到模型原始 URL：${resultImages[i].slice(0, 80)}`);
-                toast.warning(`图片 ${i + 1} 上传 OSS 失败，已回退使用服务商原始链接（链接可能随时过期）`, { duration: 4000 });
-              }
-            } else if (!ossConfig.enabled) {
-              toast.error('OSS 未开启，请到「模型 Hub → 存储配置」开启', { duration: 5000 });
-            }
-
-            const persistentUrl = ossUploaded ? ossUrl : resultImages[i];
-            const probe = await probeImageLoad(persistentUrl);
-
-            const finalItem: IMediaItem = {
-              id: pendingId,
-              title: promptText.slice(0, 20) || '生成结果',
-              type: settings.contentType,
-              thumbnail: persistentUrl,
-              fullUrl: persistentUrl,
-              prompt: promptText,
-              model: settings.model,
-              ratio: settings.ratio,
-              createdAt: new Date().toISOString(),
-              isFavorite: false,
-              isDeleted: false,
-              source: 'user',
-              ossUrl,
-              ossObjectKey,
-              ossUploaded,
-              progress: 100,
-            };
-            if (!probe.ok) {
-              finalItem.status = 'failed';
-              finalItem.errorMessage = probe.error || '图片链接已失效';
-              finalItem.failedAt = new Date().toISOString();
-            }
-            // 通知父级按 id 替换 pending → 真图
-            onGenerate(finalItem);
-          }
-          const successCount = resultImages.length;
-          const failCount = count - successCount;
-          if (failCount > 0) {
-            toast.warning(`生成成功 ${successCount} 张 / ${failCount} 张未返回`, { duration: 4000 });
-          } else {
-            toast.success(`生成完成 · ${successCount} 张`, { duration: 2500 });
-          }
-          logger.info(`图片生成成功（服务端分发），共 ${successCount} 张`);
+          await processResultImages(resultImages, pendingIds, {
+            prompt: promptText,
+            model: settings.model,
+            ratio: settings.ratio,
+            contentType: settings.contentType,
+            createdAt: now,
+          });
+          toast.success(`生成完成 · ${resultImages.length} 张`, { duration: 2500 });
         } else {
-          const firstError = genResult.error || '生成失败：服务商返回异常';
+          const firstError = (r as { error?: string }).error || '生成失败：服务商返回异常';
           toast.error(firstError, { duration: 5000 });
-          logger.warn(`生成失败 → 降级 mock：${firstError}`);
           fillMockItems(pendingIds);
         }
       } catch (error) {
@@ -386,6 +523,58 @@ function GenerationBar({
       }
     })();
   };
+
+  // ── 刷新恢复：组件挂载时从 localStorage 读出未完成任务，续上轮询 ──
+  useEffect(() => {
+    const persisted = loadPersistedTasks();
+    if (persisted.length === 0) return;
+    // 立即清理：避免后续重复触发；同时启动异步恢复
+    savePersistedTasks([]);
+    (async () => {
+      for (const t of persisted) {
+        try {
+          // 先到后端查这个 task 真实状态（可能在挂载期间已经完成）
+          const st = await apiGetGenerationStatus(t.taskId);
+          if (st.status === 'done' && st.result?.images && st.result.images.length > 0) {
+            // 已经完成 → 回插 pending 占位（用保存的 pendingItems）+ 立刻替换为真图
+            const ctx = {
+              prompt: t.prompt,
+              model: t.model,
+              ratio: t.ratio,
+              contentType: t.contentType,
+              createdAt: new Date(t.createdAt).getTime(),
+            };
+            const pendingIds = t.pendingItems.map((p) => p.id);
+            await pollTaskUntilDone(t.taskId, pendingIds, ctx, t.pendingItems);
+            // 上一步已经把 pending 替换好
+          } else if (st.status === 'failed') {
+            const pendingIds = t.pendingItems.map((p) => p.id);
+            markPendingAsFailed(pendingIds, st.error || '生成失败');
+          } else if (st.status === 'not_found') {
+            const pendingIds = t.pendingItems.map((p) => p.id);
+            markPendingAsFailed(pendingIds, '任务已被服务端清理（重启或超期）');
+          } else {
+            // running/unknown：续上轮询
+            const pendingIds = t.pendingItems.map((p) => p.id);
+            const ctx = {
+              prompt: t.prompt,
+              model: t.model,
+              ratio: t.ratio,
+              contentType: t.contentType,
+              createdAt: new Date(t.createdAt).getTime(),
+            };
+            await pollTaskUntilDone(t.taskId, pendingIds, ctx, t.pendingItems);
+          }
+        } catch (e) {
+          // 恢复失败：标 failed，避免遗留"幽灵 pending"
+          const pendingIds = t.pendingItems.map((p) => p.id);
+          markPendingAsFailed(pendingIds, `恢复失败：${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    })();
+  // 仅在挂载时跑一次
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // AI 提示词优化（智能体 skill：调后台启用的 text 推理模型）
   // 替换原飞书 capabilityClient 实现，统一走服务端 /api/agent/optimize-prompt

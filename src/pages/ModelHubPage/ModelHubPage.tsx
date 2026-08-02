@@ -1476,10 +1476,10 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                   }
                                 }}
                                 title={isEditing ? '取消编辑' : '编辑名称 / 映射名 / 积分'}
-                                className={`flex h-6 w-6 items-center justify-center rounded-md transition-all ${
+                                className={`flex h-7 w-7 items-center justify-center rounded-lg border transition-all ${
                                   isEditing
-                                    ? 'bg-emerald-500/20 text-emerald-400'
-                                    : 'text-zinc-500 opacity-0 group-hover/card:opacity-100 hover:bg-zinc-800 hover:text-white'
+                                    ? 'border-emerald-500/40 bg-emerald-500/20 text-emerald-400'
+                                    : 'border-zinc-700 bg-zinc-800/60 text-zinc-400 hover:border-zinc-600 hover:bg-zinc-700 hover:text-white'
                                 }`}
                               >
                                 {isEditing ? <X className="size-3" /> : <Edit3 className="size-3" />}
@@ -1493,15 +1493,35 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                   );
                                 }}
                                 title={group.enabled ? '已启用，点击停用' : '已停用，点击启用'}
-                                className={`relative h-4 w-7 shrink-0 rounded-full transition-all duration-300 ${
-                                  group.enabled ? 'bg-emerald-500' : 'bg-zinc-700'
+                                className={`relative h-5 w-10 shrink-0 rounded-full border transition-all duration-300 ${
+                                  group.enabled
+                                    ? 'border-emerald-400/60 bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.45)]'
+                                    : 'border-zinc-700 bg-zinc-800'
                                 }`}
                               >
                                 <div
-                                  className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all duration-300 ${
-                                    group.enabled ? 'left-[14px]' : 'left-0.5'
+                                  className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white shadow transition-all duration-300 ${
+                                    group.enabled ? 'left-[18px]' : 'left-0.5'
                                   }`}
                                 />
+                                <span
+                                  className={`absolute top-1/2 -translate-y-1/2 text-[8px] font-bold leading-none transition-all duration-300 ${
+                                    group.enabled
+                                      ? 'left-1 text-emerald-50 opacity-0'
+                                      : 'right-1 text-zinc-400 opacity-100'
+                                  }`}
+                                >
+                                  OFF
+                                </span>
+                                <span
+                                  className={`absolute top-1/2 -translate-y-1/2 text-[8px] font-bold leading-none transition-all duration-300 ${
+                                    group.enabled
+                                      ? 'right-1 text-white opacity-100'
+                                      : 'right-1 text-zinc-500 opacity-0'
+                                  }`}
+                                >
+                                  ON
+                                </span>
                               </button>
                             </div>
                           </div>

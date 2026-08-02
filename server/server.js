@@ -51,6 +51,23 @@ async function initDB() {
       CREATE TABLE IF NOT EXISTS oss_config (id INTEGER PRIMARY KEY DEFAULT 1, provider TEXT DEFAULT 'aliyun-oss', access_point_name TEXT DEFAULT '', endpoint_external TEXT DEFAULT '', endpoint_internal TEXT DEFAULT '', bucket TEXT DEFAULT '', region TEXT DEFAULT '', region_label TEXT DEFAULT '', access_key_id TEXT DEFAULT '', access_key_secret TEXT DEFAULT '', path_prefix TEXT DEFAULT 'images/', custom_domain TEXT DEFAULT '', enabled BOOLEAN DEFAULT TRUE);
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value JSONB NOT NULL DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW());
       ALTER TABLE providers ADD COLUMN IF NOT EXISTS max_concurrent INT DEFAULT 2;
+      -- 生成任务表（用于刷新恢复：前端点生成即插一行，后台跑完后更新结果，前端刷新后能查到状态）
+      CREATE TABLE IF NOT EXISTS generation_tasks (
+        task_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'running',  -- running | done | failed
+        model TEXT DEFAULT '',
+        prompt TEXT DEFAULT '',
+        count INT DEFAULT 1,
+        content_type TEXT DEFAULT 'image',
+        result JSONB,                            -- 生成完成后的完整结果（images/usedProviders/errors）
+        error TEXT DEFAULT '',
+        pending_ids TEXT[] DEFAULT '{}',         -- 对应的前端占位 item id 列表
+        client_meta JSONB DEFAULT '{}',           -- 前端可写入任意键值（ratio/model/prompt 等用于恢复渲染）
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS generation_tasks_status_idx ON generation_tasks (status);
+      CREATE INDEX IF NOT EXISTS generation_tasks_created_at_idx ON generation_tasks (created_at);
       INSERT INTO oss_config (id, enabled) VALUES (1, TRUE) ON CONFLICT (id) DO NOTHING;
       INSERT INTO settings (key, value) VALUES ('app', '{}') ON CONFLICT (key) DO NOTHING;
     `);
@@ -426,12 +443,31 @@ async function handleAPI(req, res) {
   }
 
   // ── 服务端生成分发（同模型多供应商动态均衡）──
+  // POST /api/generate：异步模式（默认）。立即返回 taskId，前端轮询 /api/generate/status/:taskId 拿结果。
   if (url === '/api/generate' && method === 'POST') {
     if (!pgPool) return sendJSON(res, 200, { status: 'failed', error: '数据库不可用，无法分发生成任务' });
     const body = await parseBody(req);
     if (!body || !body.model || !body.prompt) return sendJSON(res, 400, { error: '缺少 model 或 prompt' });
+    // 兼容旧调用：sync=1 时直接返回完整结果（用于一次性同步测试/老客户端）
+    if (body.sync) {
+      try {
+        const result = await dispatcher.generate(pgPool, {
+          model: body.model,
+          prompt: body.prompt,
+          ratio: body.ratio || '1:1',
+          resolution: body.resolution || '1k',
+          count: body.count || 1,
+          contentType: body.contentType || 'image',
+          referenceImages: body.referenceImages || [],
+        });
+        return sendJSON(res, 200, result);
+      } catch (e) {
+        return sendJSON(res, 200, { status: 'failed', error: `分发异常：${(e && e.message) || String(e)}` });
+      }
+    }
+    // 异步：插入任务表，后台跑，前端轮询
     try {
-      const result = await dispatcher.generate(pgPool, {
+      const { taskId, error } = await dispatcher.generateAsync(pgPool, {
         model: body.model,
         prompt: body.prompt,
         ratio: body.ratio || '1:1',
@@ -439,11 +475,33 @@ async function handleAPI(req, res) {
         count: body.count || 1,
         contentType: body.contentType || 'image',
         referenceImages: body.referenceImages || [],
+        pendingIds: body.pendingIds || [],
+        clientMeta: {
+          ratio: body.ratio || '1:1',
+          resolution: body.resolution || '1k',
+          contentType: body.contentType || 'image',
+        },
       });
-      return sendJSON(res, 200, result);
+      if (error) return sendJSON(res, 200, { status: 'failed', error });
+      return sendJSON(res, 200, { status: 'pending', taskId });
     } catch (e) {
       return sendJSON(res, 200, { status: 'failed', error: `分发异常：${(e && e.message) || String(e)}` });
     }
+  }
+
+  // GET /api/generate/status/:taskId — 查询单个任务状态
+  if (url.startsWith('/api/generate/status/') && method === 'GET') {
+    if (!pgPool) return sendJSON(res, 200, { status: 'unknown', error: '数据库不可用' });
+    const taskId = decodeURIComponent(url.slice('/api/generate/status/'.length));
+    const r = await dispatcher.getTaskStatus(pgPool, taskId);
+    return sendJSON(res, 200, r);
+  }
+
+  // GET /api/generate/active — 列出在途任务（用于页面刷新后批量恢复）
+  if (url === '/api/generate/active' && method === 'GET') {
+    if (!pgPool) return sendJSON(res, 200, { tasks: [], error: '数据库不可用' });
+    const r = await dispatcher.listActiveTasks(pgPool);
+    return sendJSON(res, 200, r);
   }
 
   // ── AI 提示词优化（智能体 skill：调后台启用的 text 类型推理模型）──

@@ -321,4 +321,114 @@ function getArrayByPath(obj, path) {
   return Array.isArray(v) ? v : [];
 }
 
-module.exports = { generate, callEndpoint, getByPath, getArrayByPath };
+// ─── 异步生成：返回 taskId 立即让前端可轮询，状态写入 PG ───
+async function generateAsync(pgPool, opts) {
+  if (!pgPool) return { taskId: null, error: '数据库不可用' };
+  const { model, prompt, count, contentType, referenceImages, pendingIds = [], clientMeta = {} } = opts;
+  // 生成一个稳定 taskId：便于前端 localStorage 持久化关联
+  const taskId = `gt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await pgPool.query(
+      `INSERT INTO generation_tasks
+         (task_id, status, model, prompt, count, content_type, pending_ids, client_meta)
+       VALUES ($1, 'running', $2, $3, $4, $5, $6, $7)`,
+      [taskId, model || '', prompt || '', count || 1, contentType || 'image', pendingIds, clientMeta],
+    );
+  } catch (e) {
+    return { taskId: null, error: `写入任务表失败：${e.message}` };
+  }
+  // 后台跑：完成后更新 PG（不再 await）
+  generate(pgPool, opts)
+    .then(async (result) => {
+      try {
+        await pgPool.query(
+          `UPDATE generation_tasks
+             SET status=$2, result=$3, error=$4, completed_at=NOW()
+           WHERE task_id=$1`,
+          [
+            taskId,
+            result && result.status === 'success' ? 'done' : 'failed',
+            JSON.stringify(result || {}),
+            (result && result.error) || '',
+          ],
+        );
+      } catch (e) {
+        console.warn('[dispatcher] 任务完成写库失败:', e.message);
+      }
+    })
+    .catch(async (e) => {
+      try {
+        await pgPool.query(
+          `UPDATE generation_tasks
+             SET status='failed', error=$2, completed_at=NOW()
+           WHERE task_id=$1`,
+          [taskId, String((e && e.message) || e)],
+        );
+      } catch {}
+    });
+  return { taskId };
+}
+
+// 查询单个任务状态
+async function getTaskStatus(pgPool, taskId) {
+  if (!pgPool) return { status: 'unknown', error: '数据库不可用' };
+  try {
+    const r = await pgPool.query(
+      `SELECT task_id, status, result, error, pending_ids, client_meta, model, prompt, count, content_type, created_at, completed_at
+         FROM generation_tasks WHERE task_id=$1`,
+      [taskId],
+    );
+    if (r.rows.length === 0) return { status: 'not_found', error: '任务不存在或已清理' };
+    const row = r.rows[0];
+    return {
+      taskId: row.task_id,
+      status: row.status,
+      result: row.result || null,
+      error: row.error || '',
+      pendingIds: row.pending_ids || [],
+      clientMeta: row.client_meta || {},
+      model: row.model,
+      prompt: row.prompt,
+      count: row.count,
+      contentType: row.content_type,
+      createdAt: row.created_at,
+      completedAt: row.completed_at,
+    };
+  } catch (e) {
+    return { status: 'unknown', error: e.message };
+  }
+}
+
+// 列出所有在途任务（status='running'，以及最近 1 小时内 done/failed 便于客户端发现刚完成但未及时拉到的事件）
+async function listActiveTasks(pgPool) {
+  if (!pgPool) return { tasks: [] };
+  try {
+    const r = await pgPool.query(
+      `SELECT task_id, status, result, error, pending_ids, client_meta, model, prompt, count, content_type, created_at, completed_at
+         FROM generation_tasks
+         WHERE status='running' OR (completed_at > NOW() - INTERVAL '1 hour')
+         ORDER BY created_at DESC
+         LIMIT 100`,
+    );
+    return {
+      tasks: r.rows.map((row) => ({
+        taskId: row.task_id,
+        status: row.status,
+        result: row.result || null,
+        error: row.error || '',
+        pendingIds: row.pending_ids || [],
+        clientMeta: row.client_meta || {},
+        model: row.model,
+        prompt: row.prompt,
+        count: row.count,
+        contentType: row.content_type,
+        createdAt: row.created_at,
+        completedAt: row.completed_at,
+      })),
+    };
+  } catch (e) {
+    return { tasks: [], error: e.message };
+  }
+}
+
+module.exports = { generate, generateAsync, getTaskStatus, listActiveTasks, callEndpoint, getByPath, getArrayByPath };

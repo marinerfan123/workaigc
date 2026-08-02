@@ -1,12 +1,31 @@
 import { useState } from 'react';
-import { Search, ChevronDown, Grid3X3, Image as ImageIcon, Video, Music, User, Upload, FolderUp, Sparkles, MoreHorizontal } from 'lucide-react';
+import {
+  Search,
+  ChevronDown,
+  Grid3X3,
+  Image as ImageIcon,
+  Video,
+  Music,
+  User,
+  Upload,
+  FolderUp,
+  Sparkles,
+  MoreHorizontal,
+  ImagePlus,
+  Check,
+} from 'lucide-react';
 import { MOCK_MEDIA_LIST } from '@/data/media';
 import Image from '@/components/ui/image';
 
 interface MediaPickerProps {
   open: boolean;
   onClose: () => void;
-  onAddToPrompt: (url: string) => void;
+  /** 将选中资源作为参考图加到生成栏 referenceImages 列表 */
+  onAddAsReference: (url: string) => void;
+  /** 将选中资源的 URL 作为参考链接追加到 prompt 文本（次要操作） */
+  onAddToPrompt?: (url: string) => void;
+  /** 已添加的参考图 URL 集合，用于在按钮上显示"已选"态 */
+  referenceImages?: string[];
 }
 
 const CATEGORIES = [
@@ -21,7 +40,13 @@ const CATEGORIES = [
   { key: 'upload', label: '上传的内容', icon: Upload },
 ];
 
-export default function MediaPicker({ open, onClose, onAddToPrompt }: MediaPickerProps) {
+export default function MediaPicker({
+  open,
+  onClose,
+  onAddAsReference,
+  onAddToPrompt,
+  referenceImages = [],
+}: MediaPickerProps) {
   const [activeCategory, setActiveCategory] = useState('all');
   const [selectedId, setSelectedId] = useState<string | null>(MOCK_MEDIA_LIST[0]?.id ?? null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -39,6 +64,14 @@ export default function MediaPicker({ open, onClose, onAddToPrompt }: MediaPicke
     }
     return false;
   });
+  const alreadyAdded = !!(selected && referenceImages.includes(selected.fullUrl));
+
+  const handleAddRef = () => {
+    if (!selected) return;
+    if (alreadyAdded) return;
+    onAddAsReference(selected.fullUrl);
+    onClose();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
@@ -97,23 +130,37 @@ export default function MediaPicker({ open, onClose, onAddToPrompt }: MediaPicke
 
           {/* 中间列表 */}
           <div className="flex-1 overflow-y-auto p-3 space-y-1">
-            {filtered.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setSelectedId(item.id)}
-                className={`flex w-full items-center gap-3 rounded-2xl p-2.5 text-left transition-all duration-300 ${
-                  selectedId === item.id ? 'bg-zinc-800/70 border border-emerald-500/30' : 'hover:bg-zinc-800/30 border border-transparent'
-                }`}
-              >
-                <div className="h-14 w-14 shrink-0 overflow-hidden rounded-xl">
-                  <Image src={item.thumbnail} alt={item.title} className="h-full w-full object-cover" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="truncate text-sm font-medium text-white">{item.title}</div>
-                  <div className="text-xs text-zinc-500">图片</div>
-                </div>
-              </button>
-            ))}
+            {filtered.map((item) => {
+              const isRef = referenceImages.includes(item.fullUrl);
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setSelectedId(item.id)}
+                  className={`flex w-full items-center gap-3 rounded-2xl p-2.5 text-left transition-all duration-300 ${
+                    selectedId === item.id
+                      ? 'bg-zinc-800/70 border border-emerald-500/30'
+                      : 'hover:bg-zinc-800/30 border border-transparent'
+                  }`}
+                >
+                  <div className="h-14 w-14 shrink-0 overflow-hidden rounded-xl">
+                    <Image src={item.thumbnail} alt={item.title} className="h-full w-full object-cover" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="truncate text-sm font-medium text-white">{item.title}</div>
+                    <div className="text-xs text-zinc-500">图片</div>
+                  </div>
+                  {isRef ? (
+                    <span
+                      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300 border border-emerald-500/25"
+                      title="已添加到参考图"
+                    >
+                      <Check className="size-3" />
+                      已参考
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
           </div>
 
           {/* 右侧预览 */}
@@ -126,23 +173,43 @@ export default function MediaPicker({ open, onClose, onAddToPrompt }: MediaPicke
                     alt={selected.title}
                     className="absolute inset-0 w-full h-full object-contain"
                   />
+                  {alreadyAdded ? (
+                    <div className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-full bg-emerald-500/90 px-2 py-0.5 text-[10px] font-bold text-black shadow">
+                      <Check className="size-3" />
+                      已在参考列表
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <div className="text-sm text-zinc-500">选择一个资源</div>
               )}
             </div>
             <button
-              onClick={() => {
-                if (selected) {
-                  onAddToPrompt(selected.fullUrl);
-                  onClose();
-                }
-              }}
-              disabled={!selected}
-              className="mt-5 w-full rounded-2xl bg-emerald-500 px-4 py-3 text-sm font-bold text-black hover:bg-emerald-400 disabled:opacity-50 transition-colors"
+              onClick={handleAddRef}
+              disabled={!selected || alreadyAdded}
+              className={`mt-5 flex w-full items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-bold transition-colors ${
+                alreadyAdded
+                  ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+                  : 'bg-emerald-500 text-black hover:bg-emerald-400'
+              }`}
             >
-              添加到提示
+              <ImagePlus className="size-4" />
+              {alreadyAdded ? '已在参考图列表' : '添加为参考图'}
             </button>
+            {onAddToPrompt ? (
+              <button
+                onClick={() => {
+                  if (selected) {
+                    onAddToPrompt(selected.fullUrl);
+                    onClose();
+                  }
+                }}
+                disabled={!selected}
+                className="mt-2 w-full rounded-2xl border border-zinc-800 px-4 py-3 text-sm font-medium text-zinc-300 hover:bg-zinc-800/50 hover:text-white disabled:opacity-50 transition-colors"
+              >
+                引用到提示词
+              </button>
+            ) : null}
             <button className="mt-2 w-full rounded-2xl border border-zinc-800 px-4 py-3 text-sm font-medium text-white hover:bg-zinc-800/50 transition-colors">
               上传媒体
             </button>
