@@ -43,6 +43,7 @@ const { initRedis, isRedisUp } = redisStore;
 const { clientIp, rateLimit } = rateLimitMod;
 import adminMod from './admin.cjs'; // Phase 2 运营总控台(M3) + 全局智能体层(M4) 后台接口
 import paymentsMod from './payments.cjs'; // Phase 2 收尾：充值订单 + DEV 支付适配器(M2 账务)
+import shopMod from './shop.cjs';       // Phase 5 电商模块（AI 市集）
 
 async function initDB() {
   try {
@@ -196,6 +197,102 @@ async function initDB() {
       );
       CREATE INDEX IF NOT EXISTS ix_ro_user ON recharge_orders(user_id);
       CREATE INDEX IF NOT EXISTS ix_ro_payno ON recharge_orders(pay_order_no);
+
+      -- === Phase 5 电商（AI 市集）=== 类型对齐：users.id 为 TEXT；orders.id 用 uuid 文本
+      CREATE TABLE IF NOT EXISTS shops (
+        id          BIGSERIAL PRIMARY KEY,
+        owner_id    TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name        VARCHAR(255) NOT NULL,
+        description TEXT DEFAULT '',
+        status      VARCHAR(16) NOT NULL DEFAULT 'active',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS products (
+        id            BIGSERIAL PRIMARY KEY,
+        shop_id       BIGINT      NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+        title         VARCHAR(255) NOT NULL,
+        subtitle      VARCHAR(255) DEFAULT '',
+        description   TEXT DEFAULT '',
+        cover_url     VARCHAR(512) DEFAULT '',
+        price_cents   INTEGER NOT NULL DEFAULT 0,
+        credit_price  INTEGER DEFAULT 0,
+        stock         INTEGER NOT NULL DEFAULT 0,
+        category      VARCHAR(64) NOT NULL DEFAULT 'other',
+        ai_fields     JSONB NOT NULL DEFAULT '{}',
+        status        VARCHAR(16) NOT NULL DEFAULT 'active',
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_prod_shop ON products(shop_id, status);
+      CREATE INDEX IF NOT EXISTS idx_prod_cat ON products(category, status);
+      CREATE TABLE IF NOT EXISTS product_skus (
+        id            BIGSERIAL PRIMARY KEY,
+        product_id    BIGINT      NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        specs         JSONB NOT NULL DEFAULT '{}',
+        price_cents   INTEGER NOT NULL DEFAULT 0,
+        credit_price  INTEGER DEFAULT 0,
+        stock         INTEGER NOT NULL DEFAULT 0,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS cart_items (
+        id          BIGSERIAL PRIMARY KEY,
+        user_id     TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        product_id  BIGINT  NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        sku_id      BIGINT  NOT NULL DEFAULT 0,
+        qty         INTEGER NOT NULL DEFAULT 1,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_cart ON cart_items(user_id, product_id, sku_id);
+      CREATE INDEX IF NOT EXISTS idx_cart_user ON cart_items(user_id);
+      CREATE TABLE IF NOT EXISTS orders (
+        id              TEXT    PRIMARY KEY,
+        order_no        VARCHAR(40) NOT NULL UNIQUE,
+        user_id         TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        total_cents     INTEGER NOT NULL DEFAULT 0,
+        total_credits   INTEGER NOT NULL DEFAULT 0,
+        credit_used     INTEGER NOT NULL DEFAULT 0,
+        pay_channel     VARCHAR(16) DEFAULT 'credit',
+        pay_status      VARCHAR(16) NOT NULL DEFAULT 'pending',
+        idempotency_key TEXT    UNIQUE,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        paid_at         TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_ord_user ON orders(user_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS order_items (
+        id                BIGSERIAL PRIMARY KEY,
+        order_id          TEXT    NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        product_id        BIGINT  NOT NULL REFERENCES products(id),
+        sku_id            BIGINT  NOT NULL DEFAULT 0,
+        title             VARCHAR(255) DEFAULT '',
+        qty               INTEGER NOT NULL DEFAULT 1,
+        unit_credit_price INTEGER NOT NULL DEFAULT 0,
+        unit_price_cents  INTEGER NOT NULL DEFAULT 0,
+        snapshot          JSONB   NOT NULL DEFAULT '{}'
+      );
+      CREATE TABLE IF NOT EXISTS coupons (
+        id          BIGSERIAL PRIMARY KEY,
+        code        VARCHAR(32) NOT NULL UNIQUE,
+        type        VARCHAR(16) NOT NULL,
+        value       INTEGER NOT NULL,
+        min_spend   INTEGER NOT NULL DEFAULT 0,
+        expire_at   TIMESTAMPTZ
+      );
+      CREATE TABLE IF NOT EXISTS reviews (
+        id          BIGSERIAL PRIMARY KEY,
+        product_id  BIGINT  NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        user_id     TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        rating      INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+        content     TEXT DEFAULT '',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS shipments (
+        id          BIGSERIAL PRIMARY KEY,
+        order_id    TEXT    NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        carrier     VARCHAR(32) DEFAULT '',
+        tracking_no VARCHAR(64) DEFAULT '',
+        status      VARCHAR(16) NOT NULL DEFAULT 'pending',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
 
     // 种子：运营智能体 ops_bot + 三条自动化规则（§H.3）
@@ -209,6 +306,40 @@ async function initDB() {
         ('rule-auto-reply','客服咨询应答','support_query','{"kb_match":true}','{"type":"draft_reply"}', TRUE)
       ON CONFLICT (id) DO NOTHING;
     `);
+
+    // 种子：电商示例店铺 + 商品（让 AI 市集首页有内容；幂等，已存在则跳过）
+    // 注意：pg 的 query 在带参数时走 extended 协议，不支持多语句；故拆分为多条单语句
+    const shopSeed = await pgPool.query('SELECT 1 FROM shops LIMIT 1');
+    if (shopSeed.rows.length === 0) {
+      const marketPw = session.hashPassword('market-seed-2024');
+      await pgPool.query(
+        `INSERT INTO users (id, email, display_name, password_hash, credits, role)
+         VALUES ('u-market','market@huabu.local','市集官方',$1, 0, 'user')
+         ON CONFLICT (id) DO NOTHING`,
+        [marketPw]
+      );
+      await pgPool.query(
+        `INSERT INTO shops (owner_id, name, description, status)
+         VALUES ('u-market','AI 创意市集','官方精选的提示词 / 模型 / 素材 / 服务','active')
+         ON CONFLICT DO NOTHING`
+      );
+      await pgPool.query(`
+        INSERT INTO products (shop_id, title, subtitle, cover_url, price_cents, credit_price, stock, category, ai_fields, status)
+        SELECT s.id, v.title, v.subtitle, v.cover, v.price, v.credit, v.stock, v.cat, v.ai::jsonb, 'active'
+        FROM shops s, (VALUES
+          ('爆款摄影提示词包','让废片变大片的 50 组提示词','', 9900, 99, 999, 'prompt', '{"tags":["摄影","调色"]}'),
+          ('国风水墨 LoRA 模型','一键生成东方水墨风人像','', 19900, 199, 500, 'model', '{"tags":["国风","LoRA"]}'),
+          ('赛博朋克 4K 素材集','200 张可商用免抠 PNG','', 12900, 129, 800, 'asset', '{"tags":["赛博朋克","素材"]}'),
+          ('品牌 IP 设计服务','资深设计师 1v1 定制','', 29900, 299, 50, 'service', '{"tags":["IP","设计"]}'),
+          ('AI 绘画系统课','从 0 到接单的实战训练营','', 39900, 399, 200, 'course', '{"tags":["课程","实战"]}'),
+          ('治愈系插画提示词','小红书爆款封面专用','', 6900, 69, 999, 'prompt', '{"tags":["插画","治愈"]}'),
+          ('二次元角色 LoRA','高保真动漫角色微调','', 15900, 159, 300, 'model', '{"tags":["二次元","LoRA"]}'),
+          ('商业海报模板包','100 套可直接改字的 PSD','', 8900, 89, 600, 'asset', '{"tags":["海报","模板"]}')
+        ) AS v(title, subtitle, cover, price, credit, stock, cat, ai)
+        WHERE s.owner_id='u-market'
+      `);
+      console.log('[Seed] 已创建示例店铺与 8 件 AI 市集商品');
+    }
 
     // 种子：管理员账号（仅当尚无 admin 时；可用 ADMIN_SEED_EMAIL / ADMIN_SEED_PASSWORD 覆盖，公开仓库务必修改）
     const existingAdmin = await pgPool.query("SELECT 1 FROM users WHERE role='admin' LIMIT 1");
@@ -373,6 +504,18 @@ const payments = paymentsMod.createPayments({
   session,
   sendJSON,
   parseBody,
+  billing,
+});
+
+// ─── Phase 5 电商模块（注入依赖；pgPool 经 getter 取最新值）──
+const shop = shopMod.createShop({
+  getPg: () => pgPool,
+  session,
+  sendJSON,
+  fromSnake,
+  toSnake,
+  parseBody,
+  billing,
 });
 
 // ─── 应用网关（Phase A 改造）─────────────────────
@@ -497,6 +640,12 @@ async function handleAPI(req, res) {
   if (url === '/api/auth/login' && method === 'POST') return handleLogin(req, res);
   if (url === '/api/auth/refresh' && method === 'POST') return handleRefresh(req, res);
 
+  // Phase 5 电商：公开浏览接口（市集首页 / 商品详情）无需登录，置于网关之前
+  const pathname = url.split('?')[0];
+  if (method === 'GET' && (pathname === '/api/shop/products' || /^\/api\/products\/[^/]+$/.test(pathname))) {
+    if (shop.handleShop(req, res, url, method)) return;
+  }
+
   // 应用网关：API_TOKEN 或 用户会话 cookie 任一通过
   if (!appGateway(req)) return sendJSON(res, 401, { error: 'Unauthorized' });
 
@@ -510,6 +659,9 @@ async function handleAPI(req, res) {
 
   // ── 充值订单 + DEV 支付适配器（M2 账务）── 命中即处理并返回 true
   if (payments.handlePayments(req, res, url, method)) return;
+
+  // ── Phase 5 电商模块（AI 市集）── 命中即处理并返回 true
+  if (shop.handleShop(req, res, url, method)) return;
 
   const realUser = session.getUserFromCookie(req); // 真实用户身份（用于计费/owner）
 

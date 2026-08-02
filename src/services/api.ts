@@ -406,6 +406,87 @@ export async function apiRechargeCallback(params: { channel: 'wechat' | 'alipay'
   }
 }
 
+// ─── 电商（Phase 5 / AI 市集）───
+export interface ShopProduct {
+  id: number | string;
+  shopId: number | string;
+  title: string;
+  subtitle?: string;
+  coverUrl?: string;
+  priceCents: number;
+  creditPrice: number;
+  stock: number;
+  category: string;
+  aiFields?: Record<string, unknown>;
+  status: string;
+  createdAt?: string;
+  shopName?: string;
+}
+export async function apiGetShopProducts(params: { cat?: string; q?: string; limit?: number; offset?: number } = {}): Promise<{ items: ShopProduct[]; total: number; limit: number; offset: number }> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  try { return await apiFetch(`/api/shop/products?${qs.toString()}`); } catch { return { items: [], total: 0, limit: 0, offset: 0 }; }
+}
+export interface ShopProductDetail {
+  product: ShopProduct & { description?: string; shopDescription?: string };
+  skus: Array<{ id: number | string; productId: number | string; specs: Record<string, unknown>; priceCents: number; creditPrice: number; stock: number; createdAt?: string }>;
+  reviews: Array<{ id: number | string; productId: number | string; userId: string; rating: number; content?: string; createdAt?: string }>;
+}
+export async function apiGetProduct(id: string): Promise<ShopProductDetail | null> {
+  try { return await apiFetch(`/api/products/${encodeURIComponent(id)}`); } catch { return null; }
+}
+export interface CartItem {
+  id: number | string;
+  productId: number | string;
+  skuId: number | string;
+  qty: number;
+  title: string;
+  coverUrl?: string;
+  productStatus: string;
+  attrs?: Record<string, unknown> | null;
+  skuStock?: number | null;
+  unitCreditPrice: number;
+  subtotal: number;
+}
+export async function apiGetCart(): Promise<CartItem[]> {
+  try { return await apiFetch('/api/cart'); } catch { return []; }
+}
+export async function apiAddToCart(productId: string | number, qty = 1, skuId?: string | number): Promise<{ ok: boolean; error?: string }> {
+  try { await apiFetch('/api/cart', { method: 'POST', body: JSON.stringify({ productId, qty, skuId }) }); return { ok: true }; }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiUpdateCartItem(id: string | number, qty: number): Promise<{ ok: boolean; error?: string }> {
+  try { await apiFetch(`/api/cart/${encodeURIComponent(String(id))}`, { method: 'PUT', body: JSON.stringify({ qty }) }); return { ok: true }; }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiRemoveCartItem(id: string | number): Promise<{ ok: boolean; error?: string }> {
+  try { await apiFetch(`/api/cart/${encodeURIComponent(String(id))}`, { method: 'DELETE' }); return { ok: true }; }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export interface ShopOrder {
+  id: string;
+  orderNo: string;
+  userId: string;
+  totalCents: number;
+  totalCredits: number;
+  creditUsed: number;
+  payChannel?: string;
+  payStatus: string;
+  createdAt?: string;
+  paidAt?: string | null;
+  itemCount?: number;
+}
+export async function apiCreateOrder(idempotencyKey: string): Promise<{ ok: boolean; order?: { id: string; orderNo: string; totalCredits: number; payStatus: string }; idempotent?: boolean; error?: string }> {
+  try { return await apiFetch('/api/orders', { method: 'POST', body: JSON.stringify({ idempotencyKey }) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiGetOrders(): Promise<ShopOrder[]> {
+  try { return await apiFetch('/api/orders'); } catch { return []; }
+}
+export async function apiGetOrder(id: string): Promise<{ order: ShopOrder; items: any[] } | null> {
+  try { return await apiFetch(`/api/orders/${encodeURIComponent(id)}`); } catch { return null; }
+}
+
 // ─── 管理后台（M3 总控台 / M4 智能体层 / M2 账务）───
 // 走会话 cookie（管理员登录态），无需额外 header；ensureApi 已注入 API_TOKEN 兜底。
 export interface AdminUser {
