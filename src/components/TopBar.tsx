@@ -16,8 +16,10 @@ import {
   LogIn,
   LogOut,
   RefreshCw,
+  Wallet,
 } from 'lucide-react';
 import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authStore';
+import RechargeModal from '@/components/RechargeModal';
 
 interface TopBarProps {
   onSettingsOpen: () => void;
@@ -27,6 +29,7 @@ interface TopBarProps {
 export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProps) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [rechargeOpen, setRechargeOpen] = useState(false);
   const { user } = useAuth();
 
   const moreItems = [
@@ -98,6 +101,13 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
         {user ? (
           <div className="relative ml-2">
             <button
+              onClick={() => setRechargeOpen(true)}
+              className="mr-1.5 flex h-9 items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-colors"
+              title="充值积分"
+            >
+              <Wallet className="size-3.5" /> 充值
+            </button>
+            <button
               onClick={() => setMenuOpen(!menuOpen)}
               className="flex items-center gap-2 rounded-full bg-zinc-800/60 py-1 pl-2 pr-1 hover:bg-zinc-800 transition-colors"
               title="账户"
@@ -142,6 +152,7 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
           </button>
         )}
       </div>
+      <RechargeModal open={rechargeOpen} onClose={() => setRechargeOpen(false)} />
     </header>
   );
 }

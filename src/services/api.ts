@@ -375,6 +375,37 @@ export async function apiMe(): Promise<{ user?: AuthUser }> {
   }
 }
 
+// ─── 充值订单（M2 账务 / DEV 支付适配器）───
+export interface RechargeOrder {
+  id: string;
+  payOrderNo: string;
+  amount: number;
+  channel: 'wechat' | 'alipay';
+  status: 'pending' | 'paid' | 'failed';
+  createdAt: string;
+  paidAt?: string | null;
+}
+/** 创建充值订单（DEV：返回模拟支付入口） */
+export async function apiCreateRechargeOrder(params: { amount: number; channel: 'wechat' | 'alipay' }): Promise<{ ok: boolean; devMode?: boolean; order?: RechargeOrder; error?: string }> {
+  try {
+    return await apiFetch('/api/credits/orders', { method: 'POST', body: JSON.stringify(params) });
+  } catch (e) {
+    return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+/** 当前用户的充值订单历史 */
+export async function apiListRechargeOrders(): Promise<{ items: RechargeOrder[] }> {
+  try { return await apiFetch('/api/credits/orders'); } catch { return { items: [] }; }
+}
+/** 支付成功回调（DEV：前端/模拟页触发；生产由支付平台异步通知） */
+export async function apiRechargeCallback(params: { channel: 'wechat' | 'alipay'; payOrderNo: string }): Promise<{ ok: boolean; alreadyPaid?: boolean; credits?: number; error?: string }> {
+  try {
+    return await apiFetch(`/api/credits/orders/callback/${params.channel}`, { method: 'POST', body: JSON.stringify({ payOrderNo: params.payOrderNo }) });
+  } catch (e) {
+    return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
 // ─── 管理后台（M3 总控台 / M4 智能体层 / M2 账务）───
 // 走会话 cookie（管理员登录态），无需额外 header；ensureApi 已注入 API_TOKEN 兜底。
 export interface AdminUser {

@@ -36,6 +36,7 @@ import rateLimitMod from './ratelimit.cjs'; // Phase 0 固定窗口限流
 const { initRedis, isRedisUp } = redisStore;
 const { clientIp, rateLimit } = rateLimitMod;
 import adminMod from './admin.cjs'; // Phase 2 运营总控台(M3) + 全局智能体层(M4) 后台接口
+import paymentsMod from './payments.cjs'; // Phase 2 收尾：充值订单 + DEV 支付适配器(M2 账务)
 
 async function initDB() {
   try {
@@ -175,6 +176,20 @@ async function initDB() {
         id BIGSERIAL PRIMARY KEY, rule_id TEXT, fired_at TIMESTAMPTZ DEFAULT NOW(),
         result JSONB DEFAULT '{}'
       );
+      -- === Phase 2 收尾：充值订单（M2 账务 / DEV 支付适配器）===
+      CREATE TABLE IF NOT EXISTS recharge_orders (
+        id            TEXT PRIMARY KEY,
+        user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        channel       TEXT NOT NULL DEFAULT 'wechat',   -- wechat | alipay
+        amount        INT NOT NULL,                     -- 充值金额（元）= 入账积分
+        status        TEXT NOT NULL DEFAULT 'pending',  -- pending | paid | failed
+        pay_order_no  TEXT UNIQUE NOT NULL,
+        sign          TEXT DEFAULT '',
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        paid_at       TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS ix_ro_user ON recharge_orders(user_id);
+      CREATE INDEX IF NOT EXISTS ix_ro_payno ON recharge_orders(pay_order_no);
     `);
 
     // 种子：运营智能体 ops_bot + 三条自动化规则（§H.3）
@@ -328,6 +343,14 @@ const admin = adminMod.createAdmin({
   traffic: { onlineUsers: () => traffic.onlineUsers(), currentQps: () => traffic.currentQps() },
 });
 
+// ─── Phase 2 收尾：充值订单 + DEV 支付适配器（注入依赖；pgPool 经 getter 取最新值）──
+const payments = paymentsMod.createPayments({
+  getPg: () => pgPool,
+  session,
+  sendJSON,
+  parseBody,
+});
+
 // ─── 应用网关（Phase A 改造）─────────────────────
 // 保留全局 API_TOKEN（后续阶段去 fallback，评审稿 ⑦）；同时接受用户会话 cookie。
 // 任一通过即放行，并把身份挂到 req.user：API_TOKEN → {id:'__system__'}，会话 → {id, role}
@@ -459,6 +482,9 @@ async function handleAPI(req, res) {
   // ── 管理后台（M3 总控台 / M4 智能体层）──
   if (url === '/api/admin/console/stream' && method === 'GET') return admin.streamConsole(req, res);
   if (url.startsWith('/api/admin/') && method !== 'OPTIONS') return admin.handleAdmin(req, res, url.split('?')[0], method);
+
+  // ── 充值订单 + DEV 支付适配器（M2 账务）── 命中即处理并返回 true
+  if (payments.handlePayments(req, res, url, method)) return;
 
   const realUser = session.getUserFromCookie(req); // 真实用户身份（用于计费/owner）
 
