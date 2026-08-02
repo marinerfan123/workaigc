@@ -23,7 +23,6 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { capabilityClient, logger } from '@/services/client-capabilities';
-import { useNavigate } from 'react-router-dom';
 import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub } from '@/hooks/useModelHub';
@@ -91,7 +90,6 @@ function GenerationBar({
   ref,
 }: GenerationBarProps & { ref?: React.Ref<GenerationBarHandle> }) {
   const promptText = prompt ?? '';
-  const navigate = useNavigate();
   const [agentOpen, setAgentOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
@@ -606,11 +604,16 @@ function GenerationBar({
                 <span className="max-w-[140px] truncate font-medium">
                   {currentModelLabel}
                 </span>
-                {currentModel && currentModel.creditCost ? (
+                {/* 积分位置：始终显示，0 时显示「免费」灰色徽章, >0 时显示 amber 徽章 */}
+                {currentModel && typeof currentModel.creditCost === 'number' && currentModel.creditCost > 0 ? (
                   <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold">
                     {currentModel.creditCost} 积分
                   </span>
-                ) : null}
+                ) : (
+                  <span className="shrink-0 rounded-full bg-zinc-700/40 text-zinc-500 border border-zinc-700/50 px-1.5 py-0.5 text-[9px] font-medium">
+                    免费
+                  </span>
+                )}
                 <ChevronDown className="size-3 text-zinc-500" />
               </button>
               {modelMenuOpen && (
@@ -619,7 +622,8 @@ function GenerationBar({
                     className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
                     onClick={() => { setModelMenuOpen(false); setModelSearch(''); }}
                   />
-                  <div className="absolute right-0 bottom-full z-40 mb-1 w-72 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl">
+                  {/* 下拉弹出：相对触发按钮水平居中 (left-1/2 + -translate-x-1/2) + bottom-full = 按钮正上方居中 */}
+                  <div className="absolute left-1/2 bottom-full z-40 mb-1 w-72 -translate-x-1/2 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl">
                     {/* 搜索框 */}
                     <div className="border-b border-zinc-800 p-2">
                       <div className="relative">
@@ -659,34 +663,24 @@ function GenerationBar({
                               }`}
                             >
                               <span className="flex-1 truncate">{getEffectiveModelName(g) || g.displayName}</span>
+                              {/* 积分位置：始终显示（0 → 免费灰色, >0 → amber） */}
                               {typeof g.creditCost === 'number' && g.creditCost > 0 ? (
                                 <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
                                   active
                                     ? 'bg-amber-400/15 text-amber-300'
-                                    : 'bg-zinc-800 text-zinc-500'
+                                    : 'bg-amber-500/10 text-amber-400'
                                 }`}>
                                   {g.creditCost} 积分
                                 </span>
-                              ) : null}
+                              ) : (
+                                <span className="shrink-0 rounded-full bg-zinc-800 text-zinc-500 px-1.5 py-0.5 text-[9px] font-medium">
+                                  免费
+                                </span>
+                              )}
                             </button>
                           );
                         })
                       )}
-                    </div>
-
-                    {/* 底部：模型Hub入口 */}
-                    <div className="border-t border-zinc-800 p-2">
-                      <button
-                        onClick={() => {
-                          setModelMenuOpen(false);
-                          setModelSearch('');
-                          navigate('/model-hub');
-                        }}
-                        className="flex w-full items-center justify-center gap-1.5 rounded-xl py-1.5 text-[10px] font-semibold text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
-                      >
-                        <Settings2 className="size-3" />
-                        管理模型 (模型 Hub)
-                      </button>
                     </div>
                   </div>
                 </>
