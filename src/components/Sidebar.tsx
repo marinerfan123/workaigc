@@ -16,6 +16,9 @@ import {
   FolderOpen,
   Upload,
   MoreHorizontal,
+  Clapperboard,
+  ShoppingBag,
+  ShieldAlert,
 } from 'lucide-react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import type { MediaCounts } from '@/services/api';
@@ -27,7 +30,7 @@ interface SidebarProps {
 }
 
 const NAV_ITEMS = [
-  { path: '/', label: '所有媒体内容', icon: LayoutGrid, countKey: 'total' as const },
+  { path: '/workspace', label: '工作台', icon: LayoutGrid, countKey: 'total' as const, end: true },
 ];
 
 const LIBRARY_CATEGORIES = [
@@ -64,9 +67,13 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
         collapsed ? 'w-[64px]' : 'w-[220px]'
       }`}
     >
-      {/* 顶部：返回 + 项目名 */}
+        {/* 顶部：返回总览 + 项目名 */}
       <div className="flex items-center gap-2 px-3 py-3">
-        <button className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors">
+        <button
+          onClick={() => navigate('/')}
+          title="返回总览"
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
+        >
           <ChevronLeft className="size-4" />
         </button>
         {!collapsed && (
@@ -125,7 +132,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
             <NavLink
               key={item.path}
               to={item.path}
-              end={item.path === '/'}
+              end={item.end}
               className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-300 ${
                 active
                   ? 'bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20'
@@ -207,6 +214,52 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
         >
           <User className="size-4 shrink-0" />
           {!collapsed && <span className="truncate">角色管理</span>}
+        </NavLink>
+
+        {/* 全站导航：工作室 / 商城 / 管理后台 */}
+        {!collapsed && (
+          <div className="mt-3 mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">
+            全站
+          </div>
+        )}
+        <NavLink
+          to="/studio"
+          end
+          className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-300 ${
+            isActive('/studio')
+              ? 'bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20'
+              : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white border border-transparent'
+          } ${collapsed ? 'justify-center' : ''}`}
+          title={collapsed ? '创作工作室' : undefined}
+        >
+          <Clapperboard className="size-4 shrink-0" />
+          {!collapsed && <span className="truncate">创作工作室</span>}
+        </NavLink>
+        <NavLink
+          to="/shop"
+          end
+          className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-300 ${
+            isActive('/shop')
+              ? 'bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20'
+              : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white border border-transparent'
+          } ${collapsed ? 'justify-center' : ''}`}
+          title={collapsed ? 'AI 市集' : undefined}
+        >
+          <ShoppingBag className="size-4 shrink-0" />
+          {!collapsed && <span className="truncate">AI 市集</span>}
+        </NavLink>
+        <NavLink
+          to="/admin"
+          end
+          className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-300 ${
+            isActive('/admin')
+              ? 'bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20'
+              : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white border border-transparent'
+          } ${collapsed ? 'justify-center' : ''}`}
+          title={collapsed ? '管理后台' : undefined}
+        >
+          <ShieldAlert className="size-4 shrink-0" />
+          {!collapsed && <span className="truncate">管理后台</span>}
         </NavLink>
       </nav>
 
