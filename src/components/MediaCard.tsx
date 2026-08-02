@@ -110,7 +110,11 @@ export default function MediaCard({
 
   return (
     <div
-      className={`group relative overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/50 transition-all duration-300 hover:border-zinc-700 ${isPending ? 'cursor-default' : 'cursor-pointer'}`}
+      className={`group relative overflow-hidden rounded-2xl border bg-zinc-900/50 transition-all duration-300 will-change-transform ${
+        selected
+          ? `border-emerald-500/60 shadow-[0_0_28px_-6px_rgba(16,185,129,0.45)] ${!isPending ? 'scale-[1.015]' : ''} z-10`
+          : 'border-zinc-800 hover:border-zinc-600/80 hover:shadow-2xl hover:shadow-black/40 hover:z-10'
+      } ${isPending ? 'cursor-default' : 'cursor-pointer'}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => {
         setHovered(false);
@@ -233,7 +237,7 @@ export default function MediaCard({
           <Image
             src={item.thumbnail}
             alt={item.title}
-            className="h-full w-full object-cover duration-500"
+            className="h-full w-full object-cover duration-700 ease-out group-hover:scale-105"
           />
         )}
 

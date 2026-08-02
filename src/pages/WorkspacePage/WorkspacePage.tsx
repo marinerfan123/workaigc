@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { Search, Sparkles } from 'lucide-react';
 import TopBar from '@/components/TopBar';
 import FilterBar from '@/components/FilterBar';
 import FilterPanel from '@/components/FilterPanel';
@@ -286,8 +287,8 @@ export default function WorkspacePage() {
   };
 
   const gridCols = gridSize === 'S' ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5' :
-    gridSize === 'M' ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4' :
-    'grid-cols-2 md:grid-cols-3';
+    gridSize === 'M' ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5' :
+    'grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4';
 
   return (
     <div className="flex h-full flex-col">
@@ -312,16 +313,33 @@ export default function WorkspacePage() {
             onSortModeChange={setSortMode}
           />
 
-          <div className="relative flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-4 pb-4">
+          <div className="relative flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-5 pb-6 pt-3">
             {filtered.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center py-20">
-                <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-[2rem] bg-zinc-900 text-zinc-600">
-                  <svg className="size-10" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
+              searchQuery ? (
+                <div className="flex h-full flex-col items-center justify-center py-20">
+                  <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-[2rem] bg-zinc-900 text-zinc-600">
+                    <Search className="size-7" />
+                  </div>
+                  <p className="text-sm text-zinc-500">未找到匹配「{searchQuery}」的作品</p>
                 </div>
-                <p className="text-sm text-zinc-500">暂无作品，输入提示词开始创作</p>
-              </div>
+              ) : (
+                <div className="flex h-full flex-col items-center justify-center py-20 px-6">
+                  <div className="relative mb-6 flex h-24 w-24 items-center justify-center rounded-[2rem] bg-gradient-to-br from-emerald-500/15 to-teal-500/10 text-emerald-400 ring-1 ring-emerald-500/20">
+                    <Sparkles className="size-10" />
+                    <div className="pointer-events-none absolute inset-0 rounded-[2rem] bg-emerald-500/10 blur-2xl animate-pulse" />
+                  </div>
+                  <h2 className="text-lg font-semibold text-white">开始你的古风创作</h2>
+                  <p className="mt-2 max-w-sm text-center text-sm leading-relaxed text-zinc-500">
+                    在下方输入提示词，选择模型与画面比例，即可生成古风人像。支持参考图与多种智能体能力。
+                  </p>
+                  <button
+                    onClick={() => generationBarRef.current?.focusInput()}
+                    className="mt-6 inline-flex items-center gap-2 rounded-full bg-emerald-500 px-5 py-2.5 text-sm font-bold text-black shadow-lg shadow-emerald-500/20 hover:bg-emerald-400 active:scale-95 transition-all duration-200"
+                  >
+                    <Sparkles className="size-4" /> 立即创作
+                  </button>
+                </div>
+              )
             ) : viewMode === 'batch' ? (
               <div className="space-y-2">
                 {filtered.map((item, index) => (
@@ -394,20 +412,24 @@ export default function WorkspacePage() {
             />
           </div>
 
-          <GenerationBar
-            ref={generationBarRef}
-            settings={settings}
-            onSettingsChange={handleSettingsChange}
-            onPendingCreate={handlePendingCreate}
-            onGenerate={handleGenerate}
-            referenceImages={referenceImages}
-            onRemoveReference={handleRemoveReference}
-            onAddReference={() => setPickerOpen(true)}
-            generating={generating}
-            setGenerating={setGenerating}
-            prompt={prompt}
-            onPromptChange={setPrompt}
-          />
+          <div className="relative">
+            {/* 顶部渐隐：让悬浮生成栏在视觉上「锚定」于作品区，而非漂浮 */}
+            <div className="pointer-events-none absolute -top-12 left-0 right-0 h-12 bg-gradient-to-t from-black via-black/70 to-transparent" />
+            <GenerationBar
+              ref={generationBarRef}
+              settings={settings}
+              onSettingsChange={handleSettingsChange}
+              onPendingCreate={handlePendingCreate}
+              onGenerate={handleGenerate}
+              referenceImages={referenceImages}
+              onRemoveReference={handleRemoveReference}
+              onAddReference={() => setPickerOpen(true)}
+              generating={generating}
+              setGenerating={setGenerating}
+              prompt={prompt}
+              onPromptChange={setPrompt}
+            />
+          </div>
         </div>
 
         {/* 右侧详情面板 */}

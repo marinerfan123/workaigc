@@ -75,6 +75,8 @@ export interface RetryPayload {
 /** 父级通过 ref 触发重试的 imperative handle */
 export interface GenerationBarHandle {
   retry: (payload: RetryPayload) => void;
+  /** 聚焦底部提示词输入框（供空状态「立即创作」CTA 使用） */
+  focusInput: () => void;
 }
 
 function GenerationBar({
@@ -307,6 +309,9 @@ function GenerationBar({
   useImperativeHandle(ref, () => ({
     retry: (payload: RetryPayload) => {
       pendingRetryRef.current = payload;
+    },
+    focusInput: () => {
+      inputRef.current?.focus();
     },
   }), []);
 
@@ -760,8 +765,8 @@ function GenerationBar({
   };
 
   return (
-    <div className="px-4 pb-6 pt-2">
-      <div className="relative z-30 mx-auto max-w-3xl rounded-3xl bg-zinc-900/90 backdrop-blur-xl border border-zinc-800 shadow-2xl shadow-black/40">
+    <div className="px-4 pb-7 pt-3">
+      <div className="relative z-30 mx-auto max-w-4xl rounded-3xl bg-zinc-900/90 backdrop-blur-xl border border-zinc-800 shadow-2xl shadow-black/40">
         {/* 顶部：类型切换 + 模型 + 数量（紧凑 pill 行） */}
         <div className="flex items-center justify-between gap-3 border-b border-zinc-800/80 px-4 py-2.5">
           {/* 类型切换 — SegmentedControl 风格（一个圆角容器 + 滑动高亮） */}
