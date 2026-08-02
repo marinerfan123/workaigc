@@ -5,6 +5,7 @@ import {
   MOCK_PROVIDERS,
   MOCK_MODELS,
   type ModelType,
+  getEffectiveModelName,
 } from '@/data/models';
 import { apiGetProviders, apiGetModels, apiSaveProviders, apiSaveModels, apiDeleteProvider, apiDeleteModel, ensureApi } from '@/services/api';
 
