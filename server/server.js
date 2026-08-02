@@ -16,13 +16,19 @@ const CLIENT_DIR = path.join(__dirname, '..', 'dist', 'build2');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 // ─── Token ──────────────────────────────────────
+// ─── 安全相关开关 ──────────────────────────────
+const isProduction = process.env.NODE_ENV === 'production';
+const tokenFromEnv = !!process.env.API_TOKEN;
+
 let API_TOKEN = '';
 try { API_TOKEN = fs.readFileSync(TOKEN_FILE, 'utf-8').trim(); } catch {}
 if (!API_TOKEN) {
   API_TOKEN = crypto.randomBytes(24).toString('hex');
   fs.writeFileSync(TOKEN_FILE, API_TOKEN);
-  console.log(`\n🔑 API Token: ${API_TOKEN}\n`);
+  if (!isProduction) console.log(`\n🔑 API Token: ${API_TOKEN}\n`);
 }
+// 生产环境若未显式通过环境变量提供 API_TOKEN，则自动生成的 dev 令牌不可作为 system 身份（防后门）
+const devTokenEnabled = !isProduction || tokenFromEnv;
 
 // ─── 数据库：PostgreSQL ─────────────────────────
 import pgLib from 'pg';
@@ -276,7 +282,24 @@ function parseBody(req) {
   });
 }
 
+// ─── 安全响应头（同源直出 + nginx 双保险）───
+function applySecurityHeaders(res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  // CSP：同源为主，允许 data:/blob:/https: 图片与媒体（OSS 代理/模型图）；React 内联样式/脚本需 unsafe-inline
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; " +
+      "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; " +
+      "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  );
+  if (isProduction) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+}
+
 function sendJSON(res, code, data) {
+  applySecurityHeaders(res);
   res.writeHead(code, {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
@@ -300,6 +323,7 @@ function serveStatic(req, res) {
       filePath = path.join(CLIENT_DIR, 'index.html');
     }
     const ext = path.extname(filePath);
+    applySecurityHeaders(res);
     res.writeHead(200, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
       'Access-Control-Allow-Origin': '*',
@@ -355,7 +379,8 @@ const payments = paymentsMod.createPayments({
 // 保留全局 API_TOKEN（后续阶段去 fallback，评审稿 ⑦）；同时接受用户会话 cookie。
 // 任一通过即放行，并把身份挂到 req.user：API_TOKEN → {id:'__system__'}，会话 → {id, role}
 function appGateway(req) {
-  if (req.headers['authorization'] === `Bearer ${API_TOKEN}`) {
+  // 仅当 dev 令牌启用时（非生产，或生产显式通过环境变量提供），才接受其作为 system 身份
+  if (devTokenEnabled && req.headers['authorization'] === `Bearer ${API_TOKEN}`) {
     req.user = { id: '__system__', role: 'system' };
     return true;
   }
@@ -760,6 +785,12 @@ async function handleAPI(req, res) {
   // ── 服务端生成分发（同模型多供应商动态均衡）──
   // POST /api/generate：异步模式（默认）。立即返回 taskId，前端轮询 /api/generate/status/:taskId 拿结果。
   if (url === '/api/generate' && method === 'POST') {
+    // 限流：每 IP 60s 内最多 30 次生成（防刷爆供应商配额 / 积分滥用）
+    const rlGen = await rateLimit({ key: 'rl:gen:' + clientIp(req), limit: 30, windowSec: 60 });
+    if (!rlGen.allowed) {
+      res.setHeader('Retry-After', String(rlGen.retryAfter));
+      return sendJSON(res, 429, { error: '生成请求过于频繁，请稍后再试' });
+    }
     if (!pgPool) return sendJSON(res, 200, { status: 'failed', error: '数据库不可用，无法分发生成任务' });
     const body = await parseBody(req);
     if (!body || !body.model || !body.prompt) return sendJSON(res, 400, { error: '缺少 model 或 prompt' });
@@ -1179,6 +1210,20 @@ const server = http.createServer(async (req, res) => {
 
 await initDB();
 await initRedis();
+
+// ─── 生产安全自检（仅 production）───
+if (isProduction) {
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'dev-only-change-me') {
+    console.warn('[SECURITY] ⚠️ JWT_SECRET 未设置或使用默认值，生产环境会话令牌可被伪造！请通过环境变量设置强随机值。');
+  }
+  if (process.env.ADMIN_SEED_PASSWORD && process.env.ADMIN_SEED_PASSWORD === 'Admin@123456') {
+    console.warn('[SECURITY] ⚠️ ADMIN_SEED_PASSWORD 仍为默认密码，公开部署前必须覆盖为强密码。');
+  }
+  if (!devTokenEnabled) {
+    console.warn('[SECURITY] 已禁用自动生成的 dev 系统令牌（NODE_ENV=production 且未显式提供 API_TOKEN 环境变量）。');
+  }
+}
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 服务: http://localhost:${PORT} | 📁 ${DATA_DIR} | 🐘 PG:${pgPool ? 'connected' : 'json-fallback'} | 🔴 Redis:${isRedisUp() ? 'up' : 'memory-fallback'}`);
 });
