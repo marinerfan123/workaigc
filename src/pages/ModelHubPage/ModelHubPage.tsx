@@ -117,9 +117,14 @@ export default function ModelHubPage() {
   // 获取模型列表相关
   const [fetchingModels, setFetchingModels] = useState(false);
   const [modelSelectOpen, setModelSelectOpen] = useState(false);
-  const [fetchedModels, setFetchedModels] = useState<Array<{ id: string; modelId: string; displayName: string; type: ModelType; selected: boolean; supportedResolutions: Resolution[] }>>([]);
+  const [fetchedModels, setFetchedModels] = useState<Array<{ id: string; modelId: string; displayName: string; mappingName?: string; type: ModelType; selected: boolean; supportedResolutions: Resolution[] }>>([]);
   const [modelSearchQuery, setModelSearchQuery] = useState('');
   const [syncingProviderId, setSyncingProviderId] = useState<string | null>(null);
+
+  // 已保存模型卡的内联编辑（displayName + mappingName）
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [editDisplayName, setEditDisplayName] = useState('');
+  const [editMappingName, setEditMappingName] = useState('');
 
   // 表单状态
   const [formName, setFormName] = useState('');
@@ -1404,53 +1409,141 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                     <span className="text-xs text-zinc-600">{list.length} 个模型</span>
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                    {list.map((group) => (
-                      <div
-                        key={group.modelId}
-                        className={`relative flex flex-col gap-2 rounded-2xl border p-3.5 transition-all duration-200 ${
-                          group.enabled
-                            ? 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
-                            : 'bg-zinc-900/30 border-zinc-800/50 opacity-60'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${TYPE_COLORS[group.type]}`}>
-                              {group.type === 'image' && <ImageIcon className="size-3.5" />}
-                              {group.type === 'video' && <Video className="size-3.5" />}
-                              {group.type === 'text' && <MessageSquare className="size-3.5" />}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="truncate text-xs font-bold text-white">
-                                {getEffectiveModelName(group) || group.displayName}
-                                {group.providerCount > 1 && (
-                                  <span className="ml-1.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle">
-                                    {group.providerCount}家
-                                  </span>
-                                )}
+{list.map((group) => {
+                      const isEditing = editingGroupId === group.modelId;
+                      const rep = group.rows[0];
+                      return (
+                        <div
+                          key={group.modelId}
+                          className={`group/card relative flex flex-col gap-2 rounded-2xl border p-3.5 transition-all duration-200 ${
+                            group.enabled
+                              ? 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
+                              : 'bg-zinc-900/30 border-zinc-800/50 opacity-60'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${TYPE_COLORS[group.type]}`}>
+                                {group.type === 'image' && <ImageIcon className="size-3.5" />}
+                                {group.type === 'video' && <Video className="size-3.5" />}
+                                {group.type === 'text' && <MessageSquare className="size-3.5" />}
                               </div>
-                              <div className="truncate text-[10px] text-zinc-600">{group.modelId}</div>
+                              <div className="min-w-0">
+                                <div className="truncate text-xs font-bold text-white">
+                                  {getEffectiveModelName(group) || group.displayName}
+                                  {group.providerCount > 1 && (
+                                    <span className="ml-1.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle">
+                                      {group.providerCount}家
+                                    </span>
+                                  )}
+                                  {rep?.mappingName && rep.mappingName.trim() && rep.mappingName !== group.displayName && (
+                                    <span
+                                      title={`前台映射名：${rep.mappingName}`}
+                                      className="ml-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle"
+                                    >
+                                      已映射
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="truncate text-[10px] text-zinc-600">{group.modelId}</div>
+                              </div>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                onClick={() => {
+                                  if (isEditing) {
+                                    setEditingGroupId(null);
+                                  } else {
+                                    setEditingGroupId(group.modelId);
+                                    setEditDisplayName(group.displayName || '');
+                                    setEditMappingName(rep?.mappingName || '');
+                                  }
+                                }}
+                                title={isEditing ? '取消编辑' : '编辑名称 / 映射名'}
+                                className={`flex h-6 w-6 items-center justify-center rounded-md transition-all ${
+                                  isEditing
+                                    ? 'bg-emerald-500/20 text-emerald-400'
+                                    : 'text-zinc-500 opacity-0 group-hover/card:opacity-100 hover:bg-zinc-800 hover:text-white'
+                                }`}
+                              >
+                                {isEditing ? <X className="size-3" /> : <Edit3 className="size-3" />}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setModels((prev) =>
+                                    prev.map((m) =>
+                                      m.modelId === group.modelId ? { ...m, enabled: !group.enabled } : m,
+                                    ),
+                                  );
+                                }}
+                                title={group.enabled ? '已启用，点击停用' : '已停用，点击启用'}
+                                className={`relative h-4 w-7 shrink-0 rounded-full transition-all duration-300 ${
+                                  group.enabled ? 'bg-emerald-500' : 'bg-zinc-700'
+                                }`}
+                              >
+                                <div
+                                  className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all duration-300 ${
+                                    group.enabled ? 'left-[14px]' : 'left-0.5'
+                                  }`}
+                                />
+                              </button>
                             </div>
                           </div>
-                          <button
-                            onClick={() => {
-                              setModels((prev) =>
-                                prev.map((m) =>
-                                  m.modelId === group.modelId ? { ...m, enabled: !group.enabled } : m,
-                                ),
-                              );
-                            }}
-                            className={`relative h-4 w-7 shrink-0 rounded-full transition-all duration-300 ${
-                              group.enabled ? 'bg-emerald-500' : 'bg-zinc-700'
-                            }`}
-                          >
-                            <div
-                              className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all duration-300 ${
-                                group.enabled ? 'left-[14px]' : 'left-0.5'
-                              }`}
-                            />
-                          </button>
-                        </div>
+                          {/* 内联编辑面板：displayName + mappingName */}
+                          {isEditing && (
+                            <div className="rounded-xl border border-emerald-500/30 bg-zinc-900/70 p-2.5 space-y-2">
+                              <div>
+                                <label className="mb-1 block text-[10px] uppercase tracking-wider text-zinc-500">显示名称</label>
+                                <input
+                                  type="text"
+                                  value={editDisplayName}
+                                  onChange={(e) => setEditDisplayName(e.target.value)}
+                                  placeholder={group.modelId}
+                                  className="w-full rounded-lg border border-zinc-700 bg-zinc-800/60 px-2 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-[10px] uppercase tracking-wider text-zinc-500">
+                                  映射名称（前台展示名，可选）
+                                </label>
+                                <input
+                                  type="text"
+                                  value={editMappingName}
+                                  onChange={(e) => setEditMappingName(e.target.value)}
+                                  placeholder="留空则用显示名称"
+                                  className="w-full rounded-lg border border-zinc-700 bg-zinc-800/60 px-2 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none"
+                                />
+                                <p className="mt-1 text-[10px] text-zinc-500">
+                                  前台所有模型展示会优先用此名。分发仍按 model_id，不影响。
+                                </p>
+                              </div>
+                              <div className="flex items-center justify-end gap-1.5 pt-1">
+                                <button
+                                  onClick={() => setEditingGroupId(null)}
+                                  className="rounded-lg px-2.5 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                                >
+                                  取消
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    const newDisplay = editDisplayName.trim() || group.displayName || group.modelId;
+                                    const newMapping = editMappingName.trim();
+                                    setModels((prev) =>
+                                      prev.map((m) =>
+                                        m.modelId === group.modelId
+                                          ? { ...m, displayName: newDisplay, mappingName: newMapping }
+                                          : m,
+                                      ),
+                                    );
+                                    setEditingGroupId(null);
+                                  }}
+                                  className="rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-medium text-black hover:bg-emerald-400"
+                                >
+                                  保存
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         {/* 能力 chip */}
                         {group.rows[0]?.capabilities && (
                           <div className="flex flex-wrap items-center gap-1">
@@ -1495,7 +1588,8 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                           ))}
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               );
