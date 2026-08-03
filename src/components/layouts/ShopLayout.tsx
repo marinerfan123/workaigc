@@ -31,7 +31,7 @@ export function ShopLayout() {
             <span className="text-sm font-semibold text-white">AI 市集</span>
           </button>
 
-          <ProductSwitcher className="hidden lg:flex" />
+          <ProductSwitcher className="hidden md:flex" />
 
           {/* 搜索 */}
           <div className="relative hidden flex-1 md:block">
