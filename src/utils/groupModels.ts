@@ -26,6 +26,15 @@ export interface GroupedModel {
   supportedResolutions: Resolution[];
   /** 合并后的积分数（取 max，便于用户感知最高成本） */
   creditCost: number;
+  // ── ModelHub 改造（耗时 / 分类 / 创作者 / 商用） ──
+  /** 预估生成耗时（秒）：取首个有定义的行；都未定义则保留 undefined，由 UI 兜底 */
+  estimatedSeconds?: number;
+  /** 细分类标签：取首个有定义的行 */
+  category?: string;
+  /** 创作者元数据：取首个有定义的行 */
+  creator?: { name: string; avatar?: string; link?: string };
+  /** 是否允许商用：任一供应商行允许即视为允许（最宽松语义，给用户最大选择权） */
+  commercialUse?: boolean;
 }
 
 /**
@@ -71,6 +80,23 @@ export function groupModelsByModelId(models: IAiModel[]): GroupedModel[] {
     // mappingName：取第一个非空的（编辑面板会整组同步，所以聚合后值稳定）
     if (!g.mappingName && m.mappingName && m.mappingName.trim()) {
       g.mappingName = m.mappingName;
+    }
+
+    // estimatedSeconds：取首个「正数」定义的行（防御：DB 默认 0/未回填视为未设置）
+    if (typeof g.estimatedSeconds !== 'number' && typeof m.estimatedSeconds === 'number' && m.estimatedSeconds > 0) {
+      g.estimatedSeconds = m.estimatedSeconds;
+    }
+    // category：取首个非空的细分类标签
+    if (!g.category && m.category && m.category.trim()) {
+      g.category = m.category.trim();
+    }
+    // creator：取首个有名字的创作者
+    if (!g.creator && m.creator && m.creator.name && m.creator.name.trim()) {
+      g.creator = { name: m.creator.name.trim(), avatar: m.creator.avatar, link: m.creator.link };
+    }
+    // commercialUse：任一供应商行允许即视为允许（最宽松，给用户最大选择权）
+    if (g.commercialUse !== true && m.commercialUse === true) {
+      g.commercialUse = true;
     }
 
     if (m.supportedResolutions) {

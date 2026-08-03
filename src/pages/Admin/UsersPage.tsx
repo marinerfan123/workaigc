@@ -1,125 +1,623 @@
-// 用户管理（真实数据）
-// 列表：GET /api/admin/users（§C.8）；手动充值：POST /api/admin/users/:id/credits（§C.7）
-import { Users, Plus, Search } from 'lucide-react';
-import { PageHeader, SectionCard, cn } from '@/components/skeleton';
-import { useCallback, useEffect, useState } from 'react';
-import { apiAdminUsers, apiAdminRecharge, type AdminUser } from '@/services/api';
+// API 客户端 — 唯一数据持久化通道（浏览器本地不落盘）
+// 所有数据（媒体/供应商/模型/设置/OSS/角色）一律存后端，浏览器本地不落盘。
+// 用法：在需要数据的地方先 `await ensureApi()`，成功后各 apiGet* 才有数据可读。
 
-const ROLE_OPTS = ['', 'admin', 'user', 'creator', 'seller', 'cs'];
+import type { IMediaItem } from '@/data/media';
 
-export default function UsersPage() {
-  const [items, setItems] = useState<AdminUser[]>([]);
-  const [total, setTotal] = useState(0);
-  const [q, setQ] = useState('');
-  const [role, setRole] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);
+let API_BASE = '';
+let API_TOKEN = '';
+let discoverPromise: Promise<boolean> | null = null;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const r = await apiAdminUsers({ q: q || undefined, role: role || undefined, limit: 100 });
-    setItems(r.items);
-    setTotal(r.total);
-    setLoading(false);
-  }, [q, role]);
+/** 手动指定后端地址（一般不需要，ensureApi 会自动发现） */
+export function initApi(baseUrl: string, token: string) {
+  API_BASE = baseUrl.replace(/\/$/, '');
+  API_TOKEN = token;
+}
 
-  useEffect(() => { load(); }, [load]);
-
-  const onRecharge = async (u: AdminUser) => {
-    const raw = window.prompt(`为 ${u.email} 充值 / 调整积分\n输入正数=充值，负数=扣减（余额不为负）`, '100');
-    if (raw === null) return;
-    const amount = Math.floor(Number(raw));
-    if (!Number.isFinite(amount) || amount === 0) { window.alert('请输入非零整数'); return; }
-    setBusy(u.id);
-    const r = await apiAdminRecharge(u.id, amount, `后台${amount > 0 ? '充值' : '扣减'}`);
-    setBusy(null);
-    if (r.ok) { window.alert(`操作成功，当前余额 ${r.credits}`); load(); }
-    else window.alert('失败：' + (r.error || '未知错误'));
+function headers(): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${API_TOKEN}`,
   };
+}
 
-  return (
-    <div className="space-y-6 p-6">
-      <PageHeader
-        title="用户管理"
-        subtitle="M1 多用户 · 列表检索 + 管理员手动充值（credit_transactions 后台调整）"
-        phase={{ status: 'ready', label: 'Phase 2 · 真实数据' }}
-        icon={<Users className="size-5" />}
-        actions={
-          <span className="rounded-2xl bg-emerald-500/15 px-3 py-2 text-sm font-medium text-emerald-300">
-            共 {total} 人
-          </span>
+async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  // 确保 API 已连接（首次调用时自动发现后端 + 获取 token）
+  if (!API_TOKEN) await ensureApi();
+  // credentials:'include' → 浏览器自动携带会话 cookie（后端 set-cookie 的 sid），用于 /api/generate 等需登录接口归属用户
+  const res = await fetch(`${API_BASE}${path}`, { ...options, credentials: 'include', headers: { ...headers(), ...options?.headers } });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`API ${res.status}: ${text.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+/**
+ * 确保 API 已连接（模块级缓存，只发现一次）。
+ * 根据当前访问地址自动推导后端：http://<hostname>:3001 并获取 token。
+ * 后端不可用时返回 false，调用方降级到内置默认数据（仅内存，不落盘）。
+ */
+export function ensureApi(): Promise<boolean> {
+  if (API_BASE && API_TOKEN) return Promise.resolve(true);
+  if (!discoverPromise) {
+    discoverPromise = (async () => {
+      try {
+        // 同域：直接走相对路径
+        let apiBase = '';
+        if (typeof window !== 'undefined') {
+          const { protocol, host } = window.location;
+          apiBase = `${protocol}//${host}`;
         }
-      />
+        const res = await fetch(`${apiBase}/api/token`, { headers: { 'Content-Type': 'application/json' }, credentials: 'include' });
+        if (res.ok) {
+          const { token } = await res.json();
+          initApi(apiBase, token);
+          console.log(`[API] 已连接 ${apiBase}`);
+          return true;
+        }
+      } catch {
+        console.log('[API] 后端未启动，使用内置默认数据（不持久化）');
+      }
+      return false;
+    })();
+  }
+  return discoverPromise;
+}
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex flex-1 items-center gap-2 rounded-2xl bg-white/5 px-3 py-2">
-          <Search className="size-4 text-zinc-500" />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="搜索邮箱 / 昵称"
-            className="w-full bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
-          />
-        </div>
-        <select
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
-          className="rounded-2xl bg-white/5 px-3 py-2 text-sm text-zinc-100 outline-none"
-        >
-          {ROLE_OPTS.map((r) => (
-            <option key={r} value={r} className="bg-zinc-900">{r === '' ? '全部角色' : r}</option>
-          ))}
-        </select>
-        <button onClick={load} className="rounded-2xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">刷新</button>
-      </div>
+// ─── Media ──────────────────────────────────────
+export async function apiGetMedia(): Promise<any[]> {
+  try { return await apiFetch('/api/media'); } catch { return []; }
+}
+export async function apiSaveMedia(items: any[]) {
+  try { await apiFetch('/api/media', { method: 'POST', body: JSON.stringify(items) }); } catch {}
+}
+export async function apiDeleteMedia(id: string) {
+  try { await apiFetch(`/api/media/${id}`, { method: 'DELETE' }); } catch {}
+}
+/**
+ * 单条部分更新（探测失败时回写 status/errorMessage/failedAt 用）
+ * 后端只更新传入的非空字段，不破坏其他字段
+ */
+export async function apiUpdateMedia(id: string, patch: Partial<IMediaItem>) {
+  try { await apiFetch(`/api/media/${id}`, { method: 'PUT', body: JSON.stringify(patch) }); } catch {}
+}
+/** 媒体分类计数（侧边栏角标用） */
+export interface MediaCounts {
+  total: number;
+  image: number;
+  video: number;
+  character: number;
+  scene: number;
+  prop: number;
+  other: number;
+  upload: number;
+}
+export async function apiGetMediaCounts(): Promise<MediaCounts | null> {
+  try { return await apiFetch<MediaCounts>('/api/media/counts'); } catch { return null; }
+}
 
-      <SectionCard title="用户列表" hint="users: id / email / displayName / role / credits">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-zinc-500">
-                <th className="py-2 pr-4 font-medium">用户</th>
-                <th className="py-2 pr-4 font-medium">角色</th>
-                <th className="py-2 pr-4 font-medium">积分</th>
-                <th className="py-2 pr-4 font-medium">注册时间</th>
-                <th className="py-2 font-medium">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5">
-              {loading && (
-                <tr><td colSpan={5} className="py-6 text-center text-xs text-zinc-500">加载中…</td></tr>
-              )}
-              {!loading && items.length === 0 && (
-                <tr><td colSpan={5} className="py-6 text-center text-xs text-zinc-500">无匹配用户</td></tr>
-              )}
-              {!loading && items.map((u) => (
-                <tr key={u.id} className="text-zinc-200">
-                  <td className="py-2.5 pr-4">
-                    <div className="font-medium text-zinc-100">{u.displayName || '—'}</div>
-                    <div className="text-xs text-zinc-500">{u.email}</div>
-                  </td>
-                  <td className="py-2.5 pr-4">
-                    <span className={cn('rounded-full px-2 py-0.5 text-xs', u.role === 'admin' ? 'bg-emerald-400/15 text-emerald-300' : 'bg-white/10 text-zinc-300')}>
-                      {u.role}
-                    </span>
-                  </td>
-                  <td className="py-2.5 pr-4 font-medium text-emerald-300">{u.credits}</td>
-                  <td className="py-2.5 pr-4 text-xs text-zinc-500">{new Date(u.createdAt).toLocaleDateString()}</td>
-                  <td className="py-2.5">
-                    <button
-                      disabled={busy === u.id}
-                      onClick={() => onRecharge(u)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 px-2.5 py-1.5 text-xs font-medium text-black hover:bg-emerald-400 disabled:opacity-50"
-                    >
-                      <Plus className="size-3.5" /> {busy === u.id ? '处理中' : '充值'}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </SectionCard>
-    </div>
-  );
+// ─── Providers ──────────────────────────────────
+export async function apiGetProviders(): Promise<any[]> {
+  try { return await apiFetch('/api/providers'); } catch { return []; }
+}
+export async function apiSaveProviders(items: any[]) {
+  try { await apiFetch('/api/providers', { method: 'POST', body: JSON.stringify(items) }); } catch {}
+}
+export async function apiDeleteProvider(id: string) {
+  try { await apiFetch(`/api/providers/${id}`, { method: 'DELETE' }); } catch {}
+}
+
+// ─── Models ─────────────────────────────────────
+export async function apiGetModels(): Promise<any[]> {
+  try { return await apiFetch('/api/models'); } catch { return []; }
+}
+export async function apiSaveModels(items: any[]) {
+  try { await apiFetch('/api/models', { method: 'POST', body: JSON.stringify(items) }); } catch {}
+}
+export async function apiDeleteModel(id: string) {
+  try { await apiFetch(`/api/models/${id}`, { method: 'DELETE' }); } catch {}
+}
+
+/**
+ * 代理下载外部图片（绕开浏览器 CORS）
+ * 后端服务器对服务器 fetch，无 CORS 限制
+ */
+export async function apiProxyFetch(
+  imageUrl: string,
+  headers: Record<string, string> = {},
+): Promise<{ success: boolean; base64?: string; contentType?: string; size?: number; message?: string }> {
+  try {
+    return await apiFetch('/api/proxy-fetch', {
+      method: 'POST',
+      body: JSON.stringify({ imageUrl, headers }),
+    });
+  } catch (e) {
+    return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 100) };
+  }
+}
+
+// ─── Settings ───────────────────────────────────
+export async function apiGetSettings(): Promise<any> {
+  try { return await apiFetch('/api/settings'); } catch { return {}; }
+}
+export async function apiSaveSettings(settings: Record<string, any>) {
+  try { await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); } catch {}
+}
+
+// ─── OSS ────────────────────────────────────────
+export async function apiGetOss(): Promise<any> {
+  try { return await apiFetch('/api/oss'); } catch { return {}; }
+}
+export async function apiSaveOss(config: Record<string, any>) {
+  try { await apiFetch('/api/oss', { method: 'PUT', body: JSON.stringify(config) }); } catch {}
+}
+/**
+ * 测试 OSS 连接（走后端代理）
+ */
+export async function apiTestOss(config: Record<string, any>): Promise<{
+  success: boolean;
+  message: string;
+  files?: { name: string; size: number; lastModified: string }[];
+}> {
+  try {
+    return await apiFetch('/api/oss/test', { method: 'POST', body: JSON.stringify(config) });
+  } catch (e) {
+    return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 100) };
+  }
+}
+/**
+ * 上传文件到 OSS（走后端代理）
+ */
+export async function apiUploadToOss(
+  objectKey: string,
+  contentBase64: string,
+): Promise<{ success: boolean; url: string; objectKey: string; size?: number; message?: string }> {
+  try {
+    return await apiFetch('/api/oss/upload', {
+      method: 'POST',
+      body: JSON.stringify({ objectKey, contentBase64 }),
+    });
+  } catch (e) {
+    return {
+      success: false,
+      url: '',
+      objectKey,
+      message: (e instanceof Error ? e.message : String(e)).slice(0, 100),
+    };
+  }
+}
+
+// ─── Characters ─────────────────────────────────
+export async function apiGetCharacters(): Promise<any[]> {
+  try { return await apiFetch('/api/characters'); } catch { return []; }
+}
+export async function apiSaveCharacters(items: any[]) {
+  try { await apiFetch('/api/characters', { method: 'POST', body: JSON.stringify(items) }); } catch {}
+}
+
+/** 过滤掉刷新后失效的 blob URL 临时项（本地上传的临时文件不持久化） */
+export function stripBlobItems<T extends { thumbnail?: string }>(items: T[]): T[] {
+  return items.filter((m) => !m.thumbnail?.startsWith('blob:'));
+}
+
+// ─── 服务端生成分发 ─────────────────────────────
+/**
+ * 调用后端 /api/generate（默认异步）：立即返回 taskId，前端再用 taskId 轮询状态。
+ * 旧调用方式（同步返回完整结果）仍兼容：传 `sync: true` 时后端会一次性返回 images。
+ */
+export type GenerateResponse =
+  | { status: 'pending'; taskId: string; error?: string }
+  | { status: 'success' | 'failed'; taskId?: string; images?: string[]; error?: string; source?: string; usedProviders?: string[] };
+
+export async function apiGenerate(payload: {
+  model: string;
+  prompt: string;
+  ratio?: string;
+  resolution?: string;
+  count?: number;
+  contentType?: 'image' | 'video';
+  referenceImages?: string[];
+  pendingIds?: string[]; // 把前端的 pending 占位 id 告诉后端，便于刷新恢复
+  idempotencyKey?: string; // 幂等键：每次生成请求一个 UUID，防网络抖动双扣（后端必需）
+  sync?: boolean;         // 兼容旧测试：传 true 后端一次性返回结果
+}): Promise<GenerateResponse> {
+  try {
+    return await apiFetch('/api/generate', { method: 'POST', body: JSON.stringify(payload) }) as GenerateResponse;
+  } catch (e) {
+    return { status: 'failed', error: (e instanceof Error ? e.message : String(e)).slice(0, 200), images: [] };
+  }
+}
+
+// 查询单个生成任务状态（用于前端轮询 / 刷新恢复）
+export async function apiGetGenerationStatus(taskId: string): Promise<{
+  taskId: string;
+  status: 'running' | 'done' | 'failed' | 'not_found' | 'unknown';
+  result?: { images?: string[]; source?: string; usedProviders?: string[] } | null;
+  error?: string;
+  pendingIds?: string[];
+  model?: string;
+  prompt?: string;
+  count?: number;
+  contentType?: string;
+  clientMeta?: Record<string, unknown>;
+  createdAt?: string;
+  completedAt?: string;
+}> {
+  try {
+    return await apiFetch(`/api/generate/status/${encodeURIComponent(taskId)}`);
+  } catch (e) {
+    return { taskId, status: 'unknown', error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// 列出在途任务（用于页面刷新后批量恢复）
+export async function apiListActiveGenerations(): Promise<{
+  tasks: Array<{
+    taskId: string;
+    status: 'running' | 'done' | 'failed';
+    result?: { images?: string[]; source?: string; usedProviders?: string[] } | null;
+    error?: string;
+    pendingIds?: string[];
+    model?: string;
+    prompt?: string;
+    count?: number;
+    contentType?: string;
+    clientMeta?: Record<string, unknown>;
+    createdAt?: string;
+    completedAt?: string;
+  }>;
+  error?: string;
+}> {
+  try {
+    return await apiFetch('/api/generate/active');
+  } catch (e) {
+    return { tasks: [], error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// ─── 智能体 skill：AI 提示词优化 ─────────────────────
+/**
+ * 调用后端 /api/agent/optimize-prompt：后台自动选一个启用的 type=text 推理模型，
+ * 把用户原始 prompt 改写成更适合图像/视频生成的英文结构化提示词。
+ * 失败时：
+ *   - code='NO_REASONING_MODEL' → 提示用户去「模型 Hub」添加 text 类型模型
+ *   - 其他 error → 通用错误消息
+ */
+export async function apiOptimizePrompt(prompt: string): Promise<{
+  success: boolean;
+  content?: string;
+  error?: string;
+  code?: 'NO_REASONING_MODEL' | string;
+  modelUsed?: string;
+  providerId?: string;
+}> {
+  try {
+    return await apiFetch('/api/agent/optimize-prompt', {
+      method: 'POST',
+      body: JSON.stringify({ prompt }),
+    });
+  } catch (e) {
+    return { success: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// ─── 同步服务商模型列表（后端代理，避免前端持有真实 Key）───
+export async function apiSyncProviderModels(id: string): Promise<{ success: boolean; models?: Array<{ id: string; name: string }>; message?: string }> {
+  try {
+    return await apiFetch(`/api/providers/${id}/sync`, { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// ─── 测试服务商端点（后端代理）───
+export async function apiTestProviderEndpoint(
+  id: string,
+  endpoint: Record<string, unknown>,
+  vars: Record<string, unknown>,
+): Promise<{ success: boolean; status?: number; body?: unknown; message?: string }> {
+  try {
+    return await apiFetch(`/api/providers/${id}/test-endpoint`, { method: 'POST', body: JSON.stringify({ endpoint, vars }) });
+  } catch (e) {
+    return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+export async function apiTestProviderDefault(
+  id: string,
+  testInput: string,
+): Promise<{ success: boolean; status?: number; body?: unknown; message?: string }> {
+  try {
+    return await apiFetch(`/api/providers/${id}/test-default`, { method: 'POST', body: JSON.stringify({ testInput }) });
+  } catch (e) {
+    return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// ─── Auth（cookie 会话；fetch 带 credentials:'include' 自动携带 sid）───
+export interface AuthUser {
+  id: string;
+  email: string;
+  displayName: string;
+  credits: number;
+  role: string;
+  status?: string;
+  plan?: string;
+}
+
+/** 注册：成功后后端种下会话 cookie，返回用户（含赠送积分） */
+export async function apiRegister(
+  email: string,
+  password: string,
+  displayName?: string,
+): Promise<{ ok: boolean; user: AuthUser }> {
+  return apiFetch('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, displayName }),
+  });
+}
+
+/** 登录：成功后后端种下会话 cookie */
+export async function apiLogin(email: string, password: string): Promise<{ ok: boolean; user: AuthUser }> {
+  return apiFetch('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+}
+
+/** 登出：清除会话 cookie */
+export async function apiLogout(): Promise<{ ok: boolean }> {
+  return apiFetch('/api/auth/logout', { method: 'POST' });
+}
+
+/** 当前登录用户（无 cookie 时 401，已被 apiFetch 抛错，这里兜底返回空） */
+export async function apiMe(): Promise<{ user?: AuthUser }> {
+  try {
+    return await apiFetch('/api/auth/me');
+  } catch {
+    return {};
+  }
+}
+
+/** 更新昵称（账户设置） */
+export async function apiUpdateProfile(displayName: string): Promise<{ ok: boolean; user?: { id: string; displayName: string } }> {
+  return apiFetch('/api/auth/profile', { method: 'PUT', body: JSON.stringify({ displayName }) });
+}
+
+/** 修改密码（账户设置） */
+export async function apiChangePassword(oldPassword: string, newPassword: string): Promise<{ ok: boolean }> {
+  return apiFetch('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) });
+}
+
+/** 公开创作者主页资料（无需登录） */
+export async function apiGetUser(id: string): Promise<{ user: { id: string; displayName: string; createdAt: string }; stats: { media: number } }> {
+  return apiFetch(`/api/users/${encodeURIComponent(id)}`);
+}
+
+/** 公开创作者主页媒资（无需登录） */
+export async function apiGetUserMedia(id: string): Promise<{ items: any[] }> {
+  return apiFetch(`/api/users/${encodeURIComponent(id)}/media`);
+}
+
+// ─── 充值订单（M2 账务 / DEV 支付适配器）───
+export interface RechargeOrder {
+  id: string;
+  payOrderNo: string;
+  amount: number;
+  channel: 'wechat' | 'alipay';
+  status: 'pending' | 'paid' | 'failed';
+  createdAt: string;
+  paidAt?: string | null;
+}
+/** 创建充值订单（DEV：返回模拟支付入口） */
+export async function apiCreateRechargeOrder(params: { amount: number; channel: 'wechat' | 'alipay' }): Promise<{ ok: boolean; devMode?: boolean; order?: RechargeOrder; error?: string }> {
+  try {
+    return await apiFetch('/api/credits/orders', { method: 'POST', body: JSON.stringify(params) });
+  } catch (e) {
+    return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+/** 当前用户的充值订单历史 */
+export async function apiListRechargeOrders(): Promise<{ items: RechargeOrder[] }> {
+  try { return await apiFetch('/api/credits/orders'); } catch { return { items: [] }; }
+}
+/** 支付成功回调（DEV：前端/模拟页触发；生产由支付平台异步通知） */
+export async function apiRechargeCallback(params: { channel: 'wechat' | 'alipay'; payOrderNo: string }): Promise<{ ok: boolean; alreadyPaid?: boolean; credits?: number; error?: string }> {
+  try {
+    return await apiFetch(`/api/credits/orders/callback/${params.channel}`, { method: 'POST', body: JSON.stringify({ payOrderNo: params.payOrderNo }) });
+  } catch (e) {
+    return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// ─── 电商（Phase 5 / AI 市集）───
+export interface ShopProduct {
+  id: number | string;
+  shopId: number | string;
+  title: string;
+  subtitle?: string;
+  coverUrl?: string;
+  priceCents: number;
+  creditPrice: number;
+  stock: number;
+  category: string;
+  aiFields?: Record<string, unknown>;
+  status: string;
+  createdAt?: string;
+  shopName?: string;
+}
+export async function apiGetShopProducts(params: { cat?: string; q?: string; limit?: number; offset?: number } = {}): Promise<{ items: ShopProduct[]; total: number; limit: number; offset: number }> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  try { return await apiFetch(`/api/shop/products?${qs.toString()}`); } catch { return { items: [], total: 0, limit: 0, offset: 0 }; }
+}
+export interface ShopProductDetail {
+  product: ShopProduct & { description?: string; shopDescription?: string };
+  skus: Array<{ id: number | string; productId: number | string; specs: Record<string, unknown>; priceCents: number; creditPrice: number; stock: number; createdAt?: string }>;
+  reviews: Array<{ id: number | string; productId: number | string; userId: string; rating: number; content?: string; createdAt?: string }>;
+}
+export async function apiGetProduct(id: string): Promise<ShopProductDetail | null> {
+  try { return await apiFetch(`/api/products/${encodeURIComponent(id)}`); } catch { return null; }
+}
+export interface CartItem {
+  id: number | string;
+  productId: number | string;
+  skuId: number | string;
+  qty: number;
+  title: string;
+  coverUrl?: string;
+  productStatus: string;
+  attrs?: Record<string, unknown> | null;
+  skuStock?: number | null;
+  unitCreditPrice: number;
+  subtotal: number;
+}
+export async function apiGetCart(): Promise<CartItem[]> {
+  try { return await apiFetch('/api/cart'); } catch { return []; }
+}
+export async function apiAddToCart(productId: string | number, qty = 1, skuId?: string | number): Promise<{ ok: boolean; error?: string }> {
+  try { await apiFetch('/api/cart', { method: 'POST', body: JSON.stringify({ productId, qty, skuId }) }); return { ok: true }; }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiUpdateCartItem(id: string | number, qty: number): Promise<{ ok: boolean; error?: string }> {
+  try { await apiFetch(`/api/cart/${encodeURIComponent(String(id))}`, { method: 'PUT', body: JSON.stringify({ qty }) }); return { ok: true }; }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiRemoveCartItem(id: string | number): Promise<{ ok: boolean; error?: string }> {
+  try { await apiFetch(`/api/cart/${encodeURIComponent(String(id))}`, { method: 'DELETE' }); return { ok: true }; }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export interface ShopOrder {
+  id: string;
+  orderNo: string;
+  userId: string;
+  totalCents: number;
+  totalCredits: number;
+  creditUsed: number;
+  payChannel?: string;
+  payStatus: string;
+  createdAt?: string;
+  paidAt?: string | null;
+  itemCount?: number;
+}
+export async function apiCreateOrder(idempotencyKey: string): Promise<{ ok: boolean; order?: { id: string; orderNo: string; totalCredits: number; payStatus: string }; idempotent?: boolean; error?: string }> {
+  try { return await apiFetch('/api/orders', { method: 'POST', body: JSON.stringify({ idempotencyKey }) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiGetOrders(): Promise<ShopOrder[]> {
+  try { return await apiFetch('/api/orders'); } catch { return []; }
+}
+export async function apiGetOrder(id: string): Promise<{ order: ShopOrder; items: any[] } | null> {
+  try { return await apiFetch(`/api/orders/${encodeURIComponent(id)}`); } catch { return null; }
+}
+
+// ─── 管理后台（M3 总控台 / M4 智能体层 / M2 账务）───
+// 走会话 cookie（管理员登录态），无需额外 header；ensureApi 已注入 API_TOKEN 兜底。
+export interface AdminUser {
+  id: string;
+  email: string;
+  displayName: string;
+  role: string;
+  credits: number;
+  status: string;
+  plan: string;
+  createdAt: string;
+}
+export async function apiAdminUsers(params: { q?: string; role?: string; limit?: number; offset?: number } = {}): Promise<{ items: AdminUser[]; total: number }> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  try { return await apiFetch(`/api/admin/users?${qs.toString()}`); } catch { return { items: [], total: 0 }; }
+}
+
+export async function apiAdminRecharge(userId: string, amount: number, note?: string): Promise<{ ok: boolean; credits?: number; error?: string }> {
+  try {
+    return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/credits`, {
+      method: 'POST',
+      body: JSON.stringify({ amount, note }),
+    });
+  } catch (e) {
+    return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+export async function apiAdminSetUserStatus(userId: string, status: 'active' | 'suspended'): Promise<{ ok: boolean; status?: string; error?: string }> {
+  try { return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/status`, { method: 'POST', body: JSON.stringify({ status }) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiAdminSetUserRole(userId: string, role: 'user' | 'admin'): Promise<{ ok: boolean; role?: string; error?: string }> {
+  try { return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, { method: 'PUT', body: JSON.stringify({ role }) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiAdminDeleteUser(userId: string): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE' }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+
+export interface AdminTx {
+  id: number;
+  userId: string;
+  user: string;
+  kind: string;
+  amount: number;
+  balanceAfter: number | null;
+  ref?: string;
+  createdAt: string;
+}
+export async function apiAdminTransactions(params: { limit?: number; offset?: number; type?: string; userId?: string } = {}): Promise<{ items: AdminTx[]; total: number }> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  try { return await apiFetch(`/api/admin/transactions?${qs.toString()}`); } catch { return { items: [], total: 0 }; }
+}
+
+export interface AdminAgent {
+  key: string;
+  name: string;
+  enabled: boolean;
+  dailyBudget: number;
+  config: Record<string, unknown>;
+  createdAt: string;
+}
+export async function apiAdminAgents(): Promise<AdminAgent[]> {
+  try { return await apiFetch('/api/admin/agents'); } catch { return []; }
+}
+export async function apiAdminUpsertAgent(a: { key: string; name: string; enabled?: boolean; dailyBudget?: number; config?: Record<string, unknown> }): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch('/api/admin/agents', { method: 'POST', body: JSON.stringify(a) }); } catch (e) { return { ok: false, error: (e as Error).message }; }
+}
+export async function apiAdminToggleAgent(key: string, enabled: boolean): Promise<{ ok: boolean }> {
+  try { return await apiFetch(`/api/admin/agents/${encodeURIComponent(key)}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } catch { return { ok: false }; }
+}
+
+export interface AgentProvider {
+  id: string;
+  agentKey: string;
+  provider: string;
+  model: string;
+  weight: number;
+  priority: number;
+  costPerCall: number;
+  enabled: boolean;
+  createdAt: string;
+}
+export async function apiAdminAgentProviders(agentKey?: string): Promise<AgentProvider[]> {
+  try { return await apiFetch(agentKey ? `/api/admin/agents/${encodeURIComponent(agentKey)}/providers` : '/api/admin/agent-providers'); } catch { return []; }
+}
+export async function apiAdminUpsertAgentProvider(p: { id?: string; agentKey: string; provider: string; model: string; weight?: number; priority?: number; costPerCall?: number; enabled?: boolean }): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch('/api/admin/agent-providers', { method: 'POST', body: JSON.stringify(p) }); } catch (e) { return { ok: false, error: (e as Error).message }; }
+}
+
+export interface AgentRule {
+  id: string;
+  name: string;
+  trigger: string;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+  enabled: boolean;
+  createdAt: string;
+}
+export async function apiAdminAgentRules(): Promise<AgentRule[]> {
+  try { return await apiFetch('/api/admin/agent-rules'); } catch { return []; }
+}
+export async function apiAdminUpsertAgentRule(r: { id?: string; name: string; trigger: string; condition?: Record<string, unknown>; action?: Record<string, unknown>; enabled?: boolean }): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch('/api/admin/agent-rules', { method: 'POST', body: JSON.stringify(r) }); } catch (e) { return { ok: false, error: (e as Error).message }; }
+}
+export async function apiAdminToggleAgentRule(id: string, enabled: boolean): Promise<{ ok: boolean }> {
+  try { return await apiFetch(`/api/admin/agent-rules/${encodeURIComponent(id)}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } catch { return { ok: false }; }
 }

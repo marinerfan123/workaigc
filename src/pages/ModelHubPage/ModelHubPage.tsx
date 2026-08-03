@@ -28,6 +28,9 @@ import {
   EyeOff,
   FileText,
   Sparkles,
+  Clock,
+  Tag,
+  Briefcase,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -38,6 +41,9 @@ import {
   type IModelProvider,
   ALL_RESOLUTIONS,
   getEffectiveModelName,
+  defaultEstimatedSeconds,
+  defaultCategory,
+  defaultCommercialUse,
 } from '@/data/models';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
@@ -1646,6 +1652,76 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                               {getProviderName(pid)}
                             </span>
                           ))}
+                        </div>
+                        {/* ModelHub 改造：耗时 / 分类 / 创作者 / 商用钩选（默认显示，不依赖 hover） */}
+                        <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-zinc-500">
+                          {(() => {
+                            // 防御：DB 中 estimated_seconds=0（迁移列未回填）会被 ?? 保留为 0，
+                            // 这里统一将「非正数」视为未设置，回退到类型兜底值。
+                            const rawSecs = group.estimatedSeconds;
+                            const secs =
+                              typeof rawSecs === 'number' && rawSecs > 0
+                                ? rawSecs
+                                : defaultEstimatedSeconds(group.type);
+                            return (
+                              <span
+                                title={`预估生成耗时 ${secs} 秒`}
+                                className="inline-flex items-center gap-0.5 rounded-full border border-zinc-800 px-1.5 py-0.5"
+                              >
+                                <Clock className="size-2.5" />
+                                ≈ {secs}s
+                              </span>
+                            );
+                          })()}
+                          {(() => {
+                            const cat = group.category ?? defaultCategory(group.type);
+                            return (
+                              <span
+                                title="细分类标签"
+                                className="inline-flex items-center gap-0.5 rounded-full border border-zinc-800 px-1.5 py-0.5"
+                              >
+                                <Tag className="size-2.5" />
+                                {cat}
+                              </span>
+                            );
+                          })()}
+                          {group.creator && group.creator.name && (
+                            <span
+                              title={group.creator.link ? `创作者：${group.creator.name}` : '创作者'}
+                              className="inline-flex items-center gap-1 rounded-full border border-zinc-800 px-1.5 py-0.5"
+                            >
+                              <span className="flex h-3 w-3 items-center justify-center rounded-full bg-zinc-700 text-[8px] font-bold text-zinc-300">
+                                {group.creator.name.slice(0, 1).toUpperCase()}
+                              </span>
+                              {group.creator.name}
+                            </span>
+                          )}
+                          {(() => {
+                            const ok = group.commercialUse ?? defaultCommercialUse(group.type);
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setModels((prev) =>
+                                    prev.map((m) =>
+                                      m.modelId === group.modelId
+                                        ? { ...m, commercialUse: !(m.commercialUse ?? defaultCommercialUse(m.type)) }
+                                        : m,
+                                    ),
+                                  );
+                                }}
+                                title={ok ? '允许商用 — 点击切换为不允许' : '不允许商用 — 点击切换为允许'}
+                                className={`inline-flex items-center gap-0.5 rounded-full border px-1.5 py-0.5 transition-colors ${
+                                  ok
+                                    ? 'border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10'
+                                    : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'
+                                }`}
+                              >
+                                <Briefcase className="size-2.5" />
+                                {ok ? '可商用' : '不可商用'}
+                              </button>
+                            );
+                          })()}
                         </div>
                       </div>
                       );

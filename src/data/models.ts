@@ -122,6 +122,15 @@ export interface IAiModel {
   /** 单次生成消耗的积分数（0 = 不扣；后台编辑；前台展示在模型名旁）。
    *  旧版本未设置时默认为 1。 */
   creditCost?: number;
+  /** 预估生成耗时（秒）；卡片展示 ≈Xs；未设置时按 type 取兜底值。 */
+  estimatedSeconds?: number;
+  /** 细分类标签（如 '写实' / '艺术' / '电影感' / '推理'）；与 type 互补。 */
+  category?: string;
+  /** 创作者元数据（卡片展示头像+名；未设置时该列不渲染）。 */
+  creator?: { name: string; avatar?: string; link?: string };
+  /** 是否允许商用（true=可商用 / false=不可商用；未设置时按 type 取兜底值）。
+   *  该标记同时影响生成时附加的水印策略与市集上架审核。 */
+  commercialUse?: boolean;
 }
 
 /**
@@ -132,6 +141,38 @@ export function getEffectiveModelName(m: Pick<IAiModel, 'displayName' | 'mapping
   if (!m) return '';
   const mapped = (m.mappingName || '').trim();
   return mapped || (m.displayName || '').trim() || '';
+}
+
+// ─── ModelHub 改造：耗时 / 分类 / 商用 兜底值 ─────────────
+/**
+ * 按 model.type 返回兜底「预估耗时（秒）」。
+ * 图片 ≈ 20s，视频 ≈ 40s，推理 ≈ 8s。ModelHub 卡片在 estimatedSeconds 缺省时使用。
+ */
+export function defaultEstimatedSeconds(type: ModelType): number {
+  switch (type) {
+    case 'image': return 20;
+    case 'video': return 40;
+    case 'text':  return 8;
+  }
+}
+
+/**
+ * 按 model.type 返回兜底「细分类标签」。ModelHub 卡片在 category 缺省时使用。
+ */
+export function defaultCategory(type: ModelType): string {
+  switch (type) {
+    case 'image': return '通用';
+    case 'video': return '创意';
+    case 'text':  return '推理';
+  }
+}
+
+/**
+ * 按 model.type 返回兜底「是否允许商用」。
+ * 视频/图片默认允许（true），纯推理（text）默认不允许（false），因推理结果二次商用风险高。
+ */
+export function defaultCommercialUse(type: ModelType): boolean {
+  return type !== 'text';
 }
 
 // 预置服务商模板

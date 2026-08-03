@@ -38,6 +38,24 @@ coverage/
 # OS generated files
 .DS_Store
 .DS_Store?
+
+# === Secrets / runtime credentials (P0: repo is PUBLIC, never leak these) ===
+.env
+.env.*
+!.env.example
+server/data/oss.json
+server/data/.api_token
+server/data/media.json
+server/data/media-uploads/
+server/data/*.json
+!server/data/oss.json.example
+
+# === Agent memory (contains conversation history, must not be public) ===
+.workbuddy/
+
+# === Build output (covers dist/build2 used by this app) ===
+dist/
+build/
 ._*
 .Spotlight-V100
 .Trashes
@@ -92,3 +110,8 @@ api-token.tmp
 *_backup_*.json
 *_result.json
 *_smoke_*.json
+
+# ===== 本地终端输出捕获（IDE/PowerShell 跑服务时的 stderr 重定向） =====
+backend3001.err
+vite3099.err
+tmp_clean.txt

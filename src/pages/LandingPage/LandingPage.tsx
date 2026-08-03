@@ -18,11 +18,10 @@ import {
   Clapperboard,
 } from 'lucide-react';
 import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authStore';
-import { ProductSwitcher } from '@/components/ProductSwitcher';
 
 /* ── 整个计划：创意生产流水线（M5：点子→剧本→分镜→视频→剧集，五阶段可回退）──
    生图/视频生成是驱动第 3–4 步产出的引擎，而非独立终点。
-   /studio（创作工作室）、/shop（AI 市集）均为已上线的独立大项目页面，可直接跳转；
+   /studio 系列为规划中（Phase 4），此处仅作蓝图展示，不跳转避免 404；
    现已具备生成能力的环节指向 /workspace。 */
 const PIPELINE = [
   { n: 1, title: '点子孵化', desc: '头脑风暴与世界观设定，把模糊的灵感沉淀成可延展的创意方向。', icon: Lightbulb, status: '规划中' },
@@ -95,16 +94,15 @@ export default function LandingPage() {
 
       {/* ── 顶部极简导航 ── */}
       <header className="sticky top-0 z-30 border-b border-white/5 bg-black/50 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-6">
-          <Link to="/" className="flex shrink-0 items-center gap-2.5">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
+          <Link to="/" className="flex items-center gap-2.5">
             <span className="flex h-9 w-9 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-400 text-black shadow-lg shadow-emerald-500/20">
               <Sparkles className="size-5" />
             </span>
-            <span className="hidden text-[15px] font-semibold tracking-tight sm:inline">
+            <span className="text-[15px] font-semibold tracking-tight">
               东方古典美人 · 创作工作台
             </span>
           </Link>
-          <ProductSwitcher className="hidden md:flex" />
           <div className="flex items-center gap-2">
             <Link
               to="/library"

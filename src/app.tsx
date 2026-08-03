@@ -6,6 +6,8 @@ import ImageEditorPage from '@/pages/ImageEditorPage/ImageEditorPage';
 import LibraryPage from '@/pages/LibraryPage/LibraryPage';
 import CharactersPage from '@/pages/CharactersPage/CharactersPage';
 import ModelHubPage from '@/pages/ModelHubPage/ModelHubPage';
+import AccountPage from '@/pages/AccountPage/AccountPage';
+import UserPage from '@/pages/UserPage/UserPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
 import AuthModal from '@/components/AuthModal';
 
@@ -53,6 +55,8 @@ export default function App() {
           <Route path="characters" element={<CharactersPage />} />
           <Route path="model-hub" element={<ModelHubPage />} />
           <Route path="edit/:id" element={<ImageEditorPage />} />
+          <Route path="account" element={<AccountPage />} />
+          <Route path="user/:id" element={<UserPage />} />
         </Route>
 
         {/* 管理后台壳 */}

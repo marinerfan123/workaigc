@@ -30,7 +30,7 @@ function createAdmin(ctx) {
     const countR = await pg().query(`SELECT COUNT(*) FROM users WHERE ${where}`, params);
     const total = parseInt(countR.rows[0].count, 10);
     const r = await pg().query(
-      `SELECT id, email, display_name, role, credits, created_at
+      `SELECT id, email, display_name, role, credits, status, plan, created_at
        FROM users WHERE ${where} ORDER BY created_at DESC LIMIT $${i} OFFSET $${i + 1}`,
       [...params, limit, offset],
     );
@@ -67,6 +67,25 @@ function createAdmin(ctx) {
       })],
     );
     return { ok: true, credits: newCredits };
+  }
+
+  // ───────────────────────── 用户运营（商用多用户 §C.8） ─────────────────────────
+  async function setUserStatus(userId, status) {
+    if (!['active', 'suspended'].includes(status)) throw new Error('状态非法');
+    const u = await pg().query('UPDATE users SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING id', [status, userId]);
+    if (!u.rows.length) throw new Error('用户不存在');
+    return { ok: true, status };
+  }
+  async function setUserRole(userId, role) {
+    if (!['user', 'admin'].includes(role)) throw new Error('角色非法');
+    const u = await pg().query('UPDATE users SET role=$1, updated_at=NOW() WHERE id=$2 RETURNING id', [role, userId]);
+    if (!u.rows.length) throw new Error('用户不存在');
+    return { ok: true, role };
+  }
+  async function deleteUser(userId) {
+    const u = await pg().query('DELETE FROM users WHERE id=$1 RETURNING id', [userId]);
+    if (!u.rows.length) throw new Error('用户不存在');
+    return { ok: true };
   }
 
   // ───────────────────────── 积分流水（M2） ─────────────────────────
@@ -301,10 +320,30 @@ function createAdmin(ctx) {
     if (url === '/api/admin/users' && method === 'GET') {
       return sendJSON(res, 200, await listUsers(query));
     }
-    let m = url.match(/^\/api\/admin\/users\/([^/]+)\/credits$/);
+    let     m = url.match(/^\/api\/admin\/users\/([^/]+)\/credits$/);
     if (m && method === 'POST') {
       const body = await parseBody(req);
       try { return sendJSON(res, 200, await recharge(decodeURIComponent(m[1]), body.amount, body.note, actorId)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    m = url.match(/^\/api\/admin\/users\/([^/]+)\/status$/);
+    if (m && method === 'POST') {
+      if (decodeURIComponent(m[1]) === actorId) return sendJSON(res, 400, { error: '不能操作自己' });
+      const body = await parseBody(req);
+      try { return sendJSON(res, 200, await setUserStatus(decodeURIComponent(m[1]), body.status)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    m = url.match(/^\/api\/admin\/users\/([^/]+)\/role$/);
+    if (m && method === 'PUT') {
+      if (decodeURIComponent(m[1]) === actorId) return sendJSON(res, 400, { error: '不能操作自己' });
+      const body = await parseBody(req);
+      try { return sendJSON(res, 200, await setUserRole(decodeURIComponent(m[1]), body.role)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    m = url.match(/^\/api\/admin\/users\/([^/]+)$/);
+    if (m && method === 'DELETE') {
+      if (decodeURIComponent(m[1]) === actorId) return sendJSON(res, 400, { error: '不能删除自己' });
+      try { return sendJSON(res, 200, await deleteUser(decodeURIComponent(m[1]))); }
       catch (e) { return sendJSON(res, 400, { error: e.message }); }
     }
     if (url === '/api/admin/transactions' && method === 'GET') {

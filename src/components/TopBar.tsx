@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Plus,
   HelpCircle,
@@ -12,6 +13,7 @@ import {
   Flag,
   ShieldCheck,
   List,
+  User,
   MonitorPlay,
   LogIn,
   LogOut,
@@ -31,6 +33,7 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
   const [menuOpen, setMenuOpen] = useState(false);
   const [rechargeOpen, setRechargeOpen] = useState(false);
   const { user } = useAuth();
+  const navigate = useNavigate();
 
   const moreItems = [
     { icon: Download, label: '下载项目' },
@@ -132,6 +135,18 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
                     className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 hover:bg-zinc-800/70 transition-colors"
                   >
                     <RefreshCw className="size-4 text-zinc-500" /> 刷新积分
+                  </button>
+                  <button
+                    onClick={() => { setMenuOpen(false); navigate('/account'); }}
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 hover:bg-zinc-800/70 transition-colors"
+                  >
+                    <Settings className="size-4 text-zinc-500" /> 账户设置
+                  </button>
+                  <button
+                    onClick={() => { setMenuOpen(false); navigate(`/user/${user.id}`); }}
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 hover:bg-zinc-800/70 transition-colors"
+                  >
+                    <User className="size-4 text-zinc-500" /> 我的主页
                   </button>
                   <button
                     onClick={async () => { await logout(); setMenuOpen(false); }}
