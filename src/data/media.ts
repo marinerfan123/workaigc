@@ -12,7 +12,7 @@ export interface IMediaItem {
   createdAt: string;
   isFavorite: boolean;
   isDeleted: boolean;
-  source: 'mock' | 'user';
+  source: 'mock' | 'user' | 'default';
   category?: 'image' | 'character' | 'scene' | 'prop' | 'other' | 'upload';
   ossUrl?: string; // OSS 访问链接
   ossObjectKey?: string; // OSS 对象路径

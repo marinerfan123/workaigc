@@ -137,6 +137,30 @@ async function initDB() {
       CREATE UNIQUE INDEX IF NOT EXISTS ux_gt_idem
         ON generation_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL;
     `);
+
+    // === 公共默认资产（default_assets 模板库 + media 归属标记）===
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS default_assets (
+        id TEXT PRIMARY KEY,
+        key TEXT UNIQUE NOT NULL,
+        title TEXT DEFAULT '',
+        type TEXT DEFAULT 'image',
+        thumbnail TEXT DEFAULT '',
+        full_url TEXT DEFAULT '',
+        prompt TEXT DEFAULT '',
+        model TEXT DEFAULT '',
+        ratio TEXT DEFAULT '1:1',
+        source TEXT DEFAULT 'default',
+        category TEXT DEFAULT 'generated',
+        status TEXT DEFAULT 'success',
+        sort INT DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      ALTER TABLE media ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE;
+      ALTER TABLE media ADD COLUMN IF NOT EXISTS default_key TEXT;
+      CREATE INDEX IF NOT EXISTS ix_media_default ON media(user_id, default_key) WHERE default_key IS NOT NULL;
+    `);
+
     console.log('[DB] PostgreSQL 连接成功');
 
     // === Phase 2：运营总控台(M3) + 全局智能体层(M4) 地基 ===
@@ -223,6 +247,9 @@ async function initDB() {
       console.log(`[Seed] 已创建管理员账号 ${adminEmail}（默认密码仅本地开发用，公开部署前请用 ADMIN_SEED_PASSWORD 覆盖并尽快修改）`);
     }
 
+    // 公共默认资产种子（幂等：已存在则跳过）
+    await seedDefaultAssets();
+
     return true;
   } catch (e) {
     console.warn('[DB] PostgreSQL 不可用，降级 JSON 存储:', e.message);
@@ -268,6 +295,57 @@ function toSnake(obj) {
     out[rev[k] || k] = v;
   }
   return out;
+}
+
+// ─── 公共默认资产（新用户注册/登录时拷贝到个人素材库）───
+// 初始为本地 SVG 示例素材（public/samples），保证 dev/prod 均可直出。
+// 真实素材可在 default_assets 表直接增改，或通过运营后台维护。
+const DEFAULT_ASSET_SEED = [
+  { key: 'char-01', title: '示例·古风角色', type: 'image', category: 'character', ratio: '3:4', model: 'Nano Banana Pro', thumbnail: '/samples/character.svg', prompt: '电影级 8K 超写实人像，东方古典美人，汉服，柔光，中式庭院背景。', sort: 1 },
+  { key: 'scene-01', title: '示例·古城场景', type: 'image', category: 'scene', ratio: '16:9', model: '即梦', thumbnail: '/samples/scene.svg', prompt: '宏大古城全景，晨雾，电影感光影，超宽幅。', sort: 2 },
+  { key: 'prop-01', title: '示例·道具参考', type: 'image', category: 'prop', ratio: '1:1', model: 'Nano Banana Pro', thumbnail: '/samples/prop.svg', prompt: '精致道具特写，金属质感，工作室打光。', sort: 3 },
+  { key: 'style-cinematic', title: '示例·电影感风格', type: 'image', category: 'other', ratio: '16:9', model: 'Nano Banana Pro', thumbnail: '/samples/style-cinematic.svg', prompt: '电影感调色，低饱和青橙对比，胶片颗粒，宽幅构图。', sort: 4 },
+  { key: 'style-anime', title: '示例·二次元风格', type: 'image', category: 'other', ratio: '3:4', model: '即梦', thumbnail: '/samples/style-anime.svg', prompt: '二次元动画风格，明亮配色，清晰描边，高光柔和。', sort: 5 },
+  { key: 'prompt-portrait', title: '示例·人像提示词', type: 'image', category: 'other', ratio: '4:5', model: 'Nano Banana Pro', thumbnail: '/samples/prompt-portrait.svg', prompt: '8K 超写实人像，自然光，浅景深，柔和肤质，情绪自然。', sort: 6 },
+];
+
+async function seedDefaultAssets() {
+  if (!pgPool) return;
+  for (const a of DEFAULT_ASSET_SEED) {
+    await pgPool.query(
+      `INSERT INTO default_assets (id,key,title,type,thumbnail,full_url,prompt,model,ratio,source,category,status,sort)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'default',$10,'success',$11)
+       ON CONFLICT (key) DO UPDATE SET title=EXCLUDED.title, thumbnail=EXCLUDED.thumbnail, full_url=EXCLUDED.full_url, prompt=EXCLUDED.prompt, model=EXCLUDED.model, ratio=EXCLUDED.ratio, category=EXCLUDED.category, sort=EXCLUDED.sort`,
+      ['da-' + a.key, a.key, a.title, a.type, a.thumbnail, a.thumbnail, a.prompt, a.model, a.ratio, a.category, a.sort || 0]
+    );
+  }
+  console.log(`[Seed] default_assets 已确保 ${DEFAULT_ASSET_SEED.length} 条公共默认资产`);
+}
+
+// 把公共默认资产拷贝到指定用户的个人素材库（幂等：已存在则跳过）
+async function ensureUserDefaults(userId) {
+  if (!pgPool || !userId) return;
+  try {
+    const tpl = await pgPool.query('SELECT * FROM default_assets ORDER BY sort ASC, created_at ASC');
+    for (const t of tpl.rows) {
+      try {
+        const ex = await pgPool.query('SELECT 1 FROM media WHERE user_id=$1 AND default_key=$2 LIMIT 1', [userId, t.key]);
+        if (ex.rows.length) continue;
+        const id = 'def-' + crypto.randomUUID();
+        await pgPool.query(
+          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,created_at,user_id,is_default,default_key)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'default',FALSE,FALSE,$9,$10,$11,$12,$13,$14,NULL,$15,$16,TRUE,$17)`,
+          [id, t.title, t.type, t.thumbnail, t.full_url || t.thumbnail, t.prompt, t.model, t.ratio,
+           t.oss_url || '', t.oss_object_key || '', t.oss_uploaded || false, t.category, t.status || 'success', t.error_message || '',
+           t.created_at || new Date().toISOString(), userId, t.key]
+        );
+      } catch (e) {
+        console.warn('[Defaults] 拷贝失败 key=%s :', t.key, e.message);
+      }
+    }
+  } catch (e) {
+    console.warn('[Defaults] 读取默认资产模板失败:', e.message);
+  }
 }
 
 // ─── 请求解析 ───────────────────────────────────
@@ -331,6 +409,40 @@ function serveStatic(req, res) {
     });
     res.end(fs.readFileSync(filePath));
   } catch { res.end(); }
+}
+
+// ─── 本地静态文件（/media/ 上传 & /samples/ 公共示例，非 /api 路由，必须早于 SPA fallback）───
+function serveLocalFiles(req, res) {
+  const url = req.url.replace(/\/$/, '');
+  const method = req.method;
+
+  // ── 本地上传文件读取 ──
+  if (url.startsWith('/media/') && method === 'GET') {
+    const rel = url.slice('/media/'.length).replace(/[^a-zA-Z0-9._/-]/g, '_');
+    const file = path.join(DATA_DIR, 'media-uploads', rel);
+    if (fs.existsSync(file)) {
+      const ext = path.extname(file).toLowerCase();
+      const ct = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': ct, 'Access-Control-Allow-Origin': '*' });
+      return res.end(fs.readFileSync(file));
+    }
+    return sendJSON(res, 404, { error: 'Not Found' });
+  }
+
+  // ── 公共示例素材（默认资产 SVG 占位，dev/prod 均可直出）──
+  if (url.startsWith('/samples/') && method === 'GET') {
+    const rel = url.slice('/samples/'.length).replace(/[^a-zA-Z0-9._/-]/g, '_');
+    const file = path.join(__dirname, '..', 'public', 'samples', rel);
+    if (fs.existsSync(file)) {
+      const ext = path.extname(file).toLowerCase();
+      const ct = ext === '.svg' ? 'image/svg+xml' : ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': ct, 'Access-Control-Allow-Origin': '*' });
+      return res.end(fs.readFileSync(file));
+    }
+    return sendJSON(res, 404, { error: 'Not Found' });
+  }
+
+  return sendJSON(res, 404, { error: 'Not Found' });
 }
 
 // ─── Phase 2 实时流量采样（总控台 SSE 用，单实例内存环形缓冲）──
@@ -419,6 +531,8 @@ async function handleRegister(req, res) {
     `INSERT INTO credit_transactions (user_id, kind, amount, ref) VALUES ($1, 'grant', 50, 'signup-bonus')`,
     [id],
   );
+  // 注册即拷贝公共默认资产到个人素材库（幂等）
+  await ensureUserDefaults(id);
   const token = session.signSession({ id, role: 'user' });
   session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
   return sendJSON(res, 200, { ok: true, user: { id, email, displayName, credits: 50, role: 'user' } });
@@ -440,6 +554,8 @@ async function handleLogin(req, res) {
   if (!r.rows.length) return sendJSON(res, 401, { error: '邮箱或密码错误' });
   const u = r.rows[0];
   if (!session.verifyPassword(pw, u.password_hash)) return sendJSON(res, 401, { error: '邮箱或密码错误' });
+  // 登录时确保公共默认资产已就位（幂等；兼容老用户注册前尚无默认资产的情况）
+  await ensureUserDefaults(u.id);
   const token = session.signSession({ id: u.id, role: u.role });
   session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
   return sendJSON(res, 200, {
@@ -527,8 +643,10 @@ async function handleAPI(req, res) {
   async function probeOneUrl(url, timeoutMs = PROBE_TIMEOUT_MS) {
     if (!url || typeof url !== 'string') return { ok: false, error: '链接为空' };
     if (url.startsWith('data:') || url.startsWith('blob:')) return { ok: true, skipWrite: true };
-    // 平台专有路径或本地 dev 占位（/spark/app/...、/runtime/...）
+    // 本地自有资源（本服务的 /samples、/media 静态路由）视为可达，跳过探测；
+    // 平台专有占位路径（/spark、/runtime 等）在本环境不可外网访问，标记为失败
     if (url.startsWith('/') && !url.startsWith('//')) {
+      if (url.startsWith('/samples/') || url.startsWith('/media/')) return { ok: true, skipWrite: true };
       return { ok: false, error: '本地/平台专有路径（不可外网访问）' };
     }
     // 1) 先尝试 HEAD
@@ -579,7 +697,7 @@ async function handleAPI(req, res) {
 
   async function probeBatchAndMarkFailed(mediaList, pgPoolRef) {
     const needsProbe = mediaList
-      .filter((m) => m.status !== 'failed' && m.thumbnail)
+      .filter((m) => m.status !== 'failed' && m.thumbnail && m.source !== 'default')
       .slice(0, PROBE_BATCH);
     if (needsProbe.length === 0) return 0;
     const startedAt = Date.now();
@@ -690,7 +808,15 @@ async function handleAPI(req, res) {
   }
   if (url.startsWith('/api/media/') && method === 'DELETE') {
     const id = url.split('/api/media/')[1];
-    if (pgPool) { await pgPool.query('DELETE FROM media WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); }
+    if (pgPool) {
+      // 仅允许删除「自己的」素材：公共资产(user_id IS NULL)与他人的行受保护，不会被误删
+      let deleted = 0;
+      if (realUser) {
+        const r = await pgPool.query('DELETE FROM media WHERE id=$1 AND user_id=$2', [id, realUser.id]);
+        deleted = r.rowCount || 0;
+      }
+      return sendJSON(res, 200, { ok: true, deleted });
+    }
     writeJSON('media', readJSON('media').filter(m => m.id !== id));
     return sendJSON(res, 200, { ok: true });
   }
@@ -1174,19 +1300,6 @@ async function handleAPI(req, res) {
     }
   }
 
-  // ── 本地文件读取 ──
-  if (url.startsWith('/media/') && method === 'GET') {
-    const rel = url.slice('/media/'.length).replace(/[^a-zA-Z0-9._/-]/g, '_');
-    const file = path.join(DATA_DIR, 'media-uploads', rel);
-    if (fs.existsSync(file)) {
-      const ext = path.extname(file).toLowerCase();
-      const ct = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'application/octet-stream';
-      res.writeHead(200, { 'Content-Type': ct, 'Access-Control-Allow-Origin': '*' });
-      return res.end(fs.readFileSync(file));
-    }
-    return sendJSON(res, 404, { error: 'Not Found' });
-  }
-
   return sendJSON(res, 404, { error: 'Not Found' });
 }
 
@@ -1204,6 +1317,8 @@ const server = http.createServer(async (req, res) => {
     });
     return handleAPI(req, res);
   }
+  // 本地静态文件路由（/media/ 上传 & /samples/ 公共示例）必须早于 SPA fallback，否则会被 index.html 吞掉
+  if (req.url.startsWith('/media/') || req.url.startsWith('/samples/')) return serveLocalFiles(req, res);
   if (fs.existsSync(CLIENT_DIR)) return serveStatic(req, res);
   sendJSON(res, 404, { error: 'Not Found' });
 });

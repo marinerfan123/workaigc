@@ -128,6 +128,13 @@ export default function MediaCard({
       }}
     >
       <div className={`relative w-full ${sizeClasses[gridSize]} overflow-hidden`}>
+        {/* ── 公共默认资产标记：用户可删除，但新用户仍会默认获得 ── */}
+        {item.source === 'default' && (
+          <span className="absolute left-2 top-2 z-20 inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300 ring-1 ring-emerald-500/30 backdrop-blur-sm">
+            <Sparkles className="size-2.5" />
+            示例
+          </span>
+        )}
         {isPending ? (
           /* ─── 生成中占位：灰色模糊渐变 + 进度条 + 右上角百分比 ─── */
           <div
