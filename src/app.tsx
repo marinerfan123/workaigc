@@ -11,6 +11,7 @@ import UserPage from '@/pages/UserPage/UserPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
 import AuthModal from '@/components/AuthModal';
 import { RequireAdmin } from '@/components/RequireAdmin';
+import { RequireAuth } from '@/components/RequireAuth';
 
 // 后台（M3 总控台 / M4 智能体 / M2 流水 / 用户 / 技能 / 电商后台）
 import { AdminLayout } from '@/components/layouts/AdminLayout';
@@ -53,17 +54,18 @@ export default function App() {
 
         {/* 前台工作台壳（原有素材/角色/模型功能） */}
         <Route element={<Layout />}>
-          <Route path="workspace" element={<WorkspacePage />} />
-          <Route path="library/:category?" element={<LibraryPage />} />
-          <Route path="characters" element={<CharactersPage />} />
+          <Route path="workspace" element={<RequireAuth><WorkspacePage /></RequireAuth>} />
+          <Route path="library/:category?" element={<RequireAuth><LibraryPage /></RequireAuth>} />
+          <Route path="characters" element={<RequireAuth><CharactersPage /></RequireAuth>} />
           <Route path="model-hub" element={<RequireAdmin><ModelHubPage /></RequireAdmin>} />
-          <Route path="edit/:id" element={<ImageEditorPage />} />
-          <Route path="account" element={<AccountPage />} />
+          <Route path="edit/:id" element={<RequireAuth><ImageEditorPage /></RequireAuth>} />
+          <Route path="account" element={<RequireAuth><AccountPage /></RequireAuth>} />
+          {/* 创作者公开主页（无需登录，可分享） */}
           <Route path="user/:id" element={<UserPage />} />
         </Route>
 
-        {/* 管理后台壳 */}
-        <Route path="/admin" element={<AdminLayout />}>
+        {/* 管理后台壳（整区需管理员） */}
+        <Route path="/admin" element={<RequireAdmin><AdminLayout /></RequireAdmin>}>
           <Route index element={<ConsolePage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="users" element={<UsersPage />} />
@@ -75,20 +77,20 @@ export default function App() {
           <Route path="logs" element={<LogsPage />} />
         </Route>
 
-        {/* 创作工作室壳 */}
-        <Route path="/studio" element={<StudioLayout />}>
+        {/* 创作工作室壳（需登录） */}
+        <Route path="/studio" element={<RequireAuth><StudioLayout /></RequireAuth>}>
           <Route index element={<StudioListPage />} />
           <Route path=":projectId" element={<StudioStagePage />} />
         </Route>
 
-        {/* 电商商城壳 */}
+        {/* 电商商城壳（首页/商品详情公开浏览；下单相关需登录） */}
         <Route path="/shop" element={<ShopLayout />}>
           <Route index element={<ShopHomePage />} />
           <Route path="product/:id" element={<ProductDetailPage />} />
-          <Route path="cart" element={<CartPage />} />
-          <Route path="checkout" element={<CheckoutPage />} />
-          <Route path="orders" element={<OrdersPage />} />
-          <Route path="seller" element={<SellerPage />} />
+          <Route path="cart" element={<RequireAuth><CartPage /></RequireAuth>} />
+          <Route path="checkout" element={<RequireAuth><CheckoutPage /></RequireAuth>} />
+          <Route path="orders" element={<RequireAuth><OrdersPage /></RequireAuth>} />
+          <Route path="seller" element={<RequireAuth><SellerPage /></RequireAuth>} />
         </Route>
 
         <Route path="*" element={<NotFoundPage />} />
