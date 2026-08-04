@@ -10,6 +10,7 @@ import AccountPage from '@/pages/AccountPage/AccountPage';
 import UserPage from '@/pages/UserPage/UserPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
 import AuthModal from '@/components/AuthModal';
+import { Toaster } from '@/components/ui/sonner';
 import { RequireAdmin } from '@/components/RequireAdmin';
 import { RequireAuth } from '@/components/RequireAuth';
 
@@ -100,6 +101,7 @@ export default function App() {
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
       <AuthModal />
+      <Toaster />
     </>
   );
 }
