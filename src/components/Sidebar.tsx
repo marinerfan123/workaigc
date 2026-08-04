@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import type { MediaCounts } from '@/services/api';
+import { useAuth } from '@/services/authStore';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -52,6 +53,7 @@ const BOTTOM_ITEMS = [
 export default function Sidebar({ collapsed, onToggleCollapsed, counts }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
   const [projectName] = useState('东方古典美人项目');
@@ -248,6 +250,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
           <ShoppingBag className="size-4 shrink-0" />
           {!collapsed && <span className="truncate">AI 市集</span>}
         </NavLink>
+        {user?.role === 'admin' && (
         <NavLink
           to="/admin"
           end
@@ -261,6 +264,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
           <ShieldAlert className="size-4 shrink-0" />
           {!collapsed && <span className="truncate">管理后台</span>}
         </NavLink>
+        )}
       </nav>
 
       {/* 底部分隔 + 工具/回收站 + 收起按钮 */}
@@ -286,6 +290,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
             <>
               <div className="fixed inset-0 z-30" onClick={() => setToolsMenuOpen(false)} />
               <div className="absolute left-0 bottom-full z-40 mb-1 w-48 rounded-2xl bg-zinc-900 border border-zinc-800 p-1.5">
+                {user?.role === 'admin' && (
                 <button
                   onClick={() => {
                     navigate('/model-hub');
@@ -296,6 +301,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
                   <Settings2 className="size-4 text-emerald-400" />
                   模型 Hub
                 </button>
+                )}
                 <button className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-white hover:bg-zinc-800/70 transition-colors">
                   <Trash2 className="size-4 text-zinc-400" />
                   回收站

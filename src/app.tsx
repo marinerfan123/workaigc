@@ -10,6 +10,7 @@ import AccountPage from '@/pages/AccountPage/AccountPage';
 import UserPage from '@/pages/UserPage/UserPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
 import AuthModal from '@/components/AuthModal';
+import { RequireAdmin } from '@/components/RequireAdmin';
 
 // 后台（M3 总控台 / M4 智能体 / M2 流水 / 用户 / 技能 / 电商后台）
 import { AdminLayout } from '@/components/layouts/AdminLayout';
@@ -53,7 +54,7 @@ export default function App() {
           <Route path="workspace" element={<WorkspacePage />} />
           <Route path="library/:category?" element={<LibraryPage />} />
           <Route path="characters" element={<CharactersPage />} />
-          <Route path="model-hub" element={<ModelHubPage />} />
+          <Route path="model-hub" element={<RequireAdmin><ModelHubPage /></RequireAdmin>} />
           <Route path="edit/:id" element={<ImageEditorPage />} />
           <Route path="account" element={<AccountPage />} />
           <Route path="user/:id" element={<UserPage />} />
@@ -64,6 +65,7 @@ export default function App() {
           <Route index element={<ConsolePage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="users" element={<UsersPage />} />
+          <Route path="models" element={<ModelHubPage />} />
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="ecommerce" element={<EcommerceAdminPage />} />

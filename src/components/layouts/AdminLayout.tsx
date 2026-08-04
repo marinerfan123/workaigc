@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   ShieldAlert,
   LogOut,
+  Cpu,
 } from 'lucide-react';
 import { useAuth, logout } from '@/services/authStore';
 import { cn } from '@/components/skeleton';
@@ -20,6 +21,7 @@ const ADMIN_NAV = [
   { to: '/admin', label: '运营总控台', icon: LayoutDashboard, end: true, desc: 'M3 实时态势' },
   { to: '/admin/agents', label: '智能体层', icon: Bot, end: false, desc: 'M4 看板+管理' },
   { to: '/admin/users', label: '用户管理', icon: Users, end: false, desc: '列表+手动充值' },
+  { to: '/admin/models', label: '模型管理', icon: Cpu, end: false, desc: '沿用 ModelHub' },
   { to: '/admin/transactions', label: '积分流水', icon: Receipt, end: false, desc: 'M2 流水' },
   { to: '/admin/skills', label: '技能注册', icon: Boxes, end: false, desc: 'skill_registry' },
   { to: '/admin/ecommerce', label: '电商后台', icon: Store, end: false, desc: 'M6 后台' },
@@ -120,18 +122,24 @@ export function AdminLayout() {
               前往登录
             </button>
           </div>
+        ) : !isAdmin ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
+            <ShieldAlert className="size-10 text-zinc-600" />
+            <div>
+              <p className="text-base font-medium text-zinc-200">无权限访问管理后台</p>
+              <p className="mt-1 text-sm text-zinc-500">仅管理员账号可进入，请联系平台管理员获取权限。</p>
+            </div>
+            <button
+              onClick={() => navigate('/')}
+              className="rounded-2xl bg-emerald-500 px-4 py-2 text-sm font-medium text-black hover:bg-emerald-400 transition-colors"
+            >
+              返回前台
+            </button>
+          </div>
         ) : (
-          <>
-            {!isAdmin && (
-              <div className="flex items-center gap-2 border-b border-amber-500/20 bg-amber-500/10 px-5 py-2 text-xs text-amber-300">
-                <ShieldAlert className="size-3.5" />
-                当前账号非管理员，以下为骨架演示视图（后端角色校验上线后将拦截）。
-              </div>
-            )}
-            <main className="flex-1 overflow-y-auto">
-              <Outlet />
-            </main>
-          </>
+          <main className="flex-1 overflow-y-auto">
+            <Outlet />
+          </main>
         )}
       </div>
     </div>

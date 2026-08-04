@@ -878,23 +878,29 @@ async function handleAPI(req, res) {
     return sendJSON(res, 200, readJSON('providers').map(maskKey));
   }
   if (url === '/api/providers' && method === 'POST') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const items = await parseBody(req); if (!items) return sendJSON(res, 400, { error: 'Invalid JSON' });
     const arr = Array.isArray(items) ? items : [items];
     if (pgPool) {
-      for (const it of arr) {
-        const s = toSnake(it);
-        // 安全：api_key 含 '*' 或太短视为占位，沿用 DB 现有值（避免误覆盖真实密钥）
-        let apiKey = s.api_key;
-        if (!apiKey || apiKey.includes('*') || apiKey.length < 6) {
-          const ex = await pgPool.query('SELECT api_key FROM providers WHERE id=$1', [s.id]);
-          if (ex.rows[0]?.api_key) apiKey = ex.rows[0].api_key;
+      try {
+        for (const it of arr) {
+          const s = toSnake(it);
+          // 安全：api_key 含 '*' 或太短视为占位，沿用 DB 现有值（避免误覆盖真实密钥）
+          let apiKey = s.api_key;
+          if (!apiKey || apiKey.includes('*') || apiKey.length < 6) {
+            const ex = await pgPool.query('SELECT api_key FROM providers WHERE id=$1', [s.id]);
+            if (ex.rows[0]?.api_key) apiKey = ex.rows[0].api_key;
+          }
+          await pgPool.query(
+            `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled,max_concurrent=EXCLUDED.max_concurrent`,
+            [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2]
+          );
         }
-        await pgPool.query(
-          `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled,max_concurrent=EXCLUDED.max_concurrent`,
-          [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2]
-        );
+        return sendJSON(res, 200, { ok: true });
+      } catch (e) {
+        console.error('[providers] POST 失败', e.message);
+        return sendJSON(res, 400, { error: '保存失败：' + e.message });
       }
-      return sendJSON(res, 200, { ok: true });
     }
     const list = readJSON('providers');
     for (const it of arr) { const idx = list.findIndex(p => p.id === it.id); if (idx >= 0) list[idx] = it; else list.push(it); }
@@ -902,8 +908,9 @@ async function handleAPI(req, res) {
     return sendJSON(res, 200, { ok: true });
   }
   if (url.startsWith('/api/providers/') && method === 'DELETE') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const id = url.split('/api/providers/')[1];
-    if (pgPool) { await pgPool.query('DELETE FROM models WHERE provider_id=$1', [id]); await pgPool.query('DELETE FROM providers WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); }
+    if (pgPool) { try { await pgPool.query('DELETE FROM models WHERE provider_id=$1', [id]); await pgPool.query('DELETE FROM providers WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); } catch (e) { console.error('[providers] DELETE 失败', e.message); return sendJSON(res, 400, { error: '删除失败：' + e.message }); } }
     writeJSON('providers', readJSON('providers').filter(p => p.id !== id));
     return sendJSON(res, 200, { ok: true });
   }
@@ -1163,17 +1170,23 @@ async function handleAPI(req, res) {
     return sendJSON(res, 200, readJSON('models'));
   }
   if (url === '/api/models' && method === 'POST') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const items = await parseBody(req); if (!items) return sendJSON(res, 400, { error: 'Invalid JSON' });
     const arr = Array.isArray(items) ? items : [items];
     if (pgPool) {
-      for (const it of arr) {
-        const s = toSnake(it);
-        await pgPool.query(
-          `INSERT INTO models (id,model_id,display_name,mapping_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint,credit_cost) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name,mapping_name=EXCLUDED.mapping_name,enabled=EXCLUDED.enabled,credit_cost=EXCLUDED.credit_cost`,
-          [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, s.provider_id, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0))]
-        );
+      try {
+        for (const it of arr) {
+          const s = toSnake(it);
+          await pgPool.query(
+            `INSERT INTO models (id,model_id,display_name,mapping_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint,credit_cost) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name,mapping_name=EXCLUDED.mapping_name,enabled=EXCLUDED.enabled,credit_cost=EXCLUDED.credit_cost`,
+            [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, s.provider_id, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0))]
+          );
+        }
+        return sendJSON(res, 200, { ok: true });
+      } catch (e) {
+        console.error('[models] POST 失败', e.message);
+        return sendJSON(res, 400, { error: '保存失败：' + e.message });
       }
-      return sendJSON(res, 200, { ok: true });
     }
     const list = readJSON('models');
     for (const it of arr) { const idx = list.findIndex(m => m.id === it.id); if (idx >= 0) list[idx] = it; else list.push(it); }
@@ -1181,8 +1194,9 @@ async function handleAPI(req, res) {
     return sendJSON(res, 200, { ok: true });
   }
   if (url.startsWith('/api/models/') && method === 'DELETE') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const id = url.split('/api/models/')[1];
-    if (pgPool) { await pgPool.query('DELETE FROM models WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); }
+    if (pgPool) { try { await pgPool.query('DELETE FROM models WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); } catch (e) { console.error('[models] DELETE 失败', e.message); return sendJSON(res, 400, { error: '删除失败：' + e.message }); } }
     writeJSON('models', readJSON('models').filter(m => m.id !== id));
     return sendJSON(res, 200, { ok: true });
   }
@@ -1194,6 +1208,7 @@ async function handleAPI(req, res) {
     catch { return sendJSON(res, 200, {}); }
   }
   if (url === '/api/settings' && method === 'PUT') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const data = await parseBody(req);
     if (pgPool) { await pgPool.query("INSERT INTO settings (key,value) VALUES ('app',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [JSON.stringify(data || {})]); return sendJSON(res, 200, { ok: true }); }
     writeJSON('settings', data || {});
@@ -1207,6 +1222,7 @@ async function handleAPI(req, res) {
     catch { return sendJSON(res, 200, {}); }
   }
   if (url === '/api/oss' && method === 'PUT') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const data = await parseBody(req) || {};
     if (pgPool) {
       const s = toSnake(data);
