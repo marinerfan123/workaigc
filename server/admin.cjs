@@ -7,6 +7,7 @@
 function createAdmin(ctx) {
   const { getPg, session, sendJSON, fromSnake, parseBody } = ctx;
   const traffic = ctx.traffic || { onlineUsers: () => 0, currentQps: () => 0 };
+  const monitor = ctx.monitor || null;     // 实时监控模块(可选注入)；用于 /api/admin/monitor/{snapshot,stream,clear}
 
   const hasPg = () => !!getPg();
   const pg = () => getPg();
@@ -386,6 +387,21 @@ function createAdmin(ctx) {
         detail: x.detail || {}, createdAt: x.created_at,
       })));
     }
+
+    // ───────────────── 实时监控 · API 活动流 ─────────────────
+    // 注：依赖 monitor 模块（由 server.js 注入 ctx）。monitor 为 null 时 → 503。
+    if (!monitor) return sendJSON(res, 503, { error: '监控模块未启用' });
+    if (url === '/api/admin/monitor/snapshot' && method === 'GET') {
+      return sendJSON(res, 200, monitor.getSnapshot());
+    }
+    if (url === '/api/admin/monitor/stream' && method === 'GET') {
+      return monitor.stream(req, res);                  // SSE(自带 writeHead/end)
+    }
+    if (url === '/api/admin/monitor/clear' && method === 'POST') {
+      monitor.clear();
+      return sendJSON(res, 200, { ok: true });
+    }
+
     return sendJSON(res, 404, { error: 'Not Found' });
   }
 

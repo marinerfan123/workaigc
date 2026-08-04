@@ -20,6 +20,7 @@ import UsersPage from '@/pages/Admin/UsersPage';
 import TransactionsPage from '@/pages/Admin/TransactionsPage';
 import SkillsPage from '@/pages/Admin/SkillsPage';
 import EcommerceAdminPage from '@/pages/Admin/EcommerceAdminPage';
+import MonitorPage from '@/pages/Admin/MonitorPage';
 
 // 创作工作室（M5 流水线）
 import { StudioLayout } from '@/components/layouts/StudioLayout';
@@ -69,6 +70,7 @@ export default function App() {
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="ecommerce" element={<EcommerceAdminPage />} />
+          <Route path="monitor" element={<MonitorPage />} />
         </Route>
 
         {/* 创作工作室壳 */}

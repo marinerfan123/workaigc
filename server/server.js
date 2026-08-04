@@ -43,6 +43,7 @@ const { initRedis, isRedisUp } = redisStore;
 const { clientIp, rateLimit } = rateLimitMod;
 import adminMod from './admin.cjs'; // Phase 2 运营总控台(M3) + 全局智能体层(M4) 后台接口
 import paymentsMod from './payments.cjs'; // Phase 2 收尾：充值订单 + DEV 支付适配器(M2 账务)
+import monitorMod from './monitor.cjs'; // 后台「实时监控 · API 活动流」(全路径环形缓冲 + SSE 广播)
 
 async function initDB() {
   try {
@@ -469,6 +470,9 @@ const traffic = {
 };
 
 // ─── Phase 2 管理后台模块（注入依赖；pgPool 经 getter 取最新值）──
+const monitor = monitorMod.createMonitor();   // 后台实时监控：所有 HTTP 请求(API + 静态资产)的环形缓冲 + SSE 流
+monitor.startMetricsTimer();                   // 1s 广播一次 60s 滚动指标
+
 const admin = adminMod.createAdmin({
   getPg: () => pgPool,
   session,
@@ -477,6 +481,7 @@ const admin = adminMod.createAdmin({
   toSnake,
   parseBody,
   traffic: { onlineUsers: () => traffic.onlineUsers(), currentQps: () => traffic.currentQps() },
+  monitor,                                    // 注入 monitor：admin 实时监控页用(/api/admin/monitor/{snapshot,stream,clear})
 });
 
 // ─── Phase 2 收尾：充值订单 + DEV 支付适配器（注入依赖；pgPool 经 getter 取最新值）──
@@ -1321,6 +1326,13 @@ async function handleAPI(req, res) {
 
 // ─── 启动 ────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
+  // 全局请求监控：覆盖 API + 静态资产(/assets/*、/samples/*、SPA 前端路由)，
+  // 驱动后台「实时监控 · API 活动流」大屏。monitor 模块内部已过滤 /api/admin/monitor/* 自身防反馈。
+  const monitorT0 = Date.now();
+  res.on('finish', () => {
+    monitor.record(req.method, (req.url || '').split('?')[0], res.statusCode, Date.now() - monitorT0);
+  });
+
   if (req.method === 'OPTIONS') {
     res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS' });
     return res.end();
