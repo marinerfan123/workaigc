@@ -48,6 +48,7 @@ async function initDB() {
         protocol TEXT DEFAULT 'openai-compatible',
         remark TEXT DEFAULT '',
         default_endpoint JSONB DEFAULT '{}',
+        rate_limits JSONB DEFAULT '{"1k":20,"2k":10,"4k":1}',
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
@@ -121,6 +122,11 @@ async function initDB() {
     await client.query(`
       INSERT INTO oss_config (id, enabled) VALUES (1, TRUE)
       ON CONFLICT (id) DO NOTHING;
+    `);
+
+    // 兼容已部署库：补 rate_limits 列（RPM 感知调度用）
+    await client.query(`
+      ALTER TABLE providers ADD COLUMN IF NOT EXISTS rate_limits JSONB DEFAULT '{"1k":20,"2k":10,"4k":1}';
     `);
 
     console.log('[PG] 数据库表初始化完成');

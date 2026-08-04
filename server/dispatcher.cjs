@@ -10,8 +10,14 @@ const billing = require('./billing.cjs'); // Phase A 计费（reserve/commit/rel
 // ─── 全局并发状态（跨请求共享，实现真正全局信号量）───
 let GLOBAL_ACTIVE = 0;
 let GLOBAL_MAX = 10;
-const PROVIDER_ACTIVE = {}; // providerId -> 当前在用并发数
 let RR_POINTER = 0;
+
+// ─── RPM 感知调度：每账号每分辨率令牌桶 + 最少使用优先 ───
+// 单实例内存态（PM2 必须 instances:1，见 deploy/ecosystem.config.cjs）。
+// 多实例横向扩展需把 ACCT 状态迁至 Redis（deployment-plan.md §6）。
+const ACCT = {};
+const DEFAULT_RPM = { '1k': 20, '2k': 10, '4k': 1 };
+const CONC_CAP = { '1k': 4, '2k': 3, '4k': 1 };
 
 // ─── 占位符替换 ─────────────────────────────────────
 function fillTemplate(template, vars) {
@@ -201,39 +207,92 @@ function makeError(body, status, fallback) {
     (body && body.message) ||
     (typeof body === 'string' ? body.slice(0, 200) : '') ||
     `HTTP ${status}`;
-  return { status: 'error', error: `${fallback}：${errMsg}`, images: [], videoUrl: '' };
+  return { status: 'error', error: `${fallback}：${errMsg}`, images: [], videoUrl: '', rateLimited: status === 429 };
 }
 
-// ─── 令牌获取 / 释放（同步块内完成，避免超卖）───
-function acquireOne(pairs) {
+// ─── RPM 感知调度：令牌获取 / 释放 ───────────────────
+// 每个 (账号 × 分辨率) 一桶：令牌桶按时间回流（cap 个/60s），
+// 累计用量 used[tier] 用于「最少使用优先」精确均匀分配。
+// 厂商限额：1K=20 RPM、2K=10 RPM、4K=1 RPM（可由 providers.rate_limits 覆盖）
+function rateFor(provider, tier) {
+  const rl = provider && provider.rate_limits;
+  const v = rl && typeof rl === 'object' ? rl[tier] : undefined;
+  if (typeof v === 'number' && v > 0) return v;
+  return DEFAULT_RPM[tier] || 10;
+}
+
+function getAcct(pid, provider, tier) {
+  if (!ACCT[pid]) {
+    ACCT[pid] = {
+      tier: {},
+      conc: { '1k': 0, '2k': 0, '4k': 0 },
+      used: { '1k': 0, '2k': 0, '4k': 0 },
+      cooldown: { '1k': 0, '2k': 0, '4k': 0 },
+    };
+  }
+  const a = ACCT[pid];
+  if (!a.tier[tier]) {
+    const cap = rateFor(provider, tier);
+    a.tier[tier] = { cap, tokens: cap, last: Date.now() };
+  }
+  return a;
+}
+
+// 令牌桶按时间回流：cap 个令牌 / 60 秒
+function refill(b, now) {
+  const dt = (now - b.last) / 1000;
+  if (dt > 0) b.tokens = Math.min(b.cap, b.tokens + dt * (b.cap / 60));
+  b.last = now;
+}
+
+function acquireOne(pairs, tier) {
+  tier = tier || '1k';
   while (true) {
     if (GLOBAL_ACTIVE < GLOBAL_MAX) {
+      const now = Date.now();
       const order = pairs.slice(RR_POINTER).concat(pairs.slice(0, RR_POINTER));
+      const cand = [];
       for (const p of order) {
         const pid = p.provider.id;
-        const cap = Number(p.provider.max_concurrent) || 2;
-        if ((PROVIDER_ACTIVE[pid] || 0) < cap) {
-          PROVIDER_ACTIVE[pid] = (PROVIDER_ACTIVE[pid] || 0) + 1;
-          GLOBAL_ACTIVE += 1;
-          RR_POINTER = (RR_POINTER + 1) % pairs.length;
-          return p;
-        }
+        const a = getAcct(pid, p.provider, tier);
+        a.tier[tier].cap = rateFor(p.provider, tier); // 运行时同步 cap（DB 改 rate_limits 立即生效）
+        if (now < a.cooldown[tier]) continue;          // 该账号该分辨率熔断中，跳过
+        refill(a.tier[tier], now);
+        if (a.tier[tier].tokens < 1) continue;         // 本账号本分辨率 RPM 已耗尽
+        const concCap = Math.min(Number(p.provider.max_concurrent) || 2, CONC_CAP[tier]);
+        if (a.conc[tier] >= concCap) continue;          // 单账号并发已满
+        cand.push({ p, a });
       }
+      if (cand.length === 0) {
+        // 全部账号本分辨率都已满 → 让出事件循环稍后重试（不报错，避免 429）
+        return sleep(120).then(() => acquireOne(pairs, tier));
+      }
+      // ★ 精确均匀分配：挑「本分辨率累计用量最少」的账号
+      cand.sort((x, y) => x.a.used[tier] - y.a.used[tier]);
+      const { p, a } = cand[0];
+      a.tier[tier].tokens -= 1;
+      a.conc[tier] += 1;
+      a.used[tier] += 1;
+      GLOBAL_ACTIVE += 1;
+      RR_POINTER = (RR_POINTER + 1) % pairs.length;
+      return p;
     }
-    // 让出事件循环，等待有空位
-    return sleep(80).then(() => acquireOne(pairs));
+    return sleep(120).then(() => acquireOne(pairs, tier));
   }
 }
 
-function releaseOne(p) {
-  const pid = p.provider.id;
-  PROVIDER_ACTIVE[pid] = Math.max(0, (PROVIDER_ACTIVE[pid] || 0) - 1);
+function releaseOne(p, tier) {
+  tier = tier || '1k';
   GLOBAL_ACTIVE = Math.max(0, GLOBAL_ACTIVE - 1);
+  const a = ACCT[p.provider.id];
+  if (a) a.conc[tier] = Math.max(0, a.conc[tier] - 1);
 }
 
 // ─── 主入口 ────────────────────────────────────────
 async function generate(pgPool, opts) {
   const { model, prompt, ratio, resolution, count, contentType, referenceImages } = opts;
+  // 分辨率 → RPM 桶：1k/2k/4k 各有独立限额；未知分辨率一律按 1k 处理
+  const tier = ['1k', '2k', '4k'].includes(resolution) ? resolution : '1k';
 
   // 1. 全局最大并发
   try {
@@ -275,7 +334,7 @@ async function generate(pgPool, opts) {
   const tasks = [];
   for (let i = 0; i < total; i++) {
     tasks.push((async () => {
-      const p = await acquireOne(pairs);
+      const p = await acquireOne(pairs, tier);
       try {
         const input = {
           provider: p.provider,
@@ -287,6 +346,11 @@ async function generate(pgPool, opts) {
           referenceImages,
         };
         const res = contentType === 'video' ? await videoGenerate(p.provider, p.model, input) : await imageGenerate(p.provider, p.model, input);
+        if (res && res.rateLimited) {
+          // 该账号该分辨率命中厂商 RPM/429 限流 → 临时熔断 60s，避免反复打爆
+          const a = getAcct(p.provider.id, p.provider, tier);
+          a.cooldown[tier] = Date.now() + 60000;
+        }
         if (contentType === 'video') {
           return res.videoUrl ? { images: [res.videoUrl], status: res.status, error: res.error, providerId: p.provider.id } : { images: [], status: res.status, error: res.error, providerId: p.provider.id };
         }
@@ -294,7 +358,7 @@ async function generate(pgPool, opts) {
       } catch (e) {
         return { images: [], status: 'error', error: (e && e.message) || String(e), providerId: p.provider.id };
       } finally {
-        releaseOne(p);
+        releaseOne(p, tier);
       }
     })());
   }
@@ -443,4 +507,8 @@ async function listActiveTasks(pgPool, userId) {
   }
 }
 
-module.exports = { generate, generateAsync, getTaskStatus, listActiveTasks, callEndpoint, getByPath, getArrayByPath };
+// 导出内部调度函数（供测试 / 调试断言 RPM 门控与均匀分配用）
+module.exports = {
+  generate, generateAsync, getTaskStatus, listActiveTasks, callEndpoint, getByPath, getArrayByPath,
+  acquireOne, releaseOne, getAcct, rateFor,
+};

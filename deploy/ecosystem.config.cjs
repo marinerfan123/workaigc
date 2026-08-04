@@ -1,13 +1,18 @@
-// deploy/ecosystem.config.cjs — PM2 集群模式部署（Phase 0）
+// deploy/ecosystem.config.cjs — PM2 部署（Phase 0）
 // 用法：pm2 start deploy/ecosystem.config.cjs --env production
+//
+// ⚠️ 必须单实例（instances:1 / fork）：dispatcher 的 RPM 调度状态（每账号每分辨率令牌桶）
+// 是进程内内存态，多实例会让同一账号被重复计数 → 实际发量达限额数倍 → 厂商 429 风暴。
+// 横向扩展请先把 dispatcher.cjs 的 ACCT 状态迁至 Redis（见 docs/deployment-plan.md §6），
+// 届时再放开 instances。单进程对 I/O 密集的生图调度足够（重活在厂商侧）。
 module.exports = {
   apps: [
     {
       name: 'ai-image-studio',
       script: 'server/server.js',
-      // 集群模式：每个 CPU 一个进程，共享 3001 端口（Node 原生 cluster 负载均衡）
-      instances: 'max',
-      exec_mode: 'cluster',
+      // 单实例：保证 RPM 令牌桶全局唯一、计数正确
+      instances: 1,
+      exec_mode: 'fork',
       // 单进程内存超 1G 自动重启，避免内存泄漏拖垮整机
       max_memory_restart: '1G',
       // 优雅重启：旧进程处理完在途请求再退出
