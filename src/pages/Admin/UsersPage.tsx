@@ -3,6 +3,11 @@
 // 用法：在需要数据的地方先 `await ensureApi()`，成功后各 apiGet* 才有数据可读。
 
 import type { IMediaItem } from '@/data/media';
+import { useState, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
+import { Search, ShieldCheck, ShieldAlert, Trash2, Crown } from 'lucide-react';
+
+const cn = (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' ');
 
 let API_BASE = '';
 let API_TOKEN = '';
@@ -377,26 +382,6 @@ export async function apiMe(): Promise<{ user?: AuthUser }> {
   }
 }
 
-/** 更新昵称（账户设置） */
-export async function apiUpdateProfile(displayName: string): Promise<{ ok: boolean; user?: { id: string; displayName: string } }> {
-  return apiFetch('/api/auth/profile', { method: 'PUT', body: JSON.stringify({ displayName }) });
-}
-
-/** 修改密码（账户设置） */
-export async function apiChangePassword(oldPassword: string, newPassword: string): Promise<{ ok: boolean }> {
-  return apiFetch('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) });
-}
-
-/** 公开创作者主页资料（无需登录） */
-export async function apiGetUser(id: string): Promise<{ user: { id: string; displayName: string; createdAt: string }; stats: { media: number } }> {
-  return apiFetch(`/api/users/${encodeURIComponent(id)}`);
-}
-
-/** 公开创作者主页媒资（无需登录） */
-export async function apiGetUserMedia(id: string): Promise<{ items: any[] }> {
-  return apiFetch(`/api/users/${encodeURIComponent(id)}/media`);
-}
-
 // ─── 充值订单（M2 账务 / DEV 支付适配器）───
 export interface RechargeOrder {
   id: string;
@@ -620,4 +605,125 @@ export async function apiAdminUpsertAgentRule(r: { id?: string; name: string; tr
 }
 export async function apiAdminToggleAgentRule(id: string, enabled: boolean): Promise<{ ok: boolean }> {
   try { return await apiFetch(`/api/admin/agent-rules/${encodeURIComponent(id)}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } catch { return { ok: false }; }
+}
+
+// ─── 用户管理页（M3 总控台）───
+export default function UsersPage() {
+  const [items, setItems] = useState<AdminUser[]>([]);
+  const [total, setTotal] = useState(0);
+  const [q, setQ] = useState('');
+  const [role, setRole] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const r = await apiAdminUsers({ q: q || undefined, role: role || undefined, limit: 100 });
+    setItems(r.items || []);
+    setTotal(r.total || 0);
+    setLoading(false);
+  }, [q, role]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const toggleStatus = async (u: AdminUser) => {
+    const next: 'active' | 'suspended' = u.status === 'active' ? 'suspended' : 'active';
+    const r = await apiAdminSetUserStatus(u.id, next);
+    if (r.ok) { toast.success(`已${next === 'active' ? '启用' : '停用'} ${u.displayName}`); load(); }
+    else toast.error(r.error || '操作失败');
+  };
+  const toggleRole = async (u: AdminUser) => {
+    const next: 'user' | 'admin' = u.role === 'admin' ? 'user' : 'admin';
+    const r = await apiAdminSetUserRole(u.id, next);
+    if (r.ok) { toast.success(`已设为${next === 'admin' ? '管理员' : '普通用户'}`); load(); }
+    else toast.error(r.error || '操作失败');
+  };
+  const remove = async (u: AdminUser) => {
+    if (!confirm(`确认删除用户 ${u.displayName}（${u.email}）？此操作不可恢复。`)) return;
+    const r = await apiAdminDeleteUser(u.id);
+    if (r.ok) { toast.success('已删除'); load(); } else toast.error(r.error || '删除失败');
+  };
+
+  return (
+    <div className="space-y-6 p-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold text-white">用户管理</h1>
+          <p className="text-xs text-zinc-500">M3 · 总控台 · 用户账号 / 角色 / 状态管理</p>
+        </div>
+        <span className="rounded-2xl bg-emerald-500/15 px-3 py-2 text-sm font-medium text-emerald-300">共 {total} 个用户</span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="搜索邮箱 / 昵称"
+            className="w-64 rounded-2xl bg-white/5 pl-9 pr-3 py-2 text-sm text-white placeholder:text-zinc-600 border border-white/10 focus:border-emerald-500/50 focus:outline-none"
+          />
+        </div>
+        {(['', 'user', 'admin'] as const).map((rv) => (
+          <button
+            key={rv}
+            onClick={() => setRole(rv)}
+            className={cn(
+              'rounded-2xl px-3 py-1.5 text-sm transition-colors',
+              role === rv ? 'bg-emerald-500 text-black' : 'bg-white/5 text-zinc-300 hover:bg-white/10',
+            )}
+          >
+            {rv === '' ? '全部角色' : rv === 'admin' ? '管理员' : '普通用户'}
+          </button>
+        ))}
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02]">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-zinc-500">
+              <th className="py-2.5 px-4 font-medium">用户</th>
+              <th className="py-2.5 px-4 font-medium">角色</th>
+              <th className="py-2.5 px-4 font-medium">积分</th>
+              <th className="py-2.5 px-4 font-medium">状态</th>
+              <th className="py-2.5 px-4 font-medium">注册时间</th>
+              <th className="py-2.5 px-4 font-medium text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-white/5">
+            {loading && <tr><td colSpan={6} className="py-6 text-center text-xs text-zinc-500">加载中…</td></tr>}
+            {!loading && items.length === 0 && <tr><td colSpan={6} className="py-6 text-center text-xs text-zinc-500">暂无用户</td></tr>}
+            {!loading && items.map((u) => (
+              <tr key={u.id} className="text-zinc-200">
+                <td className="py-2.5 px-4">
+                  <div className="font-medium text-white">{u.displayName}</div>
+                  <div className="text-xs text-zinc-500">{u.email}</div>
+                </td>
+                <td className="py-2.5 px-4">
+                  <span className={cn('rounded-full px-2 py-0.5 text-xs', u.role === 'admin' ? 'bg-violet-400/10 text-violet-300' : 'bg-white/10 text-zinc-300')}>{u.role}</span>
+                </td>
+                <td className="py-2.5 px-4 font-medium text-emerald-300">{u.credits}</td>
+                <td className="py-2.5 px-4">
+                  <span className={cn('rounded-full px-2 py-0.5 text-xs', u.status === 'active' ? 'bg-emerald-400/10 text-emerald-300' : 'bg-rose-400/10 text-rose-300')}>{u.status}</span>
+                </td>
+                <td className="py-2.5 px-4 text-xs text-zinc-500">{u.createdAt ? new Date(u.createdAt).toLocaleString() : '—'}</td>
+                <td className="py-2.5 px-4 text-right">
+                  <div className="flex justify-end gap-1">
+                    <button onClick={() => toggleStatus(u)} title={u.status === 'active' ? '停用' : '启用'} className="flex size-8 items-center justify-center rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white transition-colors">
+                      {u.status === 'active' ? <ShieldAlert className="size-4" /> : <ShieldCheck className="size-4" />}
+                    </button>
+                    <button onClick={() => toggleRole(u)} title="切换角色" className="flex size-8 items-center justify-center rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white transition-colors">
+                      <Crown className="size-4" />
+                    </button>
+                    <button onClick={() => remove(u)} title="删除" className="flex size-8 items-center justify-center rounded-lg bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 transition-colors">
+                      <Trash2 className="size-4" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }

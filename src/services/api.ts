@@ -376,6 +376,26 @@ export async function apiMe(): Promise<{ user?: AuthUser }> {
   }
 }
 
+/** 更新昵称（账户设置） */
+export async function apiUpdateProfile(displayName: string): Promise<{ ok: boolean; user?: { id: string; displayName: string } }> {
+  return apiFetch('/api/auth/profile', { method: 'PUT', body: JSON.stringify({ displayName }) });
+}
+
+/** 修改密码（账户设置） */
+export async function apiChangePassword(oldPassword: string, newPassword: string): Promise<{ ok: boolean }> {
+  return apiFetch('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ oldPassword, newPassword }) });
+}
+
+/** 公开创作者主页资料（无需登录） */
+export async function apiGetUser(id: string): Promise<{ user: { id: string; displayName: string; createdAt: string }; stats: { media: number } }> {
+  return apiFetch(`/api/users/${encodeURIComponent(id)}`);
+}
+
+/** 公开创作者主页媒资（无需登录） */
+export async function apiGetUserMedia(id: string): Promise<{ items: any[] }> {
+  return apiFetch(`/api/users/${encodeURIComponent(id)}/media`);
+}
+
 // ─── 充值订单（M2 账务 / DEV 支付适配器）───
 export interface RechargeOrder {
   id: string;
@@ -504,3 +524,26 @@ export async function apiAdminUpsertAgentRule(r: { id?: string; name: string; tr
 export async function apiAdminToggleAgentRule(id: string, enabled: boolean): Promise<{ ok: boolean }> {
   try { return await apiFetch(`/api/admin/agent-rules/${encodeURIComponent(id)}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } catch { return { ok: false }; }
 }
+
+// ─── 用户 / 电商相关 API 历史原因内聚在 UsersPage.tsx，这里统一再导出，
+// 保持 "@/services/api" 为唯一 API 入口（避免其它页面 import 缺失）───
+export {
+  apiAddToCart,
+  apiAdminDeleteUser,
+  apiAdminSetUserRole,
+  apiAdminSetUserStatus,
+  apiCreateOrder,
+  apiGetCart,
+  apiGetOrder,
+  apiGetOrders,
+  apiGetProduct,
+  apiGetShopProducts,
+  apiRemoveCartItem,
+  apiUpdateCartItem,
+} from '@/pages/Admin/UsersPage';
+export type {
+  CartItem,
+  ShopOrder,
+  ShopProduct,
+  ShopProductDetail,
+} from '@/pages/Admin/UsersPage';
