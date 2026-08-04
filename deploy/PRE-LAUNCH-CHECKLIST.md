@@ -17,10 +17,14 @@
 
 ## 🚨 上线阻断项（必须解决）
 
-### 1. 配置 OSS 凭证（图永久存储）
-- **现状**：`oss_config` 表 `access_key_id/secret` 为空 → OSS 上传失败 → 图只存浏览器 IndexedDB（本机）→ 跨设备看不到、刷新后可能 miss
-- **动作**：在服务器后台「模型 Hub → 存储配置」填入阿里云 OSS AK/SK，或将凭证注入环境变量
-- **验证**：生成一张图 → 详情面板「存储状态」显示「已同步 OSS」（绿色），而非「待上传」
+### 1. 配置 OSS 凭证（图永久存储）— 本地已验证可用 ✅
+- **本地（开发）**：`server/data/oss.json` 已填完整配置且**已真实 PUT 上传验证通过（HTTP 200）**：
+  bucket=`oss-pai-8f7hhyl09yhscjroqw-cn-shanghai`、endpoint=`oss-cn-shanghai.aliyuncs.com`、region=`cn-shanghai`、pathPrefix=`images/`、AK/SK 已验证可用。**本地阻断已解除。**
+- ⚠️ **生产关键**：服务端生产环境读的是 **PG `oss_config` 表**（`server.js` 在 `pgPool` 存在时优先用表，而非 `oss.json`）。所以部署时**必须**把这套配置填进 PG `oss_config`：
+  - 路径 A：后台「模型 Hub → 存储配置」走 `PUT /api/oss`（写入 PG）
+  - 路径 B：直连 `UPDATE oss_config SET access_key_id=..., access_key_secret=..., bucket='oss-pai-8f7hhyl09yhscjroqw-cn-shanghai', region='cn-shanghai', endpoint_external='oss-cn-shanghai.aliyuncs.com', endpoint_internal='oss-cn-shanghai.aliyuncs.com', path_prefix='images/', enabled=true WHERE id=1;`
+  - AK/SK 以 `server/data/oss.json` 当前值为准（git 外、不入库；本清单不重复记录密钥）
+- **验证**：生成一张图 → 详情面板「存储状态」显示「已同步 OSS」（绿色）；后端日志 `[OSS] ✅ ... (signed GET 7d)`
 
 ### 2. 生产 `.env`（绝不进 git）
 - 复制 `.env.example` → 服务器 `.env`，填写：
@@ -92,7 +96,7 @@ curl https://your-domain.com/api/health   # 确认 PG:connected + Redis:up
 
 | 项 | 说明 | 风险 |
 |---|---|---|
-| IndexedDB 本地图缓存 | OSS 失败兜底，浏览器本地 | 跨设备不共享；OSS 配好后自然消失 |
+| IndexedDB 本地图缓存 | **已在 2026-08-04 彻底移除**：资产改走 OSS 主路径 + 模型官方链接兜底，零浏览器存储，轻量化 | — |
 | redis.cjs 内存兜底 | Redis 掉线落内存 Map | 生产应保证 Redis 高可用（主从/哨兵/云托管） |
 | mediaList PG 持久化 | 已删 MOCK fallback | ✅ 正确 |
 | monitor/logbus 内存缓冲 | 监控/日志去重 | ✅ 单机 OK |
