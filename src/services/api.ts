@@ -215,6 +215,7 @@ export async function apiGenerate(payload: {
   prompt: string;
   ratio?: string;
   resolution?: string;
+  quality?: 'low' | 'standard' | 'high';
   count?: number;
   contentType?: 'image' | 'video';
   referenceImages?: string[];

@@ -21,6 +21,7 @@ import {
   Search,
   Maximize2,
   Loader2,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { capabilityClient, logger } from '@/services/client-capabilities';
@@ -32,6 +33,7 @@ import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, apiListActiveGenerations } from '@/services/api';
 import { refreshUser, setAuthModalOpen } from '@/services/authStore';
 import { ALL_RESOLUTIONS, type Resolution, getEffectiveModelName } from '@/data/models';
+import type { Ratio, Quality } from '@/data/settings';
 import {
   Dialog,
   DialogContent,
@@ -40,10 +42,28 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 
+// 全部可选比例（与 settings.ts 的 Ratio 保持一致；'auto' = 智能比例）
+const ALL_RATIOS: Ratio[] = [
+  'auto', '1:1', '1:2', '2:1',
+  '9:16', '16:9', '3:4', '4:3',
+  '3:2', '2:3', '5:4', '4:5',
+  '21:9', '9:21',
+];
+
+const QUALITY_OPTIONS: { key: Quality; label: string }[] = [
+  { key: 'low', label: '低画质' },
+  { key: 'standard', label: '标准画质' },
+  { key: 'high', label: '高画质' },
+];
+
+// 比例显示：auto → "智能"
+const formatRatio = (r: Ratio) => (r === 'auto' ? '智能' : r);
+
 interface IGenerationSettings {
   contentType: 'image' | 'video';
-  ratio: '16:9' | '4:3' | '1:1' | '3:4' | '9:16';
+  ratio: Ratio;
   resolution: '1k' | '2k' | '4k' | '8k';
+  quality: Quality;
   model: string;
   count: 1 | 2 | 3 | 4;
   duration?: 4 | 6 | 8 | 10;
@@ -99,6 +119,8 @@ function GenerationBar({
   const [modelSearch, setModelSearch] = useState('');
   const [optimizing, setOptimizing] = useState(false);
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
+  // 尺寸设置弹窗（质量/清晰度/比例 —— 向上弹窗，一次选择）
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const { providers, models, getProviderName, getDefaultModel } = useModelHub();
   const { config: ossConfig, uploadFile: uploadToOss, buildOssUrl } = useOssConfig();
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -487,6 +509,7 @@ function GenerationBar({
           prompt: promptText,
           ratio: settings.ratio,
           resolution: settings.resolution || '1k',
+          quality: settings.quality,
           count,
           contentType: settings.contentType,
           referenceImages: referenceImages && referenceImages.length > 0 ? referenceImages : undefined,
@@ -801,40 +824,103 @@ function GenerationBar({
           </div>
 
           <div className="flex items-center gap-2">
-            {/* 分辨率选择（仅在当前模型有支持时显示） */}
-            {availableResolutions.length > 0 && (
-              <div className="flex items-center rounded-full bg-zinc-800/50 px-1 py-1">
-                {ALL_RESOLUTIONS.filter((r) => availableResolutions.includes(r)).map((res) => (
-                  <button
-                    key={res}
-                    onClick={() => onSettingsChange({ ...settings, resolution: res })}
-                    className={`rounded-full px-2 py-1 text-[10px] font-bold transition-all duration-300 ${
-                      (settings.resolution || '1k') === res
-                        ? 'bg-emerald-500/15 text-emerald-400'
-                        : 'text-zinc-500 hover:text-white'
-                    }`}
-                  >
-                    {res}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {/* 比例选择 */}
-            <div className="flex items-center rounded-full bg-zinc-800/50 px-1 py-1">
-              {(['16:9', '4:3', '1:1', '3:4', '9:16'] as const).map((r) => (
-                <button
-                  key={r}
-                  onClick={() => onSettingsChange({ ...settings, ratio: r })}
-                  className={`rounded-full px-2.5 py-1 text-[10px] font-bold transition-all duration-300 ${
-                    settings.ratio === r
-                      ? 'bg-emerald-500/15 text-emerald-400'
-                      : 'text-zinc-500 hover:text-white'
-                  }`}
-                >
-                  {r}
-                </button>
-              ))}
+            {/* 尺寸设置（质量 / 清晰度 / 比例 —— 向上弹窗，一次选择） */}
+            <div className="relative">
+              <button
+                onClick={() => setSettingsOpen(!settingsOpen)}
+                className="flex h-7 items-center gap-1.5 rounded-full bg-zinc-800/50 pl-2.5 pr-2 text-xs text-white hover:bg-zinc-800 transition-colors"
+                title="图像质量 / 清晰度 / 比例"
+              >
+                <SlidersHorizontal className="size-3.5 text-zinc-500" />
+                <span className="font-semibold tabular-nums">
+                  {(settings.resolution || '1k').toUpperCase()}
+                </span>
+                <span className="text-zinc-600">·</span>
+                <span className="font-medium">{formatRatio(settings.ratio)}</span>
+                <ChevronDown
+                  className={`size-3 text-zinc-500 transition-transform duration-200 ${settingsOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+              {settingsOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
+                    onClick={() => setSettingsOpen(false)}
+                  />
+                  {/* 向上弹窗：bottom-full + mb-2，水平居中对齐触发按钮 */}
+                  <div className="absolute left-1/2 bottom-full z-40 mb-2 w-80 -translate-x-1/2 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl shadow-black/60">
+                    {/* 图像质量 */}
+                    <div className="p-3">
+                      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                        图像质量
+                      </div>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {QUALITY_OPTIONS.map((q) => (
+                          <button
+                            key={q.key}
+                            onClick={() => onSettingsChange({ ...settings, quality: q.key })}
+                            className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
+                              settings.quality === q.key
+                                ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
+                                : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
+                            }`}
+                          >
+                            {q.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="border-t border-zinc-800" />
+                    {/* 清晰度（仅在当前模型有支持时显示） */}
+                    {availableResolutions.length > 0 && (
+                      <>
+                        <div className="p-3">
+                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            清晰度
+                          </div>
+                          <div className="grid grid-cols-3 gap-1.5">
+                            {ALL_RESOLUTIONS.filter((r) => availableResolutions.includes(r)).map((res) => (
+                              <button
+                                key={res}
+                                onClick={() => onSettingsChange({ ...settings, resolution: res })}
+                                className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
+                                  (settings.resolution || '1k') === res
+                                    ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
+                                    : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
+                                }`}
+                              >
+                                {res}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="border-t border-zinc-800" />
+                      </>
+                    )}
+                    {/* 图片尺寸（14 个常见比例 + 智能比例） */}
+                    <div className="p-3">
+                      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                        图片尺寸
+                      </div>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {ALL_RATIOS.map((r) => (
+                          <button
+                            key={r}
+                            onClick={() => onSettingsChange({ ...settings, ratio: r })}
+                            className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
+                              settings.ratio === r
+                                ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
+                                : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
+                            }`}
+                          >
+                            {formatRatio(r)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             {/* 模型 */}

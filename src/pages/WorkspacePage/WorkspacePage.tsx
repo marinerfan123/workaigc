@@ -15,11 +15,13 @@ import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub, getModelDisplayNameByDisplayName, getModelCreditCostByDisplayName } from '@/hooks/useModelHub';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
+import type { Ratio, Quality } from '@/data/settings';
 
 interface IGenerationSettings {
   contentType: 'image' | 'video';
-  ratio: '16:9' | '4:3' | '1:1' | '3:4' | '9:16';
+  ratio: Ratio;
   resolution: '1k' | '2k' | '4k' | '8k';
+  quality: Quality;
   model: string;
   count: 1 | 2 | 3 | 4;
 }
@@ -27,7 +29,8 @@ interface IGenerationSettings {
 const DEFAULT_SETTINGS: IGenerationSettings = {
   contentType: 'image',
   ratio: '16:9',
-  resolution: '1k',
+  resolution: '2k',
+  quality: 'standard',
   model: '', // 初次加载由 GenerationBar 的 useEffect 自动选第一个可用后台模型；没有则保持空显示"无"
   count: 1,
 };
