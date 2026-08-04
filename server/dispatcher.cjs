@@ -405,7 +405,7 @@ async function getTaskStatus(pgPool, taskId) {
 }
 
 // 列出在途任务（status='running'，以及最近 1 小时内 done/failed 便于客户端发现刚完成但未及时拉到的事件）
-// userId 传入时仅返回该用户任务（防多用户串看，G1）；旧 user_id IS NULL 行全员可见
+// 严格按 user_id 归属过滤（防多用户串看，G1）；旧 user_id IS NULL 的历史行不再对全员可见
 async function listActiveTasks(pgPool, userId) {
   if (!pgPool) return { tasks: [] };
   try {
@@ -413,7 +413,7 @@ async function listActiveTasks(pgPool, userId) {
     let where = `WHERE (status='running' OR (completed_at > NOW() - INTERVAL '1 hour'))`;
     if (userId) {
       params.push(userId);
-      where += ` AND (user_id=$${params.length} OR user_id IS NULL)`;
+      where += ` AND user_id=$${params.length}`;
     }
     const r = await pgPool.query(
       `SELECT task_id, status, result, error, pending_ids, client_meta, model, prompt, count, content_type, created_at, completed_at

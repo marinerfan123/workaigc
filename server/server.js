@@ -42,6 +42,7 @@ import rateLimitMod from './ratelimit.cjs'; // Phase 0 固定窗口限流
 const { initRedis, isRedisUp } = redisStore;
 const { clientIp, rateLimit } = rateLimitMod;
 import adminMod from './admin.cjs'; // Phase 2 运营总控台(M3) + 全局智能体层(M4) 后台接口
+import shopMod from './shop.cjs';   // Phase 5 电商模块（AI 市集）：商品/购物车/订单
 import paymentsMod from './payments.cjs'; // Phase 2 收尾：充值订单 + DEV 支付适配器(M2 账务)
 import monitorMod from './monitor.cjs'; // 后台「实时监控 · API 活动流」(全路径环形缓冲 + SSE 广播)
 import logbusMod from './logbus.cjs';   // 后台「实时日志 · 数据库/Redis/控制台」(统一日志总线 + SSE 广播)
@@ -246,7 +247,7 @@ async function initDB() {
     const existingAdmin = await pgPool.query("SELECT 1 FROM users WHERE role='admin' LIMIT 1");
     if (existingAdmin.rows.length === 0) {
       const adminEmail = process.env.ADMIN_SEED_EMAIL || 'admin@huabu.local';
-      const adminPw = process.env.ADMIN_SEED_PASSWORD || 'Admin@123456';
+      const adminPw = process.env.ADMIN_SEED_PASSWORD || 'A7mZ#9kPq2@XlV!Hb2026'; // 仅本地开发种子用；公开部署务必用环境变量覆盖
       await pgPool.query(
         `INSERT INTO users (id, email, display_name, password_hash, credits, role)
          VALUES ($1,$2,'平台管理员',$3,1000,'admin')`,
@@ -492,6 +493,15 @@ const admin = adminMod.createAdmin({
   logbus,                                     // 注入 logbus：admin 实时日志页用(/api/admin/logs/{snapshot,stream,clear})
 });
 
+// ── Phase 5 电商模块（AI 市集）── 注入依赖；pgPool 经 getter 取最新值；内部自行鉴权
+const shop = shopMod.createShop({
+  getPg: () => pgPool,
+  session,
+  sendJSON,
+  parseBody,
+  billing,
+});
+
 // ─── Phase 2 收尾：充值订单 + DEV 支付适配器（注入依赖；pgPool 经 getter 取最新值）──
 const payments = paymentsMod.createPayments({
   getPg: () => pgPool,
@@ -637,6 +647,11 @@ async function handleAPI(req, res) {
   if (url === '/api/admin/console/stream' && method === 'GET') return admin.streamConsole(req, res);
   if (url.startsWith('/api/admin/') && method !== 'OPTIONS') return admin.handleAdmin(req, res, url.split('?')[0], method);
 
+  // ── 电商模块（AI 市集）── 命中即处理（内部自行鉴权：商品列表/详情公开，购物车/订单需登录）
+  if ((url.startsWith('/api/shop/') || url.startsWith('/api/products/') || url.startsWith('/api/cart') || url.startsWith('/api/orders')) && method !== 'OPTIONS') {
+    if (await shop.handleShop(req, res, url.split('?')[0], method)) return;
+  }
+
   // ── 充值订单 + DEV 支付适配器（M2 账务）── 命中即处理并返回 true
   if (payments.handlePayments(req, res, url, method)) return;
 
@@ -763,18 +778,24 @@ async function handleAPI(req, res) {
   // 媒体数量统计（按 type / category 分组，给侧边栏角标用）
   if (url === '/api/media/counts' && method === 'GET') {
     if (pgPool) {
+      // 与 /api/media 列表一致：登录用户只统计「自己 + 公共(NULL)」，不泄露他人私有素材数量
+      let countsWhere = 'NOT is_deleted';
+      const countsParams = [];
+      if (realUser) { countsWhere += ' AND (user_id=$1 OR user_id IS NULL)'; countsParams.push(realUser.id); }
+      else { countsWhere += ' AND user_id IS NULL'; }
       const r = await pgPool.query(`
         SELECT
-          COUNT(*) FILTER (WHERE NOT is_deleted)                                         AS total,
-          COUNT(*) FILTER (WHERE type='image' AND NOT is_deleted)                       AS image,
-          COUNT(*) FILTER (WHERE type='video' AND NOT is_deleted)                       AS video,
-          COUNT(*) FILTER (WHERE category='character' AND NOT is_deleted)               AS character,
-          COUNT(*) FILTER (WHERE category='scene' AND NOT is_deleted)                   AS scene,
-          COUNT(*) FILTER (WHERE category='prop' AND NOT is_deleted)                     AS prop,
-          COUNT(*) FILTER (WHERE category='other' AND NOT is_deleted)                    AS other,
-          COUNT(*) FILTER (WHERE category='upload' AND NOT is_deleted)                   AS upload
+          COUNT(*) FILTER (WHERE type='image')                       AS image,
+          COUNT(*) FILTER (WHERE type='video')                       AS video,
+          COUNT(*) FILTER (WHERE category='character')               AS character,
+          COUNT(*) FILTER (WHERE category='scene')                   AS scene,
+          COUNT(*) FILTER (WHERE category='prop')                     AS prop,
+          COUNT(*) FILTER (WHERE category='other')                    AS other,
+          COUNT(*) FILTER (WHERE category='upload')                   AS upload,
+          COUNT(*)                                                    AS total
         FROM media
-      `);
+        WHERE ${countsWhere}
+      `, countsParams);
       const row = r.rows[0];
       return sendJSON(res, 200, {
         total: parseInt(row.total, 10) || 0,
@@ -834,18 +855,31 @@ async function handleAPI(req, res) {
     return sendJSON(res, 200, { ok: true });
   }
   // 单条部分更新：用于探测失败后回写 status/errorMessage/failed_at
+  // 安全加固：必须登录 + 仅能改自己的素材（admin 可改全部）；字段白名单禁止更新 user_id，杜绝 IDOR 把他人素材改成自己的
   if (url.startsWith('/api/media/') && method === 'PUT') {
     const id = url.split('/api/media/')[1];
     const body = await parseBody(req);
     if (!body || !id) return sendJSON(res, 400, { error: 'Invalid request' });
-    const s = toSnake(body);
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
     if (pgPool) {
-      // 动态拼 UPDATE：只更新传入的字段
+      const exist = await pgPool.query('SELECT user_id FROM media WHERE id=$1', [id]);
+      if (exist.rows.length === 0) return sendJSON(res, 404, { error: '素材不存在' });
+      const owner = exist.rows[0].user_id;
+      if (owner !== realUser.id && realUser.role !== 'admin') {
+        return sendJSON(res, 403, { error: '无权修改该素材' });
+      }
+      // 字段白名单：只允许更新业务字段，绝不许篡改 user_id 等归属字段（防偷素材）
+      const ALLOWED = new Set([
+        'title', 'status', 'error_message', 'failed_at', 'is_favorite', 'prompt',
+        'ratio', 'model', 'category', 'thumbnail', 'full_url', 'oss_url',
+        'oss_object_key', 'oss_uploaded', 'source', 'type',
+      ]);
+      const s = toSnake(body);
       const fields = [];
       const vals = [];
       let i = 1;
       for (const [k, v] of Object.entries(s)) {
-        if (v === undefined) continue;
+        if (v === undefined || !ALLOWED.has(k)) continue;
         fields.push(`${k}=$${i}`);
         vals.push(v);
         i++;
@@ -855,10 +889,50 @@ async function handleAPI(req, res) {
       await pgPool.query(`UPDATE media SET ${fields.join(',')} WHERE id=$${i}`, vals);
       return sendJSON(res, 200, { ok: true });
     }
+    // 非 PG 兜底（JSON 文件模式）
     const list = readJSON('media');
     const idx = list.findIndex(m => m.id === id);
-    if (idx >= 0) { list[idx] = { ...list[idx], ...body }; writeJSON('media', list); }
+    if (idx >= 0) {
+      const ownerId = list[idx] && (list[idx].user_id || list[idx].userId);
+      if (ownerId && ownerId !== realUser.id && realUser.role !== 'admin') {
+        return sendJSON(res, 403, { error: '无权修改该素材' });
+      }
+      list[idx] = { ...list[idx], ...body };
+      writeJSON('media', list);
+    }
     return sendJSON(res, 200, { ok: true });
+  }
+
+  // ── 角色一致性系统：全局角色库（characters 表，无 user_id，全员共享的创作预设）──
+  if (url === '/api/characters' && method === 'GET') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM characters ORDER BY created_at DESC');
+      return sendJSON(res, 200, r.rows.map(fromSnake));
+    }
+    return sendJSON(res, 200, readJSON('characters') || []);
+  }
+  if (url === '/api/characters' && method === 'POST') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    const body = await parseBody(req);
+    const arr = Array.isArray(body) ? body : [body];
+    if (pgPool) {
+      for (const it of arr) {
+        const id = it.id || ('ch-' + crypto.randomUUID());
+        const s = toSnake(it);
+        await pgPool.query(
+          `INSERT INTO characters (id, name, avatar_url, gender, age, tags, style, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+           ON CONFLICT (id) DO UPDATE SET name=$2, avatar_url=$3, gender=$4, age=$5, tags=$6, style=$7`,
+          [id, s.name || '', s.avatar_url || '', s.gender || '', s.age || 0, s.tags || [], s.style || {}],
+        );
+      }
+      return sendJSON(res, 200, { ok: true, count: arr.length });
+    }
+    const list = readJSON('characters') || [];
+    for (const it of arr) { const id = it.id || ('ch-' + crypto.randomUUID()); const idx = list.findIndex(x => x.id === id); const rec = { ...it, id }; if (idx >= 0) list[idx] = rec; else list.push(rec); }
+    writeJSON('characters', list);
+    return sendJSON(res, 200, { ok: true, count: arr.length });
   }
 
   // ── Providers ──
