@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Search, Sparkles } from 'lucide-react';
+import { toast } from 'sonner';
 import TopBar from '@/components/TopBar';
 import FilterBar from '@/components/FilterBar';
 import FilterPanel from '@/components/FilterPanel';
@@ -14,6 +15,7 @@ import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub, getModelDisplayNameByDisplayName, getModelCreditCostByDisplayName } from '@/hooks/useModelHub';
 import { useOssConfig } from '@/hooks/useOssConfig';
+import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
 import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
 import type { Ratio, Quality } from '@/data/settings';
 
@@ -34,6 +36,23 @@ const DEFAULT_SETTINGS: IGenerationSettings = {
   model: '', // 初次加载由 GenerationBar 的 useEffect 自动选第一个可用后台模型；没有则保持空显示"无"
   count: 1,
 };
+
+function WsThumb({ item }: { item: IMediaItem }) {
+  // A 修复扩展：用 useMediaUrlStatus 拿到完整状态，cache-miss 时显示「失效」灰色块
+  // 而不是静默回退到过期的 provider URL（图自动消失的根因）
+  const mediaUrl = useMediaUrlStatus(item);
+  return (
+    <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-zinc-950">
+      {mediaUrl.isLoading ? (
+        <div className="flex h-full w-full items-center justify-center text-[9px] text-zinc-600">…</div>
+      ) : mediaUrl.isFailed ? (
+        <div className="flex h-full w-full items-center justify-center text-zinc-600" title="图片已失效">⚠</div>
+      ) : (
+        <Image src={mediaUrl.url} alt={item.title} className="h-full w-full object-cover" />
+      )}
+    </div>
+  );
+}
 
 export default function WorkspacePage() {
   const location = useLocation();
@@ -356,9 +375,7 @@ export default function WorkspacePage() {
                         : 'bg-zinc-900 border-zinc-800 hover:border-zinc-700'
                     }`}
                   >
-                    <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-zinc-950">
-                      <Image src={item.thumbnail} alt={item.title} className="h-full w-full object-cover" />
-                    </div>
+                    <WsThumb item={item} />
                     <div className="flex-1 min-w-0">
                       <div className="truncate text-sm font-medium text-white">{item.title}</div>
                       <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-500">

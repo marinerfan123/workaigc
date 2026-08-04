@@ -144,6 +144,8 @@ export default function ModelHubPage() {
   const [formProtocol, setFormProtocol] = useState<'openai-compatible' | 'custom'>('openai-compatible');
   const [showApiKey, setShowApiKey] = useState(false);
   const [formMaxConcurrent, setFormMaxConcurrent] = useState(2);
+  // 每分辨率档位的 RPM（每分钟请求数）限速；留空=不限制（用调度器默认档位上限）
+  const [formRateLimits, setFormRateLimits] = useState<Record<string, number>>({});
 
   // 全局调度设置（最大并发）
   const [maxThreads, setMaxThreads] = useState(10);
@@ -179,6 +181,7 @@ export default function ModelHubPage() {
     setFormRemark('');
     setFormProtocol('openai-compatible');
     setFormMaxConcurrent(2);
+    setFormRateLimits({});
     setShowApiKey(false);
     setProviderDialogOpen(true);
   };
@@ -194,6 +197,7 @@ export default function ModelHubPage() {
     setFormRemark(provider.remark || '');
     setFormProtocol(provider.protocol || 'openai-compatible');
     setFormMaxConcurrent(provider.maxConcurrent ?? 2);
+    setFormRateLimits(provider.rateLimits || {});
     setShowApiKey(false);
     setProviderDialogOpen(true);
   };
@@ -208,11 +212,18 @@ export default function ModelHubPage() {
       return;
     }
 
+    // 仅保留合法的正数 RPM 限速（0 / 空 / NaN 视为不限制，不入库）
+    const rateLimits: Record<string, number> = {};
+    for (const t of ['1k', '2k', '4k', '8k'] as const) {
+      const v = Number(formRateLimits[t]);
+      if (Number.isFinite(v) && v > 0) rateLimits[t] = v;
+    }
+
     if (editingProvider) {
       setProviders((prev) =>
         prev.map((p) =>
           p.id === editingProvider.id
-            ? { ...p, name: formName, type: formType, baseUrl: formBaseUrl, apiKey: formApiKey, supportedTypes: formTypes, enabled: formEnabled, remark: formRemark, protocol: formProtocol, maxConcurrent: formMaxConcurrent }
+            ? { ...p, name: formName, type: formType, baseUrl: formBaseUrl, apiKey: formApiKey, supportedTypes: formTypes, enabled: formEnabled, remark: formRemark, protocol: formProtocol, maxConcurrent: formMaxConcurrent, rateLimits }
             : p,
         ),
       );
@@ -226,6 +237,7 @@ export default function ModelHubPage() {
         baseUrl: formBaseUrl,
         apiKey: formApiKey,
         maxConcurrent: formMaxConcurrent,
+        rateLimits,
         supportedTypes: formTypes,
         enabled: formEnabled,
         remark: formRemark,
@@ -2052,6 +2064,40 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                 />
                 <p className="mt-1 text-[10px] text-zinc-500">
                   多供应商同模型时，后台按此上限 + 全局最大并发均衡分配请求。
+                </p>
+              </div>
+
+              {/* 每分辨率档位 RPM 限速 */}
+              <div>
+                <label className="mb-1.5 block text-xs font-medium text-zinc-400">
+                  每分辨率限速（RPM）<span className="text-zinc-500">（每分钟请求数，留空=不限制）</span>
+                </label>
+                <div className="grid grid-cols-4 gap-2">
+                  {(['1k', '2k', '4k', '8k'] as const).map((t) => (
+                    <div key={t}>
+                      <div className="mb-1 text-center text-[10px] text-zinc-500">{t}</div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={1000}
+                        value={formRateLimits[t] ?? ''}
+                        onChange={(e) =>
+                          setFormRateLimits((prev) => {
+                            const next = { ...prev };
+                            const val = e.target.value.trim();
+                            if (val === '') delete next[t];
+                            else next[t] = Number(val) || 0;
+                            return next;
+                          })
+                        }
+                        placeholder="不限"
+                        className="w-full rounded-xl bg-zinc-800/50 px-2 py-2 text-center text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                      />
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-1 text-[10px] text-zinc-500">
+                  对应服务商物理限速（如某些免费档 1 req/min）。调度器按此上限节流，避免触发服务商 429 限流。
                 </p>
               </div>
 

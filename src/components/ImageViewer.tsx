@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
+import { useMediaUrl } from '@/hooks/useMediaUrl';
 import { getModelDisplayNameByDisplayName } from '@/hooks/useModelHub';
 
 // 把字节数格式化为「1.2 MB / 345 KB / 678 B」
@@ -58,6 +59,7 @@ export default function ImageViewer({
   const lastSrcRef = useRef<string>('');
 
   const current = items[currentIndex];
+  const viewUrl = useMediaUrl(current);
   const hasPrev = currentIndex > 0;
   const hasNext = currentIndex < items.length - 1;
 
@@ -197,12 +199,12 @@ export default function ImageViewer({
 
   // 切换图片时：重置像素/大小 + 异步 HEAD 拉文件大小
   useEffect(() => {
-    if (!current?.fullUrl || lastSrcRef.current === current.fullUrl) return;
-    lastSrcRef.current = current.fullUrl;
+    if (!current || lastSrcRef.current === viewUrl) return;
+    lastSrcRef.current = viewUrl;
     setDims(null);
     setBytes(null);
 
-    const url = current.fullUrl;
+    const url = viewUrl;
     // dataURL 直接转 base64 长度（KB/MB）
     if (url.startsWith('data:')) {
       const m = url.match(/^data:[^;]+;base64,(.+)$/);
@@ -227,7 +229,7 @@ export default function ImageViewer({
     return () => {
       cancelled = true;
     };
-  }, [current?.fullUrl]);
+  }, [viewUrl]);
 
   if (!current) return null;
 
@@ -341,7 +343,7 @@ export default function ImageViewer({
         }}
       >
         <Image
-          src={current.fullUrl}
+          src={viewUrl}
           alt={current.title}
           className="max-h-[85vh] max-w-[90vw] object-contain select-none pointer-events-none"
           draggable={false}

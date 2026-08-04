@@ -27,6 +27,7 @@ import { toast } from 'sonner';
 import { capabilityClient, logger } from '@/services/client-capabilities';
 import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
+import { cacheImage } from '@/utils/imageCache';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
@@ -34,6 +35,8 @@ import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, 
 import { refreshUser, setAuthModalOpen } from '@/services/authStore';
 import { ALL_RESOLUTIONS, type Resolution, getEffectiveModelName } from '@/data/models';
 import type { Ratio, Quality } from '@/data/settings';
+// 注意：原 probeImageLoad(persistentUrl) 在 OSS 失败分支探测 provider URL，因 CORS 不可靠
+// 会把生成成功的图误判为 failed，已在本文件 processResultImages 中移除该探测（信任 server 200）。
 import {
   Dialog,
   DialogContent,
@@ -58,6 +61,29 @@ const QUALITY_OPTIONS: { key: Quality; label: string }[] = [
 
 // 比例显示：auto → "智能"
 const formatRatio = (r: Ratio) => (r === 'auto' ? '智能' : r);
+
+/**
+ * 把后端/服务商原始错误友好化为中文提示。
+ * 重点处理「速率限制（RPM）」类：服务商物理 429 文案（如
+ * "resolution rate limit exceeded: 3K tier allows 1 requests per 1 minute(s)"）
+ * 直接透传给用户不友好，这里转成「该模型限速 X 张/分钟，请稍后重试」。
+ * fallbackRpm 为本站后台配置的限速（如有），用于原始文案解析不到数字时兜底。
+ */
+function friendlyGenerateError(raw: string, fallbackRpm?: number): string {
+  if (!raw) return '生成失败';
+  const s = raw.trim();
+  if (/rate limit|too many request|请求过于频繁|RPM|requests per 1 minute|429|限流/i.test(s)) {
+    const m = s.match(/(\d+)\s*requests?\s*per\s*(\d*)\s*min/i);
+    const rpm = m ? Number(m[1]) : (Number.isFinite(fallbackRpm) && (fallbackRpm as number) > 0 ? fallbackRpm as number : 0);
+    if (rpm > 0) {
+      return `该模型限速 ${rpm} 张/分钟，请稍后重试（或降低同时生成数量、换更高配额的服务商）`;
+    }
+    return '该服务商触发限流，请稍后重试（或降低同时生成数量）';
+  }
+  // 其他错误：原样截断，避免超长堆栈
+  return s.slice(0, 120);
+}
+
 
 interface IGenerationSettings {
   contentType: 'image' | 'video';
@@ -184,6 +210,7 @@ function GenerationBar({
       let ossUrl = '';
       let ossObjectKey = '';
       let ossUploaded = false;
+      let localCacheKey = '';
       let imgBlob: Blob | null = null;
       try {
         if (resultImages[i].startsWith('data:')) {
@@ -223,12 +250,26 @@ function GenerationBar({
         if (!ossUploaded) {
           logger.warn(`OSS 上传经 ${MAX_ATTEMPTS} 次重试仍失败，回退到模型原始 URL：${resultImages[i].slice(0, 80)}`);
           toast.warning(`图片 ${i + 1} 上传 OSS 失败，已回退使用服务商原始链接（链接可能随时过期）`, { duration: 4000 });
+          // A 修复：OSS 不可用时，把已下载的图片二进制存入 IndexedDB，避免依赖会过期的 provider URL
+          if (imgBlob) {
+            try {
+              await cacheImage(pendingId, imgBlob);
+              localCacheKey = pendingId;
+              logger.info(`图片已存入本地缓存（IndexedDB），key=${pendingId}`);
+            } catch (e) {
+              logger.warn(`本地缓存写入失败：${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
         }
       } else if (!ossConfig.enabled) {
         toast.error('OSS 未开启，请到「模型 Hub → 存储配置」开启', { duration: 5000 });
       }
       const persistentUrl = ossUploaded ? ossUrl : resultImages[i];
-      const probe = await probeImageLoad(persistentUrl);
+      // 不再做 probeImageLoad(provider URL) 探测 —— provider 临时链接没 CORS 头，
+      // <img> 加载受 CORS 限制 onload/onerror 不可靠，会把"OSS 失败 + 缓存兜底"的好图
+      // 误判成 failed 显示为红卡（生产已成功但 UI 看不见）。
+      // A 修复层: 信任服务端 200 (resultImages[i] 已返图 = 生成成功) + IndexedDB 兜底
+      // → finalItem.status 直接 success，UI 层 useMediaUrlStatus 在缓存 miss 时显占位
       const finalItem: IMediaItem = {
         id: pendingId,
         title: ctx.prompt.slice(0, 20) || '生成结果',
@@ -245,13 +286,12 @@ function GenerationBar({
         ossUrl,
         ossObjectKey,
         ossUploaded,
+        localCacheKey,
         progress: 100,
       };
-      if (!probe.ok) {
-        finalItem.status = 'failed';
-        finalItem.errorMessage = probe.error || '图片链接已失效';
-        finalItem.failedAt = new Date().toISOString();
-      }
+      // 已移除 probeImageLoad(provider URL) 分支（OSS 失败时探测会误判 failed）。
+      // finalItem.status 默认 'success'——server 已返图就是成功。
+      // 显示层由 useMediaUrlStatus 处理：缓存命中显示图，缓存 miss 显示「图片已失效」占位。
       onGenerate(finalItem);
       success++;
     }
@@ -306,6 +346,7 @@ function GenerationBar({
 
   // 把一组 pendingIds 标为 failed 状态（不删，让用户能看到失败占位以便重试）
   const markPendingAsFailed = (pendingIds: string[], errorMessage: string) => {
+    const friendly = friendlyGenerateError(errorMessage, currentRateLimit);
     for (const pid of pendingIds) {
       onGenerate({
         id: pid,
@@ -321,7 +362,7 @@ function GenerationBar({
         isDeleted: false,
         source: 'user',
         status: 'failed',
-        errorMessage,
+        errorMessage: friendly,
         failedAt: new Date().toISOString(),
         progress: 100,
       });
@@ -402,6 +443,10 @@ function GenerationBar({
       ? currentModel.supportedResolutions
       : [];
 
+  // 当前模型所属服务商对「当前分辨率档」配置的 RPM 限速（用于 UI 提示 + 错误兜底）
+  const currentProvider = currentModel ? providers.find((p) => p.id === currentModel.providerId) : undefined;
+  const currentRateLimit = currentProvider?.rateLimits?.[settings.resolution || '1k'];
+
   // 本地 dev 降级用占位图：避免 MOCK_MEDIA_LIST 的平台专有路径 404
   const LOCAL_PLACEHOLDER_SVG = `data:image/svg+xml,${encodeURIComponent(
     `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">
@@ -412,7 +457,7 @@ function GenerationBar({
       </defs>
       <rect width="400" height="300" fill="url(#bg)" rx="12"/>
       <text x="200" y="135" text-anchor="middle" fill="#334155" font-size="16" font-family="sans-serif">本地占位</text>
-      <text x="200" y="165" text-anchor="middle" fill="#1e293b" font-size="12" font-family="sans-serif">AI 生成需飞书平台环境</text>
+      <text x="200" y="165" text-anchor="middle" fill="#1e293b" font-size="12" font-family="sans-serif">AI 生成示例 · 本地预览</text>
     </svg>`
   )}`;
 
@@ -531,7 +576,7 @@ function GenerationBar({
             fillMockItems(pendingIds);
             return;
           }
-          toast.error(err.slice(0, 120) || '生成失败');
+          toast.error(friendlyGenerateError(err, currentRateLimit));
           fillMockItems(pendingIds);
           return;
         }
@@ -576,7 +621,7 @@ function GenerationBar({
           toast.success(`生成完成 · ${resultImages.length} 张`, { duration: 2500 });
         } else {
           const firstError = (r as { error?: string }).error || '生成失败：服务商返回异常';
-          toast.error(firstError, { duration: 5000 });
+          toast.error(friendlyGenerateError(firstError, currentRateLimit), { duration: 5000 });
           fillMockItems(pendingIds);
         }
       } catch (error) {
@@ -592,7 +637,7 @@ function GenerationBar({
           fillMockItems(pendingIds);
           return;
         }
-        toast.error(`生成异常：${errMsg || '未知错误'}`, { duration: 5000 });
+        toast.error(friendlyGenerateError(errMsg, currentRateLimit), { duration: 5000 });
         logger.error('图片生成异常:', errMsg);
         fillMockItems(pendingIds);
       }
@@ -941,6 +986,12 @@ function GenerationBar({
                 ) : (
                   <span className="shrink-0 rounded-full bg-zinc-700/40 text-zinc-500 border border-zinc-700/50 px-1.5 py-0.5 text-[9px] font-medium">
                     免费
+                  </span>
+                )}
+                {/* 限速提示：当前分辨率档有配置 RPM 限速时显示 */}
+                {typeof currentRateLimit === 'number' && currentRateLimit > 0 && (
+                  <span className="shrink-0 rounded-full bg-rose-500/10 text-rose-300 border border-rose-500/20 px-1.5 py-0.5 text-[9px] font-semibold">
+                    限速 {currentRateLimit}/分钟
                   </span>
                 )}
                 <ChevronDown className="size-3 text-zinc-500" />

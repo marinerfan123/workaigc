@@ -99,6 +99,10 @@ export interface IModelProvider {
   protocol?: ProtocolType;
   /** 默认接口配置（所有模型共享；单模型可覆盖） */
   defaultEndpoint?: IModelEndpoint;
+  /** 单服务商最大同时生成数（调度器均衡分配用） */
+  maxConcurrent?: number;
+  /** 每分辨率档位的 RPM 限速（每分钟请求数）；键为 '1k'|'2k'|'4k'|'8k'，缺省=不限制（用调度器默认档位上限） */
+  rateLimits?: Record<string, number>;
 }
 
 export interface IAiModel {

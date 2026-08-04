@@ -16,8 +16,8 @@ let RR_POINTER = 0;
 // 单实例内存态（PM2 必须 instances:1，见 deploy/ecosystem.config.cjs）。
 // 多实例横向扩展需把 ACCT 状态迁至 Redis（deployment-plan.md §6）。
 const ACCT = {};
-const DEFAULT_RPM = { '1k': 20, '2k': 10, '4k': 1 };
-const CONC_CAP = { '1k': 4, '2k': 3, '4k': 1 };
+const DEFAULT_RPM = { '1k': 20, '2k': 10, '4k': 1, '8k': 1 };
+const CONC_CAP = { '1k': 4, '2k': 3, '4k': 1, '8k': 1 };
 
 // ─── 占位符替换 ─────────────────────────────────────
 function fillTemplate(template, vars) {
@@ -292,7 +292,7 @@ function releaseOne(p, tier) {
 async function generate(pgPool, opts) {
   const { model, prompt, ratio, resolution, count, contentType, referenceImages } = opts;
   // 分辨率 → RPM 桶：1k/2k/4k 各有独立限额；未知分辨率一律按 1k 处理
-  const tier = ['1k', '2k', '4k'].includes(resolution) ? resolution : '1k';
+  const tier = ['1k', '2k', '4k', '8k'].includes(resolution) ? resolution : '1k';
 
   // 1. 全局最大并发
   try {

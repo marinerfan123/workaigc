@@ -25,6 +25,7 @@ import { useNavigate } from 'react-router-dom';
 import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
 import { useImageProbe } from '@/hooks/useImageProbe';
+import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
 
 interface MediaCardProps {
   item: IMediaItem;
@@ -63,15 +64,24 @@ export default function MediaCard({
   // item.status === 'failed' → 直接渲染占位，不探测
   // item.status === 'success' 或 undefined → 探测实际链接可用性
   // 探测失败（破图/过期/平台专有路径）→ 切到 failed 占位 + 回调父级汇总
+  // A 修复扩展：useMediaUrlStatus 返回 { url, isLoading, isFailed, reason }
+  //   - isLoading=true：从 IndexedDB 读取中，不渲染图（防整页覆盖），显示加载占位
+  //   - isFailed=true：缓存读不到，标记图片已失效（不静默回退过期 URL）
+  //   - reason=ready/cache-miss：来自本地缓存，跳过 useImageProbe（blob URL 原生支持）
+  const mediaUrl = useMediaUrlStatus(item);
+  const isFromCache = mediaUrl.reason === 'ready' || mediaUrl.reason === 'cache-miss';
   const probe = useImageProbe(
-    item.thumbnail,
+    isFromCache ? '' : mediaUrl.url,
     item.status === 'pending' || item.status === 'failed' ? undefined : {
       onProbeFailed: (info) => onProbeFailed?.(item, info.error),
     },
   );
-  const isFailed = item.status === 'failed' || probe.status === 'failed';
+  const isFailed = item.status === 'failed' || mediaUrl.isFailed || probe.status === 'failed';
   const isPending = item.status === 'pending';
-  const failedError = item.status === 'failed' ? item.errorMessage : probe.error;
+  const isLoadingFromCache = mediaUrl.isLoading;
+  const failedError = isFailed
+    ? (item.status === 'failed' ? item.errorMessage : mediaUrl.reason === 'cache-miss' ? '本地缓存读取失败，图片已失效。请重新生成。' : probe.error)
+    : undefined;
   const failedAt = item.status === 'failed' ? item.failedAt : undefined;
 
   // ── pending 自我涨进度：父级不传 progress 时，200ms 自增到 95% 后停（模拟真实生成节奏）──
@@ -240,9 +250,18 @@ export default function MediaCard({
             </div>
             <p className="relative z-10 text-[11px] font-medium text-zinc-300">检测链接中…</p>
           </div>
+        ) : isLoadingFromCache ? (
+          /* ─── IndexedDB 缓存加载中占位 ─── 异步读取本地缓存中（OSS 失败/已上传时走这条） */
+          <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 overflow-hidden bg-gradient-to-br from-zinc-800/90 via-zinc-900/95 to-zinc-800/90 p-3 text-center">
+            <div className="pointer-events-none absolute inset-0 -translate-x-full shimmer bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+            <div className="relative z-10 flex h-10 w-10 items-center justify-center rounded-full bg-zinc-800/80 ring-1 ring-zinc-700/50">
+              <Loader2 className="size-5 animate-spin text-emerald-400" />
+            </div>
+            <p className="relative z-10 text-[11px] font-medium text-zinc-300">加载本地缓存…</p>
+          </div>
         ) : (
           <Image
-            src={item.thumbnail}
+            src={mediaUrl.url}
             alt={item.title}
             className="h-full w-full object-cover duration-700 ease-out group-hover:scale-105"
           />

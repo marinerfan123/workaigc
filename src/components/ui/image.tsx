@@ -126,8 +126,17 @@ export const Image = React.forwardRef<HTMLImageElement, ImageProps>(
       [onError],
     );
 
+    // 关键防线：当 src 为空/缺失时，禁止渲染 <img src="">—— 浏览器把空 src 解释为
+    // "加载当前页面"，会发起对当前 URL 的整页 HTTP 请求，整页被覆盖、React 子树被卸载，
+    // 进而导致 WorkspacePage / MediaCard 等组件中的图片瞬间消失（控制台 React warning
+    // "An empty string (\"\") was passed to the src attribute" 的根因）。
+    // 占位由调用方决定（生成中 spinner / 失败红卡 / 空占位等），这里直接返回 null。
+    if (!src || typeof src !== 'string') {
+      return null;
+    }
+
     // 当 src 不在白名单时，直接渲染原生 img，保留所有原生属性
-    if (typeof src !== 'string' || !isTargetSrc(src) || errored) {
+    if (!isTargetSrc(src) || errored) {
       return (
         <img
           {...rest}

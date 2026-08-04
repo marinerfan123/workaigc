@@ -1,5 +1,6 @@
 import { Routes, Route } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import LandingPage from '@/pages/LandingPage/LandingPage';
 import WorkspacePage from '@/pages/WorkspacePage/WorkspacePage';
 import ImageEditorPage from '@/pages/ImageEditorPage/ImageEditorPage';
@@ -46,7 +47,7 @@ import AuthPage from '@/pages/Auth/AuthPage';
 
 export default function App() {
   return (
-    <>
+    <ErrorBoundary>
       <Routes>
         {/* 独立承接页 */}
         <Route path="/" element={<LandingPage />} />
@@ -102,6 +103,6 @@ export default function App() {
       </Routes>
       <AuthModal />
       <Toaster />
-    </>
+    </ErrorBoundary>
   );
 }

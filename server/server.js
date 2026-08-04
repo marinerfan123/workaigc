@@ -81,6 +81,7 @@ async function initDB() {
       CREATE TABLE IF NOT EXISTS oss_config (id INTEGER PRIMARY KEY DEFAULT 1, provider TEXT DEFAULT 'aliyun-oss', access_point_name TEXT DEFAULT '', endpoint_external TEXT DEFAULT '', endpoint_internal TEXT DEFAULT '', bucket TEXT DEFAULT '', region TEXT DEFAULT '', region_label TEXT DEFAULT '', access_key_id TEXT DEFAULT '', access_key_secret TEXT DEFAULT '', path_prefix TEXT DEFAULT 'images/', custom_domain TEXT DEFAULT '', enabled BOOLEAN DEFAULT TRUE);
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value JSONB NOT NULL DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW());
       ALTER TABLE providers ADD COLUMN IF NOT EXISTS max_concurrent INT DEFAULT 2;
+      ALTER TABLE providers ADD COLUMN IF NOT EXISTS rate_limits JSONB DEFAULT '{}'::jsonb;
       -- 生成任务表（用于刷新恢复：前端点生成即插一行，后台跑完后更新结果，前端刷新后能查到状态）
       CREATE TABLE IF NOT EXISTS generation_tasks (
         task_id TEXT PRIMARY KEY,
@@ -249,6 +250,90 @@ async function initDB() {
         updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS ix_tp_sort ON topup_packages(sort_order);
+
+      -- === 支付 P0：安全优先 + 本机财务对接（#246）===
+      -- 全局支付参数（单行 id=1；CHECK 约束保证唯一一行）
+      CREATE TABLE IF NOT EXISTS payment_settings (
+        id                INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        enabled           BOOLEAN NOT NULL DEFAULT TRUE,
+        default_expires_min INT NOT NULL DEFAULT 15,
+        min_amount        INT NOT NULL DEFAULT 100,        -- 最小充值（分）
+        max_amount        INT NOT NULL DEFAULT 10000000,   -- 最大充值（分）
+        daily_limit       INT NOT NULL DEFAULT 10000000,   -- 单用户日限额（分）
+        max_open_orders   INT NOT NULL DEFAULT 5,          -- 单用户最大待支付数
+        allow_test        BOOLEAN NOT NULL DEFAULT TRUE,   -- 是否允许 mock/dev 通道
+        updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      INSERT INTO payment_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+      -- 支付服务商（多行；pid/pkey/webhook_secret 加密入库，API 永不返回明文）
+      CREATE TABLE IF NOT EXISTS payment_providers (
+        id              TEXT PRIMARY KEY DEFAULT 'pp-' || gen_random_uuid()::text,
+        name            TEXT NOT NULL DEFAULT '',
+        type            TEXT NOT NULL DEFAULT 'easypay',  -- easypay | alipay | wxpay | stripe | mock
+        enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+        weight          INT NOT NULL DEFAULT 1,           -- 同 type 内负载均衡权重
+        sort_order      INT NOT NULL DEFAULT 0,
+        api_base        TEXT DEFAULT '',
+        pid_enc         TEXT,                              -- 加密：商户号
+        pkey_enc        TEXT,                              -- 加密：商户密钥
+        webhook_secret_enc TEXT,                          -- 加密：异步通知密钥
+        product_name_prefix TEXT DEFAULT '充值',
+        allow_refund    BOOLEAN NOT NULL DEFAULT FALSE,
+        remark          TEXT DEFAULT '',
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_pp_enabled ON payment_providers(enabled, sort_order);
+
+      -- 充值订单升级：兼容旧 DEV 订单（channel 列保留），新增 provider/渠道流水/超时字段
+      ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS provider_id      TEXT REFERENCES payment_providers(id) ON DELETE SET NULL;
+      ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS channel_trade_no TEXT;
+      ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS channel_method   TEXT;   -- 真实通道方法 alipay/wxpay
+      ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS channel_raw      JSONB DEFAULT '{}';  -- 回调原始（脱敏后）
+      ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS expired_at       TIMESTAMPTZ;
+      ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS fail_reason      TEXT;
+      ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS package_id       TEXT;
+      CREATE INDEX IF NOT EXISTS ix_ro_provider ON recharge_orders(provider_id);
+      CREATE INDEX IF NOT EXISTS ix_ro_ctrade  ON recharge_orders(channel_trade_no);
+      CREATE INDEX IF NOT EXISTS ix_ro_status  ON recharge_orders(status, created_at DESC);
+
+      -- Webhook 幂等表（L2 双保险）：同 (provider_id, channel_trade_no, event_type) 唯一
+      CREATE TABLE IF NOT EXISTS webhook_events (
+        id              BIGSERIAL PRIMARY KEY,
+        provider_id     TEXT,
+        channel_trade_no TEXT NOT NULL,
+        event_type      TEXT NOT NULL DEFAULT 'paid',
+        out_trade_no    TEXT,
+        status          TEXT NOT NULL DEFAULT 'new',  -- new | processing | done | failed | dead_letter
+        attempts        INT NOT NULL DEFAULT 0,
+        last_error      TEXT,
+        raw             JSONB DEFAULT '{}',
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (provider_id, channel_trade_no, event_type)
+      );
+      CREATE INDEX IF NOT EXISTS ix_we_pending ON webhook_events(status, updated_at) WHERE status IN ('new','processing','failed');
+
+      -- 支付审计（L6，脱敏，绝不记密钥）
+      CREATE TABLE IF NOT EXISTS payment_audit (
+        id          BIGSERIAL PRIMARY KEY,
+        event_type  TEXT NOT NULL,   -- create | paid | expired | failed | suspicious | verify_fail | refund | settings_change | provider_change
+        actor       TEXT DEFAULT '',
+        user_id     TEXT,
+        order_id    TEXT,
+        provider_id TEXT,
+        detail      JSONB DEFAULT '{}',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_pa_created ON payment_audit(created_at DESC);
+
+      -- Node 内存 worker 游标持久化（超时扫描 / Webhook 重试调度）
+      CREATE TABLE IF NOT EXISTS cron_marker (
+        name      TEXT PRIMARY KEY,
+        last_run  TIMESTAMPTZ,
+        cursor    JSONB DEFAULT '{}'
+      );
     `);
 
     // 种子：运营智能体 ops_bot + 三条自动化规则（§H.3）
@@ -301,7 +386,7 @@ const SNAKE_MAP = {
   full_url:'fullUrl', oss_url:'ossUrl', oss_object_key:'ossObjectKey', oss_uploaded:'ossUploaded',
   is_favorite:'isFavorite', is_deleted:'isDeleted', created_at:'createdAt', base_url:'baseUrl',
   api_key:'apiKey', supported_types:'supportedTypes', default_endpoint:'defaultEndpoint',
-  display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent', mapping_name:'mappingName', credit_cost:'creditCost',
+  display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent', rate_limits:'rateLimits', mapping_name:'mappingName', credit_cost:'creditCost',
   supported_resolutions:'supportedResolutions', access_point_name:'accessPointName',
   endpoint_external:'endpointExternal', endpoint_internal:'endpointInternal',
   access_key_id:'accessKeyId', access_key_secret:'accessKeySecret',
@@ -1021,8 +1106,8 @@ async function handleAPI(req, res) {
             if (ex.rows[0]?.api_key) apiKey = ex.rows[0].api_key;
           }
           await pgPool.query(
-            `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled,max_concurrent=EXCLUDED.max_concurrent`,
-            [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2]
+            `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent,rate_limits) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled,max_concurrent=EXCLUDED.max_concurrent,rate_limits=EXCLUDED.rate_limits`,
+            [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2, JSON.stringify(s.rate_limits || {})]
           );
         }
         return sendJSON(res, 200, { ok: true });
