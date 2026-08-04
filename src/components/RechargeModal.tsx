@@ -4,7 +4,9 @@ import { useAuth, refreshUser, setAuthModalOpen } from '@/services/authStore';
 import {
   apiCreateRechargeOrder,
   apiRechargeCallback,
+  apiPublicTopupPackages,
   type RechargeOrder,
+  type TopupPackage,
 } from '@/services/api';
 
 const PRESETS = [6, 30, 98, 198, 648];
@@ -19,6 +21,12 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
   const [order, setOrder] = useState<RechargeOrder | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [packages, setPackages] = useState<TopupPackage[]>([]);
+
+  // 充值套餐后管可配置：优先拉后端套餐，未配置时回退内置预设
+  useEffect(() => {
+    apiPublicTopupPackages().then((r) => setPackages(r.items)).catch(() => {});
+  }, []);
 
   if (!open) return null;
 
@@ -100,21 +108,31 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
           {step === 'form' && (
             <div className="space-y-5">
               <div>
-                <div className="mb-2 text-sm text-zinc-400">选择金额</div>
+                <div className="mb-2 text-sm text-zinc-400">选择套餐</div>
                 <div className="grid grid-cols-3 gap-2">
-                  {PRESETS.map((p) => (
-                    <button
-                      key={p}
-                      onClick={() => { setAmount(p); setCustom(''); }}
-                      className={`rounded-2xl border px-3 py-2.5 text-sm font-semibold transition-all ${
-                        !custom && amount === p
-                          ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
-                          : 'border-zinc-800 bg-zinc-800/40 text-zinc-300 hover:border-zinc-700'
-                      }`}
-                    >
-                      ¥{p}
-                    </button>
-                  ))}
+                  {(packages.length
+                    ? packages
+                    : PRESETS.map((p) => ({ id: `p${p}`, price: p, credits: p, bonus: 0, name: '' }))
+                  ).map((pkg) => {
+                    const active = !custom && amount === pkg.price;
+                    const totalCredits = pkg.credits + (pkg.bonus || 0);
+                    return (
+                      <button
+                        key={pkg.id}
+                        onClick={() => { setAmount(pkg.price); setCustom(''); }}
+                        className={`flex flex-col items-center rounded-2xl border px-2 py-2.5 text-sm font-semibold transition-all ${
+                          active
+                            ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
+                            : 'border-zinc-800 bg-zinc-800/40 text-zinc-300 hover:border-zinc-700'
+                        }`}
+                      >
+                        <span>¥{pkg.price}</span>
+                        <span className={`mt-0.5 text-[10px] font-normal ${pkg.bonus > 0 ? 'text-amber-300' : 'text-zinc-500'}`}>
+                          {totalCredits} 积分
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
                 <input
                   value={custom}

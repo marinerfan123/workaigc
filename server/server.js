@@ -46,6 +46,8 @@ import shopMod from './shop.cjs';   // Phase 5 电商模块（AI 市集）：商
 import paymentsMod from './payments.cjs'; // Phase 2 收尾：充值订单 + DEV 支付适配器(M2 账务)
 import monitorMod from './monitor.cjs'; // 后台「实时监控 · API 活动流」(全路径环形缓冲 + SSE 广播)
 import logbusMod from './logbus.cjs';   // 后台「实时日志 · 数据库/Redis/控制台」(统一日志总线 + SSE 广播)
+import financeMod from './finance.cjs';  // Phase 4 后台账务系统（底层：总览/对账/账本/套餐）
+import meMod from './me.cjs';            // 用户侧账务（积分流水 / 充值订单 / 概览）
 
 // ─── 日志总线：先 installConsoleHook，再做后续 init，
 //    这样后续 console.warn/error 自动落入 logbus（同时保留原 console 行为）───
@@ -224,11 +226,29 @@ async function initDB() {
         status        TEXT NOT NULL DEFAULT 'pending',  -- pending | paid | failed
         pay_order_no  TEXT UNIQUE NOT NULL,
         sign          TEXT DEFAULT '',
+        meta          JSONB DEFAULT '{}',               -- 失败原因 / 回调原始数据
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         paid_at       TIMESTAMPTZ
       );
       CREATE INDEX IF NOT EXISTS ix_ro_user ON recharge_orders(user_id);
       CREATE INDEX IF NOT EXISTS ix_ro_payno ON recharge_orders(pay_order_no);
+      -- 兼容已在运行的库：对已有 recharge_orders 补齐 meta 列
+      ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS meta JSONB DEFAULT '{}';
+
+      -- === Phase 4：充值套餐（后台可配置，替换前端硬编码预设）===
+      CREATE TABLE IF NOT EXISTS topup_packages (
+        id          TEXT PRIMARY KEY DEFAULT 'pkg-' || gen_random_uuid()::text,
+        name        TEXT NOT NULL DEFAULT '',
+        credits     INT  NOT NULL DEFAULT 0,    -- 基础到账积分
+        price       INT  NOT NULL DEFAULT 0,    -- 售价（元）
+        bonus       INT  NOT NULL DEFAULT 0,    -- 赠送积分
+        sort_order  INT  NOT NULL DEFAULT 0,
+        enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+        remark      TEXT DEFAULT '',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_tp_sort ON topup_packages(sort_order);
     `);
 
     // 种子：运营智能体 ops_bot + 三条自动化规则（§H.3）
@@ -502,6 +522,21 @@ const shop = shopMod.createShop({
   billing,
 });
 
+// ── Phase 4 账务系统 ── 注入依赖；pgPool 经 getter 取最新值
+const finance = financeMod.createFinance({
+  getPg: () => pgPool,
+  session,
+  sendJSON,
+  fromSnake,
+  parseBody,
+});
+const me = meMod.createMe({
+  getPg: () => pgPool,
+  session,
+  sendJSON,
+  parseBody,
+});
+
 // ─── Phase 2 收尾：充值订单 + DEV 支付适配器（注入依赖；pgPool 经 getter 取最新值）──
 const payments = paymentsMod.createPayments({
   getPg: () => pgPool,
@@ -636,6 +671,8 @@ async function handleAPI(req, res) {
   if (url === '/api/auth/register' && method === 'POST') return handleRegister(req, res);
   if (url === '/api/auth/login' && method === 'POST') return handleLogin(req, res);
   if (url === '/api/auth/refresh' && method === 'POST') return handleRefresh(req, res);
+  // 公开：充值套餐（供充值弹窗预览，无需登录）
+  if (url === '/api/finance/topup-packages' && method === 'GET') return finance.handlePublic(req, res, url.split('?')[0], method);
 
   // 应用网关：API_TOKEN 或 用户会话 cookie 任一通过
   if (!appGateway(req)) return sendJSON(res, 401, { error: 'Unauthorized' });
@@ -643,9 +680,13 @@ async function handleAPI(req, res) {
   // 需会话的认证路由
   if (url === '/api/auth/me' && method === 'GET') return handleMe(req, res);
   if (url === '/api/auth/logout' && method === 'POST') return handleLogout(req, res);
+  // ── 用户侧账务（积分流水 / 充值订单 / 概览）── 需登录
+  if (url.startsWith('/api/me/') && method !== 'OPTIONS') return me.handleMeRoutes(req, res, url.split('?')[0], method);
 
   // ── 管理后台（M3 总控台 / M4 智能体层）──
   if (url === '/api/admin/console/stream' && method === 'GET') return admin.streamConsole(req, res);
+  // ── 后台账务系统（Phase 4：总览 / 对账 / 账本 / 套餐）── 优先于通用 admin 分发
+  if (url.startsWith('/api/admin/finance/') && method !== 'OPTIONS') return finance.handleFinance(req, res, url.split('?')[0], method);
   if (url.startsWith('/api/admin/') && method !== 'OPTIONS') return admin.handleAdmin(req, res, url.split('?')[0], method);
 
   // ── 电商模块（AI 市集）── 命中即处理（内部自行鉴权：商品列表/详情公开，购物车/订单需登录）

@@ -542,6 +542,80 @@ export async function apiAdminToggleAgentRule(id: string, enabled: boolean): Pro
   try { return await apiFetch(`/api/admin/agent-rules/${encodeURIComponent(id)}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } catch { return { ok: false }; }
 }
 
+// ─── 用户侧账务（积分流水 / 充值订单 / 概览）───
+export async function apiMeSummary(): Promise<{
+  credits: number; totalRecharged: number; totalConsumed: number; monthConsumed: number; totalGranted: number;
+}> {
+  try { return await apiFetch('/api/me/summary'); }
+  catch { return { credits: 0, totalRecharged: 0, totalConsumed: 0, monthConsumed: 0, totalGranted: 0 }; }
+}
+export interface MeTx {
+  id: number; kind: string; amount: number; ref?: string; balanceAfter: number | null; createdAt: string;
+}
+export async function apiMeTransactions(params: { limit?: number; offset?: number } = {}): Promise<{ items: MeTx[]; total: number }> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  try { return await apiFetch(`/api/me/transactions?${qs.toString()}`); } catch { return { items: [], total: 0 }; }
+}
+export interface MeRecharge {
+  id: string; payOrderNo: string; amount: number; channel: string; status: string; createdAt: string; paidAt: string | null;
+}
+export async function apiMeRecharges(): Promise<{ items: MeRecharge[] }> {
+  try { return await apiFetch('/api/me/recharges'); } catch { return { items: [] }; }
+}
+
+// ─── 公开充值套餐（充值弹窗预览，无需登录）───
+export interface TopupPackage {
+  id: string; name: string; credits: number; price: number; bonus: number; sortOrder: number; remark: string;
+}
+export async function apiPublicTopupPackages(): Promise<{ items: TopupPackage[] }> {
+  try { return await apiFetch('/api/finance/topup-packages'); } catch { return { items: [] }; }
+}
+
+// ─── 后台账务系统（Phase 4：总览 / 对账 / 账本 / 套餐）───
+export interface FinanceOverview {
+  totalCreditsInSystem: number;
+  totalUsers: number;
+  totalRechargePaid: number;
+  rechargePaidCount: number;
+  totalRechargePending: number;
+  rechargePendingCount: number;
+  rechargeFailedCount: number;
+  totalConsumed: number;
+  totalGranted: number;
+  totalAdjusted: number;
+  series: { day: string; rechargePaid: number; consumed: number; granted: number }[];
+}
+export async function apiAdminFinanceOverview(): Promise<FinanceOverview | null> {
+  try { return await apiFetch('/api/admin/finance/overview'); } catch { return null; }
+}
+export async function apiAdminFinanceRecharges(params: { limit?: number; offset?: number; status?: string; channel?: string } = {}): Promise<{ items: any[]; total: number }> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  try { return await apiFetch(`/api/admin/finance/recharges?${qs.toString()}`); } catch { return { items: [], total: 0 }; }
+}
+export async function apiAdminFinanceReconcile(): Promise<{ checkedAt: number; checkedUsers: number; alertCount: number; alerts: any[]; ok: boolean } | null> {
+  try { return await apiFetch('/api/admin/finance/reconcile'); } catch { return null; }
+}
+export async function apiAdminFinanceLedger(userId: string): Promise<any | null> {
+  try { return await apiFetch(`/api/admin/finance/users/${encodeURIComponent(userId)}/ledger`); } catch { return null; }
+}
+export async function apiAdminFinancePackages(): Promise<{ items: TopupPackage[] }> {
+  try { return await apiFetch('/api/admin/finance/topup-packages'); } catch { return { items: [] }; }
+}
+export async function apiAdminFinanceCreatePackage(p: Partial<TopupPackage> & { enabled?: boolean }): Promise<{ ok: boolean; id?: string; error?: string }> {
+  try { return await apiFetch('/api/admin/finance/topup-packages', { method: 'POST', body: JSON.stringify(p) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiAdminFinanceUpdatePackage(id: string, p: Partial<TopupPackage> & { enabled?: boolean }): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch(`/api/admin/finance/topup-packages/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(p) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiAdminFinanceDeletePackage(id: string): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch(`/api/admin/finance/topup-packages/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+
 // ─── 用户 / 电商相关 API 历史原因内聚在 UsersPage.tsx，这里统一再导出，
 // 保持 "@/services/api" 为唯一 API 入口（避免其它页面 import 缺失）───
 export {

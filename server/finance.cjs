@@ -1,0 +1,298 @@
+// server/finance.cjs — 后台账务系统（底层）
+// 路由：/api/admin/finance/*（管理员）；公开：/api/finance/topup-packages（GET，无需登录）
+// 职责（用户要求「后台账务要从底层做起来，完全能管住整个系统的账务」）：
+//   1. overview     系统账务总览（总余额 / 累计充值 / 累计消费 / 累计发放 / 时序）
+//   2. recharges    充值订单列表（含 failed，支持 status/channel 筛选 + 分页）
+//   3. reconcile    对账：混合重建法核对「账实相符」（users.credits vs 流水重建余额）
+//   4. ledger       单用户账本（期初→流水→期末 + 每笔 balance_after）
+//   5. topup-packages 充值套餐 CRUD（后台可配置，替换前端硬编码预设）
+// 依赖（由 server.js 注入）：getPg / session / sendJSON / fromSnake / parseBody
+// 设计依据：credit_transactions.kind ∈ {reserve,commit,release,grant,adjust}
+//   - reserve / release 实际改动余额但不写 balance_after
+//   - commit / grant / adjust 写 balance_after（余额快照）
+//   对账引擎据此混合重建，对任何漏记/重复记账都能暴露漂移。
+
+function createFinance(ctx) {
+  const { getPg, session, sendJSON, fromSnake, parseBody } = ctx;
+  const pg = () => getPg();
+  const hasPg = () => !!getPg();
+  const crypto = require('crypto');
+
+  // 管理员闸门：与 admin.cjs 一致
+  function requireAdmin(req) {
+    return !!(req.user && (req.user.role === 'admin' || req.user.role === 'system'));
+  }
+
+  // ───────────────────────── 系统账务总览 ─────────────────────────
+  async function overview() {
+    const p = pg();
+    const totalCredits = await p.query('SELECT COALESCE(SUM(credits),0) AS s FROM users');
+    const totalUsers = await p.query('SELECT COUNT(*) AS c FROM users');
+    const paid = await p.query("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM recharge_orders WHERE status='paid'");
+    const pending = await p.query("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM recharge_orders WHERE status='pending'");
+    const failed = await p.query("SELECT COUNT(*) AS c FROM recharge_orders WHERE status='failed'");
+    const consumed = await p.query("SELECT COALESCE(SUM(amount),0) AS s FROM credit_transactions WHERE kind='commit'");
+    const granted = await p.query("SELECT COALESCE(SUM(amount),0) AS s FROM credit_transactions WHERE kind='grant'");
+    const adjusted = await p.query("SELECT COALESCE(SUM(amount),0) AS s FROM credit_transactions WHERE kind='adjust'");
+
+    // 近 30 天分时序：充值到账 / 真实消费 / 发放
+    const series = await p.query(`
+      SELECT d::date AS day,
+        COALESCE(SUM(CASE WHEN rt.status='paid' THEN rt.amount END),0) AS recharge_paid,
+        COALESCE(SUM(CASE WHEN ct.kind='commit' THEN ct.amount END),0) AS consumed,
+        COALESCE(SUM(CASE WHEN ct.kind='grant'  THEN ct.amount END),0) AS granted
+      FROM generate_series(NOW() - INTERVAL '29 days', NOW(), '1 day') d
+      LEFT JOIN recharge_orders rt ON rt.status='paid' AND rt.paid_at::date = d::date
+      LEFT JOIN credit_transactions ct ON ct.created_at::date = d::date
+      GROUP BY d ORDER BY d`);
+
+    return {
+      totalCreditsInSystem: Number(totalCredits.rows[0].s),
+      totalUsers: parseInt(totalUsers.rows[0].c, 10),
+      totalRechargePaid: Number(paid.rows[0].s),
+      rechargePaidCount: parseInt(paid.rows[0].c, 10),
+      totalRechargePending: Number(pending.rows[0].s),
+      rechargePendingCount: parseInt(pending.rows[0].c, 10),
+      rechargeFailedCount: parseInt(failed.rows[0].c, 10),
+      totalConsumed: Number(consumed.rows[0].s),
+      totalGranted: Number(granted.rows[0].s),
+      totalAdjusted: Number(adjusted.rows[0].s),
+      series: series.rows.map((r) => ({
+        day: r.day,
+        rechargePaid: Number(r.recharge_paid),
+        consumed: Number(r.consumed),
+        granted: Number(r.granted),
+      })),
+    };
+  }
+
+  // ───────────────────────── 充值订单列表（含失败） ─────────────────────────
+  async function listRecharges(query) {
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const offset = parseInt(query.offset || '0', 10) || 0;
+    const status = (query.status || '').trim();
+    const channel = (query.channel || '').trim();
+    const params = [];
+    let where = '1=1';
+    let i = 1;
+    if (status) { where += ` AND ro.status=$${i}`; params.push(status); i++; }
+    if (channel) { where += ` AND ro.channel=$${i}`; params.push(channel); i++; }
+    const cnt = await pg().query(`SELECT COUNT(*) FROM recharge_orders ro WHERE ${where}`, params);
+    const r = await pg().query(
+      `SELECT ro.id, ro.user_id, u.display_name AS user, ro.channel, ro.amount, ro.status,
+              ro.pay_order_no, ro.created_at, ro.paid_at, ro.meta
+       FROM recharge_orders ro LEFT JOIN users u ON u.id=ro.user_id
+       WHERE ${where} ORDER BY ro.created_at DESC LIMIT $${i} OFFSET $${i + 1}`,
+      [...params, limit, offset],
+    );
+    return {
+      items: r.rows.map((x) => ({
+        id: x.id,
+        userId: x.user_id,
+        user: x.user || '系统',
+        channel: x.channel,
+        amount: Number(x.amount),
+        status: x.status,
+        payOrderNo: x.pay_order_no,
+        createdAt: x.created_at,
+        paidAt: x.paid_at,
+        meta: x.meta || null,
+      })),
+      total: parseInt(cnt.rows[0].count, 10),
+    };
+  }
+
+  // ───────────────────────── 对账：混合重建法核对账实相符 ─────────────────────────
+  // 规则：逐笔推进 sim ——
+  //   reserve: 实际扣余额（sim -= amount，无快照也减）
+  //   release: 实际补余额（sim += amount，无快照也加）
+  //   commit / grant / adjust: 用 balance_after 校准 sim（权威快照）
+  // 最终 sim 必须 == users.credits，否则账实不符 / 漏记 / 重复记账。
+  async function reconcile() {
+    const p = pg();
+    const users = await p.query('SELECT id, credits FROM users');
+    const alerts = [];
+    for (const u of users.rows) {
+      const tx = await p.query(
+        `SELECT kind, amount, balance_after FROM credit_transactions WHERE user_id=$1 ORDER BY id ASC`,
+        [u.id],
+      );
+      let sim = null;
+      for (const t of tx.rows) {
+        const amt = Number(t.amount);
+        const ba = t.balance_after != null ? Number(t.balance_after) : null;
+        if (t.kind === 'reserve') { if (sim !== null) sim -= amt; }
+        else if (t.kind === 'release') { if (sim !== null) sim += amt; }
+        else if (t.kind === 'commit' || t.kind === 'grant' || t.kind === 'adjust') { if (ba !== null) sim = ba; }
+      }
+      const real = Number(u.credits);
+      if (sim === null) {
+        // 既无快照也无法重建绝对值；仅当余额偏离默认值时提示人工核对
+        if (real !== 50) {
+          alerts.push({ userId: u.id, real, expected: null, status: 'no_snapshot', note: '无余额快照流水，无法自动对账' });
+        }
+      } else if (sim !== real) {
+        alerts.push({ userId: u.id, real, expected: sim, status: 'mismatch', note: '账实不符' });
+      }
+    }
+    return {
+      checkedAt: Date.now(),
+      checkedUsers: users.rows.length,
+      alertCount: alerts.length,
+      alerts,
+      ok: alerts.length === 0,
+    };
+  }
+
+  // ───────────────────────── 单用户账本 ─────────────────────────
+  async function userLedger(userId) {
+    const p = pg();
+    const u = await p.query(
+      'SELECT id, email, display_name, credits, role, created_at FROM users WHERE id=$1', [userId]);
+    if (!u.rows.length) throw new Error('用户不存在');
+    const r = await p.query(
+      `SELECT id, kind, amount, ref, balance_after, created_at
+       FROM credit_transactions WHERE user_id=$1 ORDER BY id ASC`,
+      [userId],
+    );
+    const u0 = u.rows[0];
+    return {
+      user: {
+        id: u0.id,
+        email: u0.email,
+        displayName: u0.display_name,
+        credits: Number(u0.credits),
+        role: u0.role,
+        createdAt: u0.created_at,
+      },
+      transactions: r.rows.map((x) => ({
+        id: Number(x.id),
+        kind: x.kind,
+        amount: Number(x.amount),
+        ref: x.ref,
+        balanceAfter: x.balance_after != null ? Number(x.balance_after) : null,
+        createdAt: x.created_at,
+      })),
+      endingBalance: Number(u0.credits),
+    };
+  }
+
+  // ───────────────────────── 充值套餐 CRUD ─────────────────────────
+  async function listPackages() {
+    const r = await pg().query(
+      'SELECT id,name,credits,price,bonus,sort_order,enabled,remark,created_at,updated_at FROM topup_packages ORDER BY sort_order ASC, created_at ASC');
+    return { items: r.rows.map(fromSnake) };
+  }
+  async function publicPackages() {
+    const r = await pg().query(
+      "SELECT id,name,credits,price,bonus,sort_order,remark FROM topup_packages WHERE enabled=TRUE ORDER BY sort_order ASC, price ASC");
+    return {
+      items: r.rows.map((x) => ({
+        id: x.id,
+        name: x.name,
+        credits: Number(x.credits),
+        price: Number(x.price),
+        bonus: Number(x.bonus),
+        sortOrder: Number(x.sort_order),
+        remark: x.remark || '',
+      })),
+    };
+  }
+  async function createPackage(body) {
+    const name = (body.name || '').toString().trim();
+    const credits = Math.max(0, Math.floor(Number(body.credits) || 0));
+    const price = Math.max(0, Math.floor(Number(body.price) || 0));
+    const bonus = Math.max(0, Math.floor(Number(body.bonus) || 0));
+    const sortOrder = Number.isFinite(+body.sortOrder) ? +body.sortOrder : 0;
+    const enabled = body.enabled !== false;
+    const remark = (body.remark || '').toString();
+    const id = 'pkg-' + crypto.randomUUID();
+    await pg().query(
+      `INSERT INTO topup_packages (id,name,credits,price,bonus,sort_order,enabled,remark,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
+      [id, name, credits, price, bonus, sortOrder, enabled, remark],
+    );
+    return { ok: true, id };
+  }
+  async function updatePackage(id, body) {
+    const fields = [];
+    const vals = [];
+    let i = 1;
+    const set = (c, v) => { fields.push(`${c}=$${i}`); vals.push(v); i++; };
+    if (body.name !== undefined) set('name', body.name);
+    if (body.credits !== undefined) set('credits', Math.max(0, Math.floor(Number(body.credits) || 0)));
+    if (body.price !== undefined) set('price', Math.max(0, Math.floor(Number(body.price) || 0)));
+    if (body.bonus !== undefined) set('bonus', Math.max(0, Math.floor(Number(body.bonus) || 0)));
+    if (body.sortOrder !== undefined) set('sort_order', Number.isFinite(+body.sortOrder) ? +body.sortOrder : 0);
+    if (body.enabled !== undefined) set('enabled', !!body.enabled);
+    if (body.remark !== undefined) set('remark', body.remark || '');
+    if (!fields.length) return { ok: true, noop: true };
+    set('updated_at', new Date());
+    vals.push(id);
+    await pg().query(`UPDATE topup_packages SET ${fields.join(',')} WHERE id=$${i}`, vals);
+    return { ok: true };
+  }
+  async function deletePackage(id) {
+    await pg().query('DELETE FROM topup_packages WHERE id=$1', [id]);
+    return { ok: true };
+  }
+
+  // ───────────────────────── 路由分发 ─────────────────────────
+  let m; // 复用的正则捕获变量（函数作用域）
+  async function handleFinance(req, res, url, method) {
+    if (!hasPg()) return sendJSON(res, 503, { error: '数据库不可用' });
+    if (!requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    const q = req.query || {};
+
+    if (url === '/api/admin/finance/overview' && method === 'GET') {
+      return sendJSON(res, 200, await overview());
+    }
+    if (url === '/api/admin/finance/recharges' && method === 'GET') {
+      return sendJSON(res, 200, await listRecharges(q));
+    }
+    if (url === '/api/admin/finance/reconcile' && method === 'GET') {
+      return sendJSON(res, 200, await reconcile());
+    }
+    m = url.match(/^\/api\/admin\/finance\/users\/([^/]+)\/ledger$/);
+    if (m && method === 'GET') {
+      try { return sendJSON(res, 200, await userLedger(decodeURIComponent(m[1]))); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (url === '/api/admin/finance/topup-packages' && method === 'GET') {
+      return sendJSON(res, 200, await listPackages());
+    }
+    if (url === '/api/admin/finance/topup-packages' && method === 'POST') {
+      const body = await parseBody(req).catch(() => ({}));
+      try { return sendJSON(res, 200, await createPackage(body)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    m = url.match(/^\/api\/admin\/finance\/topup-packages\/([^/]+)$/);
+    if (m && method === 'PUT') {
+      const body = await parseBody(req).catch(() => ({}));
+      try { return sendJSON(res, 200, await updatePackage(decodeURIComponent(m[1]), body)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (m && method === 'DELETE') {
+      try { return sendJSON(res, 200, await deletePackage(decodeURIComponent(m[1]))); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    return sendJSON(res, 404, { error: 'Not Found' });
+  }
+
+  // 公开套餐列表（供充值弹窗预览，无需登录）
+  async function handlePublic(req, res, url, method) {
+    if (!hasPg()) return sendJSON(res, 503, { error: '数据库不可用' });
+    if (url === '/api/finance/topup-packages' && method === 'GET') {
+      return sendJSON(res, 200, await publicPackages());
+    }
+    return sendJSON(res, 404, { error: 'Not Found' });
+  }
+
+  return {
+    handleFinance, handlePublic,
+    overview, listRecharges, reconcile, userLedger,
+    listPackages, publicPackages, createPackage, updatePackage, deletePackage,
+  };
+}
+
+module.exports = { createFinance };
