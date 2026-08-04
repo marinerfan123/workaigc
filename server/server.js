@@ -578,7 +578,8 @@ async function handleLogin(req, res) {
   const u = r.rows[0];
   if (!session.verifyPassword(pw, u.password_hash)) return sendJSON(res, 401, { error: '邮箱或密码错误' });
   // 登录时确保公共默认资产已就位（幂等；兼容老用户注册前尚无默认资产的情况）
-  await ensureUserDefaults(u.id);
+  // 注意：admin 不是「顾客」，不自动塞示例（手动推送 pushSamplesToUsers 也已排除 admin）
+  if (u.role !== 'admin') await ensureUserDefaults(u.id);
   const token = session.signSession({ id: u.id, role: u.role });
   session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
   return sendJSON(res, 200, {
