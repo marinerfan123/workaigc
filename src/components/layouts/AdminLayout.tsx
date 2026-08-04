@@ -14,6 +14,7 @@ import {
   LogOut,
   Cpu,
   Activity,
+  ScrollText,
 } from 'lucide-react';
 import { useAuth, logout } from '@/services/authStore';
 import { cn } from '@/components/skeleton';
@@ -21,6 +22,7 @@ import { cn } from '@/components/skeleton';
 const ADMIN_NAV = [
   { to: '/admin', label: '运营总控台', icon: LayoutDashboard, end: true, desc: 'M3 实时态势' },
   { to: '/admin/monitor', label: 'API 活动流', icon: Activity, end: false, desc: '全站 HTTP 监控' },
+  { to: '/admin/logs', label: '实时日志', icon: ScrollText, end: false, desc: 'PG/Redis/控制台' },
   { to: '/admin/agents', label: '智能体层', icon: Bot, end: false, desc: 'M4 看板+管理' },
   { to: '/admin/users', label: '用户管理', icon: Users, end: false, desc: '列表+手动充值' },
   { to: '/admin/models', label: '模型管理', icon: Cpu, end: false, desc: '沿用 ModelHub' },

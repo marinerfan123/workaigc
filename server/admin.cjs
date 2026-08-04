@@ -8,6 +8,7 @@ function createAdmin(ctx) {
   const { getPg, session, sendJSON, fromSnake, parseBody } = ctx;
   const traffic = ctx.traffic || { onlineUsers: () => 0, currentQps: () => 0 };
   const monitor = ctx.monitor || null;     // 实时监控模块(可选注入)；用于 /api/admin/monitor/{snapshot,stream,clear}
+  const logbus = ctx.logbus || null;       // 日志总线(可选注入)；用于 /api/admin/logs/{snapshot,stream,clear}
 
   const hasPg = () => !!getPg();
   const pg = () => getPg();
@@ -399,6 +400,20 @@ function createAdmin(ctx) {
     }
     if (url === '/api/admin/monitor/clear' && method === 'POST') {
       monitor.clear();
+      return sendJSON(res, 200, { ok: true });
+    }
+
+    // ───────────────── 实时日志 · 数据库/Redis/控制台 ─────────────────
+    // 注：依赖 logbus 模块（由 server.js 注入 ctx）。logbus 为 null 时 → 503。
+    if (!logbus) return sendJSON(res, 503, { error: '日志总线未启用' });
+    if (url === '/api/admin/logs/snapshot' && method === 'GET') {
+      return sendJSON(res, 200, logbus.getSnapshot());
+    }
+    if (url === '/api/admin/logs/stream' && method === 'GET') {
+      return logbus.stream(req, res);                    // SSE
+    }
+    if (url === '/api/admin/logs/clear' && method === 'POST') {
+      logbus.clear();
       return sendJSON(res, 200, { ok: true });
     }
 

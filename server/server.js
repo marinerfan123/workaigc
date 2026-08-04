@@ -44,6 +44,13 @@ const { clientIp, rateLimit } = rateLimitMod;
 import adminMod from './admin.cjs'; // Phase 2 运营总控台(M3) + 全局智能体层(M4) 后台接口
 import paymentsMod from './payments.cjs'; // Phase 2 收尾：充值订单 + DEV 支付适配器(M2 账务)
 import monitorMod from './monitor.cjs'; // 后台「实时监控 · API 活动流」(全路径环形缓冲 + SSE 广播)
+import logbusMod from './logbus.cjs';   // 后台「实时日志 · 数据库/Redis/控制台」(统一日志总线 + SSE 广播)
+
+// ─── 日志总线：先 installConsoleHook，再做后续 init，
+//    这样后续 console.warn/error 自动落入 logbus（同时保留原 console 行为）───
+const logbus = logbusMod.createLogBus();
+logbus.installConsoleHook();
+logbus.startStatsTimer();
 
 async function initDB() {
   try {
@@ -482,6 +489,7 @@ const admin = adminMod.createAdmin({
   parseBody,
   traffic: { onlineUsers: () => traffic.onlineUsers(), currentQps: () => traffic.currentQps() },
   monitor,                                    // 注入 monitor：admin 实时监控页用(/api/admin/monitor/{snapshot,stream,clear})
+  logbus,                                     // 注入 logbus：admin 实时日志页用(/api/admin/logs/{snapshot,stream,clear})
 });
 
 // ─── Phase 2 收尾：充值订单 + DEV 支付适配器（注入依赖；pgPool 经 getter 取最新值）──
@@ -1353,6 +1361,56 @@ const server = http.createServer(async (req, res) => {
 
 await initDB();
 await initRedis();
+
+// ─── 日志总线事件源 ───
+//   PG：连接/错误；Redis：ready/error/reconnecting/end；
+//   业务流(注册/登录/生成/计费等)可在未来手动 logbus.emit('INFO', 'app', ...) 接入
+if (pgPool) {
+  pgPool.on('error', (err) => {
+    logbus.emit('ERROR', 'pg', `连接池错误: ${err.message}`, { code: err.code });
+  });
+  pgPool.on('connect', () => {
+    // 后续新建连接才记 INFO；首次连接由下方显式补发（避免连接早于 handler 挂载而丢失）
+    if (pgPool._loggedFirstConnect) {
+      logbus.emit('INFO', 'pg', 'PostgreSQL 新连接建立');
+    }
+  });
+  pgPool.on('remove', () => { /* 客户端归还，不记 */ });
+  // 显式首发 INFO：initDB 成功即代表已连通，确保启动期事件不丢失（与 Redis 修复同思路）
+  if (!pgPool._loggedFirstConnect) {
+    pgPool._loggedFirstConnect = true;
+    logbus.emit('INFO', 'pg', 'PostgreSQL 已连接（启动）');
+  }
+} else {
+  logbus.emit('WARN', 'pg', 'PostgreSQL 不可用，已降级 JSON 存储');
+}
+
+const redisClient = redisStore.getRedis && redisStore.getRedis();
+if (redisClient) {
+  redisClient.on('error', (err) => {
+    logbus.emit('ERROR', 'redis', `连接错误: ${err.message}`);
+  });
+  redisClient.on('ready', () => {
+    if (!redisClient._loggedFirstReady) {
+      redisClient._loggedFirstReady = true;
+      logbus.emit('INFO', 'redis', 'Redis ready');
+    }
+  });
+  redisClient.on('reconnecting', (delay) => {
+    logbus.emit('WARN', 'redis', `Redis 正在重连（${delay}ms 后）`);
+  });
+  redisClient.on('end', () => {
+    logbus.emit('WARN', 'redis', 'Redis 连接已断开');
+  });
+  // 修复：若连接已在挂载 .on('ready') 之前建立（ioredis 'ready' 一次性事件），
+  // 这里补发一条 INFO，避免启动期 Redis 事件永远丢失。
+  if (redisClient.status === 'ready' && !redisClient._loggedFirstReady) {
+    redisClient._loggedFirstReady = true;
+    logbus.emit('INFO', 'redis', 'Redis ready');
+  }
+} else {
+  logbus.emit('WARN', 'redis', 'Redis 客户端未初始化，使用内存兜底');
+}
 
 // ─── 生产安全自检（仅 production）───
 if (isProduction) {
