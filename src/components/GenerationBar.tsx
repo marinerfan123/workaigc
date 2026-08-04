@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { useState, useRef, useEffect, useImperativeHandle } from 'react';
 import { probeImageLoad } from '@/utils/imageProbe';
 import {
   ArrowUp,
@@ -1229,6 +1229,5 @@ function GenerationBar({
   );
 }
 
-const GenerationBarForwarded = forwardRef<GenerationBarHandle, GenerationBarProps>(GenerationBar);
-GenerationBarForwarded.displayName = 'GenerationBar';
-export default GenerationBarForwarded;
+GenerationBar.displayName = 'GenerationBar';
+export default GenerationBar;
