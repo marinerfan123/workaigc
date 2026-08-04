@@ -18,6 +18,7 @@ import { AdminLayout } from '@/components/layouts/AdminLayout';
 import ConsolePage from '@/pages/Admin/ConsolePage';
 import AgentsPage from '@/pages/Admin/AgentsPage';
 import UsersPage from '@/pages/Admin/UsersPage';
+import SamplesPage from '@/pages/Admin/SamplesPage';
 import TransactionsPage from '@/pages/Admin/TransactionsPage';
 import SkillsPage from '@/pages/Admin/SkillsPage';
 import EcommerceAdminPage from '@/pages/Admin/EcommerceAdminPage';
@@ -69,6 +70,7 @@ export default function App() {
           <Route index element={<ConsolePage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="users" element={<UsersPage />} />
+          <Route path="samples" element={<SamplesPage />} />
           <Route path="models" element={<ModelHubPage />} />
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="skills" element={<SkillsPage />} />

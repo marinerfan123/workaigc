@@ -196,6 +196,23 @@ export async function apiSaveCharacters(items: any[]) {
   try { await apiFetch('/api/characters', { method: 'POST', body: JSON.stringify(items) }); } catch {}
 }
 
+// ─── 后台示例库（运营维护，一键推送给顾客） ───
+export async function apiGetSamples(): Promise<any[]> {
+  try { const r = await apiFetch<{ samples: any[] }>('/api/admin/samples'); return r?.samples ?? []; } catch { return []; }
+}
+export async function apiCreateSample(payload: any) {
+  return apiFetch('/api/admin/samples', { method: 'POST', body: JSON.stringify(payload) });
+}
+export async function apiUpdateSample(id: string, payload: any) {
+  return apiFetch(`/api/admin/samples/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+export async function apiDeleteSample(id: string) {
+  return apiFetch(`/api/admin/samples/${id}`, { method: 'DELETE' });
+}
+export async function apiPushSamples() {
+  return apiFetch('/api/admin/samples/push', { method: 'POST' });
+}
+
 /** 过滤掉刷新后失效的 blob URL 临时项（本地上传的临时文件不持久化） */
 export function stripBlobItems<T extends { thumbnail?: string }>(items: T[]): T[] {
   return items.filter((m) => !m.thumbnail?.startsWith('blob:'));

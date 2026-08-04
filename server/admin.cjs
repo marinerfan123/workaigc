@@ -12,6 +12,7 @@ function createAdmin(ctx) {
 
   const hasPg = () => !!getPg();
   const pg = () => getPg();
+  const crypto = require('crypto');
 
   // 管理员闸门：会话角色 admin 或 系统令牌(system) 放行
   function requireAdmin(req) {
@@ -313,6 +314,96 @@ function createAdmin(ctx) {
   }
 
   // ───────────────────────── 路由分发 ─────────────────────────
+  // ───────────────────────── 示例库（运营维护，推送给顾客） ─────────────────────────
+  // 数据源：default_assets 表（全局示例模板）。顾客通过 ensureUserDefaults 在注册/登录时
+  // 自动获得副本（is_default=TRUE）；本模块提供后台 CRUD + 手动一键推送。
+  async function listSamples() {
+    const r = await pg().query(
+      'SELECT id,key,title,type,thumbnail,full_url,prompt,model,ratio,category,status,sort,created_at FROM default_assets ORDER BY sort ASC, created_at ASC');
+    return { samples: r.rows };
+  }
+
+  async function createSample(body) {
+    const key = (body.key || '').toString().trim() || ('sample-' + crypto.randomUUID().slice(0, 8));
+    const id = 'da-' + crypto.randomUUID();
+    const title = (body.title || '').toString().trim();
+    const type = body.type || 'image';
+    const category = body.category || 'generated';
+    const ratio = body.ratio || '1:1';
+    const model = (body.model || '').toString();
+    const thumbnail = (body.thumbnail || '').toString();
+    const fullUrl = (body.fullUrl || body.full_url || '').toString();
+    const prompt = (body.prompt || '').toString();
+    const status = body.status || 'success';
+    const sort = Number.isFinite(+body.sort) ? +body.sort : 0;
+    const ex = await pg().query('SELECT 1 FROM default_assets WHERE key=$1', [key]);
+    if (ex.rows.length) throw new Error('示例 key 已存在：' + key);
+    await pg().query(
+      `INSERT INTO default_assets (id,key,title,type,thumbnail,full_url,prompt,model,ratio,source,category,status,sort)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'default',$10,$11,$12)`,
+      [id, key, title, type, thumbnail, fullUrl, prompt, model, ratio, category, status, sort]
+    );
+    return { ok: true, id, key };
+  }
+
+  async function updateSample(id, body) {
+    // 只更新允许的字段；不改 key（保持默认库稳定性，避免已推送副本 orphan）
+    const fields = [];
+    const vals = [];
+    let i = 1;
+    const set = (col, v) => { fields.push(`${col}=$${i}`); vals.push(v); i++; };
+    if (body.title !== undefined) set('title', body.title);
+    if (body.type !== undefined) set('type', body.type);
+    if (body.category !== undefined) set('category', body.category);
+    if (body.ratio !== undefined) set('ratio', body.ratio);
+    if (body.model !== undefined) set('model', body.model);
+    if (body.thumbnail !== undefined) set('thumbnail', body.thumbnail);
+    if (body.fullUrl !== undefined || body.full_url !== undefined) set('full_url', body.fullUrl || body.full_url || '');
+    if (body.prompt !== undefined) set('prompt', body.prompt);
+    if (body.status !== undefined) set('status', body.status);
+    if (body.sort !== undefined) set('sort', Number.isFinite(+body.sort) ? +body.sort : 0);
+    if (fields.length === 0) return { ok: true, noop: true };
+    vals.push(id);
+    await pg().query(`UPDATE default_assets SET ${fields.join(',')} WHERE id=$${i}`, vals);
+    return { ok: true };
+  }
+
+  async function deleteSample(id) {
+    await pg().query('DELETE FROM default_assets WHERE id=$1', [id]);
+    return { ok: true };
+  }
+
+  // 把示例库当前条目批量拷贝给所有非 admin 用户（幂等：已有 default_key 副本则跳过）。
+  // 顾客端 /api/media 按 owner 隔离，且 is_default=TRUE 标记可识别、可删除。
+  async function pushSamplesToUsers() {
+    const tpl = await pg().query('SELECT * FROM default_assets ORDER BY sort ASC, created_at ASC');
+    if (!tpl.rows.length) return { ok: true, pushed: 0, users: 0, totalUsers: 0, note: '示例库为空，无可推送内容' };
+    const users = await pg().query("SELECT id FROM users WHERE role<>'admin'");
+    let copied = 0, usersTouched = 0;
+    for (const u of users.rows) {
+      let perUser = 0;
+      for (const t of tpl.rows) {
+        try {
+          const ex = await pg().query('SELECT 1 FROM media WHERE user_id=$1 AND default_key=$2 LIMIT 1', [u.id, t.key]);
+          if (ex.rows.length) continue;
+          const mid = 'def-' + crypto.randomUUID();
+          await pg().query(
+            `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,created_at,user_id,is_default,default_key)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'default',FALSE,FALSE,$9,$10,$11,$12,$13,$14,NULL,$15,$16,TRUE,$17)`,
+            [mid, t.title, t.type, t.thumbnail, t.full_url || t.thumbnail, t.prompt, t.model, t.ratio,
+             t.oss_url || '', t.oss_object_key || '', t.oss_uploaded || false, t.category, t.status || 'success', t.error_message || '',
+             t.created_at || new Date().toISOString(), u.id, t.key]
+          );
+          copied++; perUser++;
+        } catch (e) {
+          console.warn('[Samples][push] 拷贝失败 user=%s key=%s :', u.id, t.key, e.message);
+        }
+      }
+      if (perUser > 0) usersTouched++;
+    }
+    return { ok: true, pushed: copied, users: usersTouched, totalUsers: users.rows.length };
+  }
+
   async function handleAdmin(req, res, url, method) {
     if (!hasPg()) return sendJSON(res, 503, { error: '数据库不可用' });
     if (!requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
@@ -387,6 +478,32 @@ function createAdmin(ctx) {
         id: Number(x.id), actorId: x.actor_id, action: x.action, target: x.target,
         detail: x.detail || {}, createdAt: x.created_at,
       })));
+    }
+
+    // ───────────────── 示例库（运营维护，推送给顾客） ─────────────────
+    // 注：必须放在 monitor/logbus 闸门之前，避免未注入 monitor 时 503。
+    if (url === '/api/admin/samples' && method === 'GET') {
+      return sendJSON(res, 200, await listSamples());
+    }
+    if (url === '/api/admin/samples' && method === 'POST') {
+      const body = await parseBody(req);
+      try { return sendJSON(res, 200, await createSample(body)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    m = url.match(/^\/api\/admin\/samples\/push$/);
+    if (m && method === 'POST') {
+      try { return sendJSON(res, 200, await pushSamplesToUsers()); }
+      catch (e) { return sendJSON(res, 500, { error: e.message }); }
+    }
+    m = url.match(/^\/api\/admin\/samples\/([^/]+)$/);
+    if (m && method === 'PUT') {
+      const body = await parseBody(req);
+      try { return sendJSON(res, 200, await updateSample(decodeURIComponent(m[1]), body)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (m && method === 'DELETE') {
+      try { return sendJSON(res, 200, await deleteSample(decodeURIComponent(m[1]))); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
     }
 
     // ───────────────── 实时监控 · API 活动流 ─────────────────

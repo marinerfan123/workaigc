@@ -15,6 +15,7 @@ import {
   Cpu,
   Activity,
   ScrollText,
+  Library,
 } from 'lucide-react';
 import { useAuth, logout } from '@/services/authStore';
 import { cn } from '@/components/skeleton';
@@ -25,6 +26,7 @@ const ADMIN_NAV = [
   { to: '/admin/logs', label: '实时日志', icon: ScrollText, end: false, desc: 'PG/Redis/控制台' },
   { to: '/admin/agents', label: '智能体层', icon: Bot, end: false, desc: 'M4 看板+管理' },
   { to: '/admin/users', label: '用户管理', icon: Users, end: false, desc: '列表+手动充值' },
+  { to: '/admin/samples', label: '示例库', icon: Library, end: false, desc: '推送顾客' },
   { to: '/admin/models', label: '模型管理', icon: Cpu, end: false, desc: '沿用 ModelHub' },
   { to: '/admin/transactions', label: '积分流水', icon: Receipt, end: false, desc: 'M2 流水' },
   { to: '/admin/skills', label: '技能注册', icon: Boxes, end: false, desc: 'skill_registry' },
