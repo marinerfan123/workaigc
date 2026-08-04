@@ -38,17 +38,15 @@ const DEFAULT_SETTINGS: IGenerationSettings = {
 };
 
 function WsThumb({ item }: { item: IMediaItem }) {
-  // A 修复扩展：用 useMediaUrlStatus 拿到完整状态，cache-miss 时显示「失效」灰色块
-  // 而不是静默回退到过期的 provider URL（图自动消失的根因）
+  // 媒体 URL 同步解析：OSS 主路径 → provider 兜底（无浏览器本地存储）
   const mediaUrl = useMediaUrlStatus(item);
+  const url = mediaUrl.url;
   return (
     <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-zinc-950">
-      {mediaUrl.isLoading ? (
-        <div className="flex h-full w-full items-center justify-center text-[9px] text-zinc-600">…</div>
-      ) : mediaUrl.isFailed ? (
-        <div className="flex h-full w-full items-center justify-center text-zinc-600" title="图片已失效">⚠</div>
+      {url ? (
+        <Image src={url} alt={item.title} className="h-full w-full object-cover" />
       ) : (
-        <Image src={mediaUrl.url} alt={item.title} className="h-full w-full object-cover" />
+        <div className="flex h-full w-full items-center justify-center text-zinc-600" title="图片已失效">⚠</div>
       )}
     </div>
   );

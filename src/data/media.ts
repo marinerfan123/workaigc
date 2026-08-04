@@ -17,7 +17,6 @@ export interface IMediaItem {
   ossUrl?: string; // OSS 访问链接
   ossObjectKey?: string; // OSS 对象路径
   ossUploaded?: boolean; // 是否已上传到 OSS
-  localCacheKey?: string; // OSS 不可用时的本地 IndexedDB 缓存 key（图片二进制持久化，避免依赖会过期的 provider URL）
   status?: 'success' | 'failed' | 'pending'; // 媒体状态：成功 / 失败 / 生成中（默认 success 兼容历史数据）
   errorMessage?: string; // 失败原因（仅 failed 时有值）
   failedAt?: string; // 失败时间（ISO）

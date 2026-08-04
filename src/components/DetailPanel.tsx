@@ -50,14 +50,12 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
   const [uploadingToOss, setUploadingToOss] = useState(false);
 
   // 顶部预览图探测: 失败/加载中显示友好占位, 不依赖 Image 组件的 onError (后者会切到 src=undefined 显示裂开图)
-  // A 修复扩展：使用 useMediaUrlStatus 拿到完整状态 { url, isLoading, isFailed, reason }。
-  //   - isLoading → 从 IndexedDB 读取中（OSS 失败时走缓存兜底），显示 spinner
-  //   - isFailed (cache-miss) → 缓存读不到，不静默回退过期 URL，显式提示「图片已失效」
-  //   - reason=ready/cache-miss → blob URL 原生支持，跳过 useImageProbe 探测
+  // useMediaUrlStatus 拿到完整状态 { url, isLoading, isFailed, reason }。
+  //   - reason='oss' → OSS 永久链接（首选），跳过 useImageProbe
+  //   - reason='provider' → 模型官方链接兜底，仍走 useImageProbe 探测失效
   const mediaUrl = useMediaUrlStatus(item);
-  const isFromCache = mediaUrl.reason === 'ready' || mediaUrl.reason === 'cache-miss';
   const previewUrl = mediaUrl.url;
-  const previewProbe = useImageProbe(isFromCache ? '' : mediaUrl.url, { timeoutMs: 4000 });
+  const previewProbe = useImageProbe(mediaUrl.reason === 'oss' ? '' : mediaUrl.url, { timeoutMs: 4000 });
 
   // ── pending 进度显示：父级传 progress 则用精确值, 否则自增到 95% (和左侧 MediaCard 保持一致) ──
   const isPending = item?.status === 'pending';
@@ -376,21 +374,6 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
                     />
                   </div>
                 </div>
-              </div>
-            ) : mediaUrl.isFailed ? (
-              /* ─── 缓存读不到占位：显式提示用户「图片已失效」，不再静默回退到过期 URL ─── */
-              <div className="flex flex-col items-center gap-2 p-6 text-center">
-                <ImageIcon className="size-10 text-zinc-500" />
-                <p className="text-xs text-zinc-300">图片已失效</p>
-                <p className="text-[10px] text-zinc-500">本地缓存读取失败，原始链接也已过期</p>
-                <p className="text-[10px] text-zinc-600">请到工作台重新生成此图</p>
-              </div>
-            ) : mediaUrl.isLoading ? (
-              /* ─── IndexedDB 缓存加载中占位 ─── 异步读本地缓存时显示 spinner，避免空白闪烁 */
-              <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-zinc-800/90 via-zinc-900/95 to-zinc-800/90 p-3 text-center">
-                <div className="pointer-events-none absolute inset-0 -translate-x-full shimmer bg-gradient-to-r from-transparent via-white/10 to-transparent" />
-                <Loader2 className="size-8 animate-spin text-emerald-400" />
-                <p className="text-xs text-zinc-300">加载本地缓存…</p>
               </div>
             ) : previewProbe.status === 'failed' ? (
               <div className="flex flex-col items-center gap-2 p-6 text-center">

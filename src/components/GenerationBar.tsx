@@ -27,7 +27,6 @@ import { toast } from 'sonner';
 import { capabilityClient, logger } from '@/services/client-capabilities';
 import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
-import { cacheImage } from '@/utils/imageCache';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
@@ -210,7 +209,6 @@ function GenerationBar({
       let ossUrl = '';
       let ossObjectKey = '';
       let ossUploaded = false;
-      let localCacheKey = '';
       let imgBlob: Blob | null = null;
       try {
         if (resultImages[i].startsWith('data:')) {
@@ -250,26 +248,15 @@ function GenerationBar({
         if (!ossUploaded) {
           logger.warn(`OSS 上传经 ${MAX_ATTEMPTS} 次重试仍失败，回退到模型原始 URL：${resultImages[i].slice(0, 80)}`);
           toast.warning(`图片 ${i + 1} 上传 OSS 失败，已回退使用服务商原始链接（链接可能随时过期）`, { duration: 4000 });
-          // A 修复：OSS 不可用时，把已下载的图片二进制存入 IndexedDB，避免依赖会过期的 provider URL
-          if (imgBlob) {
-            try {
-              await cacheImage(pendingId, imgBlob);
-              localCacheKey = pendingId;
-              logger.info(`图片已存入本地缓存（IndexedDB），key=${pendingId}`);
-            } catch (e) {
-              logger.warn(`本地缓存写入失败：${e instanceof Error ? e.message : String(e)}`);
-            }
-          }
         }
       } else if (!ossConfig.enabled) {
         toast.error('OSS 未开启，请到「模型 Hub → 存储配置」开启', { duration: 5000 });
       }
       const persistentUrl = ossUploaded ? ossUrl : resultImages[i];
       // 不再做 probeImageLoad(provider URL) 探测 —— provider 临时链接没 CORS 头，
-      // <img> 加载受 CORS 限制 onload/onerror 不可靠，会把"OSS 失败 + 缓存兜底"的好图
-      // 误判成 failed 显示为红卡（生产已成功但 UI 看不见）。
-      // A 修复层: 信任服务端 200 (resultImages[i] 已返图 = 生成成功) + IndexedDB 兜底
-      // → finalItem.status 直接 success，UI 层 useMediaUrlStatus 在缓存 miss 时显占位
+      // <img> 加载受 CORS 限制 onload/onerror 不可靠，会把生产已成功的好图误判成 failed。
+      // 信任服务端 200（resultImages[i] 已返图 = 生成成功）→ finalItem.status 直接 success，
+      // UI 层 useMediaUrlStatus 走 OSS 主路径 / provider 兜底，失效链接由 useImageProbe 友好提示。
       const finalItem: IMediaItem = {
         id: pendingId,
         title: ctx.prompt.slice(0, 20) || '生成结果',
@@ -286,12 +273,10 @@ function GenerationBar({
         ossUrl,
         ossObjectKey,
         ossUploaded,
-        localCacheKey,
         progress: 100,
       };
-      // 已移除 probeImageLoad(provider URL) 分支（OSS 失败时探测会误判 failed）。
       // finalItem.status 默认 'success'——server 已返图就是成功。
-      // 显示层由 useMediaUrlStatus 处理：缓存命中显示图，缓存 miss 显示「图片已失效」占位。
+      // 显示层由 useMediaUrlStatus 处理：OSS 链接直接展示，provider 兜底链接失效时由 useImageProbe 提示。
       onGenerate(finalItem);
       success++;
     }
