@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Wallet, Check, Loader2, X, AlertCircle, CreditCard, Smartphone } from 'lucide-react';
 import { useAuth, refreshUser, setAuthModalOpen } from '@/services/authStore';
 import {
