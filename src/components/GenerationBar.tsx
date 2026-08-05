@@ -892,17 +892,19 @@ function GenerationBar({
   return (
     <div className="px-4 pb-7 pt-3">
       <div className="relative z-30 mx-auto max-w-4xl rounded-3xl bg-zinc-900/90 backdrop-blur-xl border border-zinc-800 shadow-2xl shadow-black/40">
-        {/* 顶部：类型切换 + 模型 + 数量（紧凑 pill 行） */}
-        <div className="flex items-center justify-between gap-3 border-b border-zinc-800/80 px-4 py-2.5">
+        {/* 顶部：类型切换 + 模型 + 数量（紧凑 pill 行）
+            - flex-nowrap + overflow-x-auto：窄屏一行水平滑动，不换行
+            - 每个 pill 加 shrink-0 + whitespace-nowrap：防止中文被竖排一字一行 */}
+        <div className="flex flex-nowrap items-center justify-between gap-3 overflow-x-auto border-b border-zinc-800/80 px-4 py-2.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {/* 类型切换 — SegmentedControl 风格（一个圆角容器 + 滑动高亮） */}
-          <div className="flex items-center gap-0.5 rounded-full bg-zinc-800/50 p-0.5">
+          <div className="flex shrink-0 items-center gap-0.5 rounded-full bg-zinc-800/50 p-0.5">
             {(['image', 'video'] as const).map((t) => {
               const active = settings.contentType === t;
               return (
                 <button
                   key={t}
                   onClick={() => onSettingsChange({ ...settings, contentType: t })}
-                  className={`relative z-10 flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-all duration-200 active:scale-95 ${
+                  className={`relative z-10 flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-semibold transition-all duration-200 active:scale-95 ${
                     active
                       ? 'bg-zinc-900 text-emerald-400 shadow-sm shadow-black/40'
                       : 'text-zinc-500 hover:text-zinc-300'
@@ -925,12 +927,12 @@ function GenerationBar({
             })}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {/* 尺寸设置（质量 / 清晰度 / 比例 —— 向上弹窗，一次选择） */}
             <div className="relative">
               <button
                 onClick={() => setSettingsOpen(!settingsOpen)}
-                className="flex h-7 items-center gap-1.5 rounded-full bg-zinc-800/50 pl-2.5 pr-2 text-xs text-white hover:bg-zinc-800 transition-colors"
+                className="flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-zinc-800/50 pl-2.5 pr-2 text-xs text-white hover:bg-zinc-800 transition-colors"
                 title="图像质量 / 清晰度 / 比例"
               >
                 <SlidersHorizontal className="size-3.5 text-zinc-500" />
@@ -1029,7 +1031,7 @@ function GenerationBar({
             <div className="relative">
               <button
                 onClick={() => setModelMenuOpen(!modelMenuOpen)}
-                className="flex h-7 items-center gap-1.5 rounded-full bg-zinc-800/50 pl-2.5 pr-2 text-xs text-white hover:bg-zinc-800 transition-colors"
+                className="flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-zinc-800/50 pl-2.5 pr-2 text-xs text-white hover:bg-zinc-800 transition-colors"
               >
                 <Settings2 className="size-3.5 text-zinc-500" />
                 <span className="max-w-[140px] truncate font-medium">
@@ -1170,7 +1172,7 @@ function GenerationBar({
 
             {/* 数量选择 - 单次请求拿 N 张一样的图片 */}
             <div
-              className="flex items-center rounded-full bg-zinc-800/50 px-1 py-1"
+              className="flex shrink-0 items-center whitespace-nowrap rounded-full bg-zinc-800/50 px-1 py-1"
               title="单次请求返回 N 张图片（不是发 N 次请求）"
             >
               {([1, 2, 3, 4] as const).map((c) => (
@@ -1178,7 +1180,7 @@ function GenerationBar({
                   key={c}
                   type="button"
                   onClick={() => onSettingsChange({ ...settings, count: c })}
-                  className={`group/count relative z-10 flex items-center gap-0.5 rounded-full px-2.5 py-1 text-[10px] font-bold transition-all duration-200 active:scale-95 ${
+                  className={`group/count relative z-10 flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full px-2.5 py-1 text-[10px] font-bold transition-all duration-200 active:scale-95 ${
                     settings.count === c
                       ? 'bg-emerald-500 text-black shadow-md shadow-emerald-500/30'
                       : 'text-zinc-500 hover:text-white'
@@ -1269,7 +1271,7 @@ function GenerationBar({
           </div>
 
           {/* 文本输入 */}
-          <div className="flex-1 relative">
+          <div className="flex-1 min-w-0 relative">
             <textarea
               ref={inputRef}
               value={promptText}

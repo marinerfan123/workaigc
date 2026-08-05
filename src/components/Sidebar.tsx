@@ -28,6 +28,10 @@ interface SidebarProps {
   collapsed: boolean;
   onToggleCollapsed: () => void;
   counts: MediaCounts | null;
+  /** 移动端抽屉是否打开（< md 断点由 Layout 控制） */
+  mobileOpen?: boolean;
+  /** 移动端关闭抽屉回调 */
+  onMobileClose?: () => void;
 }
 
 const NAV_ITEMS = [
@@ -50,7 +54,7 @@ const BOTTOM_ITEMS = [
   { key: 'trash', label: '回收站', icon: Trash2 },
 ];
 
-export default function Sidebar({ collapsed, onToggleCollapsed, counts }: SidebarProps) {
+export default function Sidebar({ collapsed, onToggleCollapsed, counts, mobileOpen = false, onMobileClose }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -63,13 +67,103 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
     return location.pathname === path || location.pathname.startsWith(`${path}/`);
   };
 
+  // 导航点击后自动关闭移动端抽屉
+  const handleNav = (path: string) => {
+    navigate(path);
+    onMobileClose?.();
+  };
+
   return (
-    <aside
-      className={`flex h-full flex-col border-r border-zinc-800 bg-black transition-all duration-300 ${
-        collapsed ? 'w-[64px]' : 'w-[220px]'
-      }`}
-    >
-        {/* 顶部：返回总览 + 项目名 */}
+    <>
+      {/* 桌面端（>= md）：inline aside，常驻左侧 */}
+      <aside
+        className={`hidden md:flex h-full flex-col border-r border-zinc-800 bg-black transition-all duration-300 ${
+          collapsed ? 'w-[64px]' : 'w-[220px]'
+        }`}
+      >
+        <SidebarBody
+          collapsed={collapsed}
+          onToggleCollapsed={onToggleCollapsed}
+          isActive={isActive}
+          counts={counts}
+          projectMenuOpen={projectMenuOpen}
+          setProjectMenuOpen={setProjectMenuOpen}
+          toolsMenuOpen={toolsMenuOpen}
+          setToolsMenuOpen={setToolsMenuOpen}
+          navigate={navigate}
+          projectName={projectName}
+          userRole={user?.role}
+        />
+      </aside>
+
+      {/* 移动端（< md）：fixed 抽屉 overlay，关闭时完全不占布局空间 */}
+      {mobileOpen && (
+        <div className="md:hidden fixed inset-0 z-50">
+          <div
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+            onClick={onMobileClose}
+            aria-hidden="true"
+          />
+          <aside
+            className="absolute left-0 top-0 bottom-0 w-[260px] flex flex-col border-r border-zinc-800 bg-black shadow-2xl shadow-black/60"
+            // 防止内部 fixed backdrop（如 projectMenuOpen/ toolsMenuOpen 的 z-40 全屏遮罩）
+            // 拦截抽屉点击。这里把 aside 内子元素的 fixed 遮罩换成局部遮罩。
+          >
+            <SidebarBody
+              collapsed={false}
+              onToggleCollapsed={onToggleCollapsed}
+              isActive={isActive}
+              counts={counts}
+              projectMenuOpen={projectMenuOpen}
+              setProjectMenuOpen={setProjectMenuOpen}
+              toolsMenuOpen={toolsMenuOpen}
+              setToolsMenuOpen={setToolsMenuOpen}
+              navigate={handleNav}
+              projectName={projectName}
+              userRole={user?.role}
+            />
+          </aside>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * Sidebar 内部主体（被桌面 aside 和移动抽屉复用）
+ * - collapsed=true 时只显示图标
+ * - 提供 onNavigate 钩子（桌面直接 navigate；移动端走 handleNav 关闭抽屉）
+ */
+interface SidebarBodyProps {
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  isActive: (path: string) => boolean;
+  counts: MediaCounts | null;
+  projectMenuOpen: boolean;
+  setProjectMenuOpen: (v: boolean) => void;
+  toolsMenuOpen: boolean;
+  setToolsMenuOpen: (v: boolean) => void;
+  navigate: (path: string) => void;
+  projectName: string;
+  userRole?: string;
+}
+
+function SidebarBody({
+  collapsed,
+  onToggleCollapsed,
+  isActive,
+  counts,
+  projectMenuOpen,
+  setProjectMenuOpen,
+  toolsMenuOpen,
+  setToolsMenuOpen,
+  navigate,
+  projectName,
+  userRole,
+}: SidebarBodyProps) {
+  return (
+    <>
+      {/* 顶部：返回总览 + 项目名 */}
       <div className="flex items-center gap-2 px-3 py-3">
         <button
           onClick={() => navigate('/')}
@@ -135,6 +229,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
               key={item.path}
               to={item.path}
               end={item.end}
+              onClick={() => navigate(item.path)}
               className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-300 ${
                 active
                   ? 'bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20'
@@ -152,7 +247,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
                       : 'bg-zinc-800 text-zinc-400'
                   }`}
                 >
-                  {n > 99 ? '99+' : n}
+                  {n}
                 </span>
               )}
             </NavLink>
@@ -174,6 +269,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
               key={item.path}
               to={item.path}
               end
+              onClick={() => navigate(item.path)}
               className={`flex items-center gap-3 rounded-2xl px-3 py-2 text-xs transition-all duration-300 ${
                 active
                   ? 'bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20'
@@ -191,7 +287,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
                       : 'bg-zinc-800 text-zinc-500'
                   }`}
                 >
-                  {n > 99 ? '99+' : n}
+                  {n}
                 </span>
               )}
             </NavLink>
@@ -207,6 +303,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
         <NavLink
           to="/characters"
           end
+          onClick={() => navigate('/characters')}
           className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-300 ${
             isActive('/characters')
               ? 'bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20'
@@ -227,6 +324,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
         <NavLink
           to="/studio"
           end
+          onClick={() => navigate('/studio')}
           className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-300 ${
             isActive('/studio')
               ? 'bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20'
@@ -240,6 +338,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
         <NavLink
           to="/shop"
           end
+          onClick={() => navigate('/shop')}
           className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-300 ${
             isActive('/shop')
               ? 'bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20'
@@ -250,10 +349,11 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
           <ShoppingBag className="size-4 shrink-0" />
           {!collapsed && <span className="truncate">AI 市集</span>}
         </NavLink>
-        {user?.role === 'admin' && (
+        {userRole === 'admin' && (
         <NavLink
           to="/admin"
           end
+          onClick={() => navigate('/admin')}
           className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition-all duration-300 ${
             isActive('/admin')
               ? 'bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20'
@@ -290,7 +390,7 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
             <>
               <div className="fixed inset-0 z-30" onClick={() => setToolsMenuOpen(false)} />
               <div className="absolute left-0 bottom-full z-40 mb-1 w-48 rounded-2xl bg-zinc-900 border border-zinc-800 p-1.5">
-                {user?.role === 'admin' && (
+                {userRole === 'admin' && (
                 <button
                   onClick={() => {
                     navigate('/model-hub');
@@ -328,6 +428,6 @@ export default function Sidebar({ collapsed, onToggleCollapsed, counts }: Sideba
           )}
         </button>
       </div>
-    </aside>
+    </>
   );
 }

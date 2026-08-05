@@ -56,6 +56,20 @@ function subscribe(l: () => void) {
 }
 function getSnapshot() { return state; }
 
+/**
+ * 把 data: URL 转成 File（浏览器内同步转换，不需要 fetch 外网）。
+ * 用于把"内嵌 base64 图"重新上 OSS：data: 已在本页面，直接 atob 还原字节即可。
+ */
+export function dataUrlToFile(dataUrl: string, fileName: string): File {
+  const [meta, b64] = dataUrl.split(',');
+  const mimeMatch = meta.match(/data:([^;]*);base64/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+  const byteChars = atob(b64);
+  const byteArr = new Uint8Array(byteChars.length);
+  for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
+  return new File([byteArr], fileName, { type: mime });
+}
+
 export function useOssConfig() {
   const s = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const active = useMemo(() => s.configs.find(c => c.id === s.activeId) || null, [s]);

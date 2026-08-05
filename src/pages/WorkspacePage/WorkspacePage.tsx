@@ -14,7 +14,7 @@ import ImageViewer from '@/components/ImageViewer';
 import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub, getModelDisplayNameByDisplayName, getModelCreditCostByDisplayName } from '@/hooks/useModelHub';
-import { useOssConfig } from '@/hooks/useOssConfig';
+import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
 import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
 import type { Ratio, Quality } from '@/data/settings';
@@ -198,7 +198,7 @@ export default function WorkspacePage() {
     if (backfillRef.current) return;
     if (!ossConfig.enabled || mediaList.length === 0) return;
     const needsUpload = mediaList.filter(
-      (m) => m.id !== selectedId && !m.ossUploaded && !m.isDeleted && m.source !== 'mock' && m.status !== 'pending' && m.fullUrl && !m.fullUrl.startsWith('data:'),
+      (m) => m.id !== selectedId && !m.ossUploaded && !m.isDeleted && m.source !== 'mock' && m.status !== 'pending' && m.fullUrl,
     );
     if (needsUpload.length === 0) return;
     backfillRef.current = true;
@@ -209,14 +209,20 @@ export default function WorkspacePage() {
       for (const item of needsUpload) {
         if (cancelled) break;
         try {
-          // 后端代理下载（绕开浏览器 CORS）
-          const proxied = await apiProxyFetch(item.fullUrl!);
-          if (!proxied.success || !proxied.base64) throw new Error(proxied.message || 'proxy failed');
-          const byteChars = atob(proxied.base64);
-          const byteArr = new Uint8Array(byteChars.length);
-          for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
-          const blob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
-          const file = new File([blob], `${item.id}.jpg`, { type: 'image/jpeg' });
+          let file: File;
+          if (item.fullUrl!.startsWith('data:')) {
+            // data: 图已在本页，直接 base64 转 File（不依赖后端代理）
+            file = dataUrlToFile(item.fullUrl!, `${item.id}.jpg`);
+          } else {
+            // 后端代理下载（绕开浏览器 CORS）
+            const proxied = await apiProxyFetch(item.fullUrl!);
+            if (!proxied.success || !proxied.base64) throw new Error(proxied.message || 'proxy failed');
+            const byteChars = atob(proxied.base64);
+            const byteArr = new Uint8Array(byteChars.length);
+            for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
+            const blob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
+            file = new File([blob], `${item.id}.jpg`, { type: 'image/jpeg' });
+          }
           const result = await uploadToOss(file, `${item.id}.jpg`);
           if (result.success) {
             const updated = { ...item, ossUrl: result.url, ossObjectKey: result.objectKey, ossUploaded: true, fullUrl: result.url, thumbnail: result.url } as IMediaItem;

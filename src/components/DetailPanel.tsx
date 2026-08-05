@@ -27,7 +27,7 @@ import { IMediaItem } from '@/data/media';
 import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
 import { toast } from 'sonner';
 import { useImageProbe } from '@/hooks/useImageProbe';
-import { useOssConfig } from '@/hooks/useOssConfig';
+import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { apiProxyFetch } from '@/services/api';
 import { getModelDisplayNameByDisplayName, getModelCreditCostByDisplayName } from '@/hooks/useModelHub';
 
@@ -161,25 +161,27 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
       toast.error('图片链接为空，无法上传');
       return;
     }
-    // 跳过 dataURL（已经持久化）和 OSS 已上传
-    if (item.fullUrl.startsWith('data:')) {
-      toast.info('该图片已内嵌，无需上传 OSS');
-      return;
-    }
+    // 跳过 OSS 已上传
     if (item.ossUploaded) {
       toast.info('该图片已上传 OSS');
       return;
     }
     setUploadingToOss(true);
     try {
-      // 后端代理下载（绕开浏览器 CORS）
-      const proxied = await apiProxyFetch(item.fullUrl);
-      if (!proxied.success || !proxied.base64) throw new Error(proxied.message || '下载图片失败');
-      const byteChars = atob(proxied.base64);
-      const byteArr = new Uint8Array(byteChars.length);
-      for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
-      const blob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
-      const file = new File([blob], `${item.id}.jpg`, { type: blob.type || 'image/jpeg' });
+      let file: File;
+      if (item.fullUrl.startsWith('data:')) {
+        // data: 图已在本页，直接 base64 转 File（不需要 fetch 外网）
+        file = dataUrlToFile(item.fullUrl, `${item.id}.jpg`);
+      } else {
+        // 后端代理下载（绕开浏览器 CORS）
+        const proxied = await apiProxyFetch(item.fullUrl);
+        if (!proxied.success || !proxied.base64) throw new Error(proxied.message || '下载图片失败');
+        const byteChars = atob(proxied.base64);
+        const byteArr = new Uint8Array(byteChars.length);
+        for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
+        const blob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
+        file = new File([blob], `${item.id}.jpg`, { type: blob.type || 'image/jpeg' });
+      }
       const result = await uploadToOss(file, `${item.id}.jpg`);
       if (result.success) {
         // 更新当前 item：OSS 字段 + 替换 fullUrl/thumbnail 为 OSS 永久 URL

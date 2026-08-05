@@ -40,7 +40,7 @@ import {
 } from '@/data/models';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
-import { useOssConfig } from '@/hooks/useOssConfig';
+import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { modelListClient } from '@/services/genericClient';
 import { MOCK_MEDIA_LIST } from '@/data/media';
 import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, apiDeleteModel, stripBlobItems, apiGetProviderStates, apiSetProviderCooldown } from '@/services/api';
@@ -777,7 +777,7 @@ export default function ModelHubPage() {
       const allMedia = await apiGetMedia();
       // 只上传未 OSS 且未被删除的素材
       const items = allMedia.filter(
-        (m: any) => !m.isDeleted && !m.ossUploaded && m.fullUrl && !m.fullUrl.startsWith('data:') && m.source !== 'mock',
+        (m: any) => !m.isDeleted && !m.ossUploaded && m.fullUrl && m.source !== 'mock',
       );
       if (items.length === 0) {
         toast.info('没有需要上传的素材（都已 OSS 持久化或为本地素材）');
@@ -792,15 +792,20 @@ export default function ModelHubPage() {
         setBulkUploadProgress({ current: i + 1, total: items.length });
         const item = items[i] as any;
         try {
-          // 下载图片
-          // 后端代理下载（绕开浏览器 CORS）
-          const proxied = await apiProxyFetch(item.fullUrl);
-          if (!proxied.success || !proxied.base64) throw new Error(proxied.message || 'proxy failed');
-          const byteChars = atob(proxied.base64);
-          const byteArr = new Uint8Array(byteChars.length);
-          for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
-          const blob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
-          const file = new File([blob], `${item.id || 'img'}.jpg`, { type: 'image/jpeg' });
+          let file: File;
+          if (item.fullUrl.startsWith('data:')) {
+            // data: 图已在本页，直接 base64 转 File（不依赖后端代理）
+            file = dataUrlToFile(item.fullUrl, `${item.id || 'img'}.jpg`);
+          } else {
+            // 后端代理下载（绕开浏览器 CORS）
+            const proxied = await apiProxyFetch(item.fullUrl);
+            if (!proxied.success || !proxied.base64) throw new Error(proxied.message || 'proxy failed');
+            const byteChars = atob(proxied.base64);
+            const byteArr = new Uint8Array(byteChars.length);
+            for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
+            const blob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
+            file = new File([blob], `${item.id || 'img'}.jpg`, { type: 'image/jpeg' });
+          }
           // 上传到 OSS
           const uploadResult = await uploadToOss(file, `${item.id || `img-${Date.now()}`}.jpg`);
           if (uploadResult.success) {

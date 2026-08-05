@@ -528,7 +528,7 @@ function applySecurityHeaders(res) {
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; " +
-      "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; " +
+      "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https: ws: wss:; " +
       "frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   );
   if (isProduction) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');

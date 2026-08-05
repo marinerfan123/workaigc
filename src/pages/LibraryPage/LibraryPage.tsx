@@ -22,6 +22,7 @@ import { toast } from 'sonner';
 import MediaCard from '@/components/MediaCard';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { apiGetMedia, apiSaveMedia, apiUpdateMedia, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
+import { useOssConfig } from '@/hooks/useOssConfig';
 
 const CATEGORY_LABELS: Record<string, { label: string; icon: typeof ImageIcon }> = {
   all: { label: '全部素材', icon: Grid3X3 },
@@ -45,6 +46,8 @@ export default function LibraryPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [showFailed, setShowFailed] = useState(false);
+
+  const { enabled: ossEnabled, uploadFile: uploadToOss } = useOssConfig();
 
   const handleRetry = (item: IMediaItem) => {
     // 跳转到 WorkspacePage 并把 retryItem 通过 router state 传过去
@@ -298,12 +301,13 @@ export default function LibraryPage() {
   let uploadIdCounter = 0;
   const handleFiles = async (files: File[]) => {
     const newItems: IMediaItem[] = [];
+    const uploadMeta: { id: string; file: File; isVideo: boolean }[] = [];
     const baseTs = Date.now();
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const isVideo = file.type.startsWith('video/');
       let dataUrl = '';
-      // 图片转 base64 持久化存储，视频用 blob URL（仅当前会话有效）
+      // 图片转 base64 临时显示，视频用 blob URL（仅当前会话有效）
       if (!isVideo) {
         try {
           dataUrl = await fileToBase64(file);
@@ -313,8 +317,9 @@ export default function LibraryPage() {
       } else {
         dataUrl = URL.createObjectURL(file);
       }
+      const id = `upload-${baseTs}-${++uploadIdCounter}`;
       newItems.push({
-        id: `upload-${baseTs}-${++uploadIdCounter}`,
+        id,
         title: file.name.replace(/\.[^.]+$/, ''),
         type: isVideo ? 'video' : 'image',
         thumbnail: dataUrl,
@@ -328,10 +333,44 @@ export default function LibraryPage() {
         source: 'user',
         category: 'upload',
       });
+      uploadMeta.push({ id, file, isVideo });
     }
     setMediaList((prev) => [...newItems, ...prev]);
     setUploadFiles((prev) => [...prev, ...files]);
     toast.success(`已上传 ${files.length} 个文件`);
+
+    // 客户上传即自动上 OSS（符合架构铁律：自有资产必须存 OSS）
+    // 本地 data: 仅作即时预览，上传成功后替换为 OSS 永久链接并标 ossUploaded
+    if (ossEnabled) {
+      for (const meta of uploadMeta) {
+        try {
+          const ext = meta.isVideo
+            ? 'mp4'
+            : meta.file.name.includes('.')
+              ? meta.file.name.split('.').pop()!.toLowerCase()
+              : 'jpg';
+          const result = await uploadToOss(meta.file, `${meta.id}.${ext}`);
+          if (result.success) {
+            setMediaList((prev) =>
+              prev.map((m) =>
+                m.id === meta.id
+                  ? {
+                      ...m,
+                      fullUrl: result.url,
+                      thumbnail: result.url,
+                      ossUrl: result.url,
+                      ossObjectKey: result.objectKey,
+                      ossUploaded: true,
+                    }
+                  : m,
+              ),
+            );
+          }
+        } catch {
+          // 静默：自动补传失败不影响本地预览（data: 仍可用）
+        }
+      }
+    }
   };
 
   // 上传的内容页：显示上传区 + 已上传列表
