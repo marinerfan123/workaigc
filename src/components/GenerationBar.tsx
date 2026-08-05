@@ -428,9 +428,18 @@ function GenerationBar({
       ? currentModel.supportedResolutions
       : [];
 
-  // 当前模型所属服务商对「当前分辨率档」配置的 RPM 限速（用于 UI 提示 + 错误兜底）
+  // 当前模型所属服务商对「当前分辨率档」配置的每分钟上限（用于 UI 提示 + 错误兜底）
   const currentProvider = currentModel ? providers.find((p) => p.id === currentModel.providerId) : undefined;
-  const currentRateLimit = currentProvider?.rateLimits?.[settings.resolution || '1k'];
+  const currentRateLimit = currentProvider ? (() => {
+    const rl = (currentProvider.rateLimits || {}) as any;
+    const res = settings.contentType === 'video' ? 'video' : (settings.resolution || '1k');
+    if (rl && typeof rl === 'object' && rl.bucket_units_per_min != null && rl.ops) {
+      const cost = rl.ops[res] ?? 1;
+      return Math.max(0, Math.floor((Number(rl.bucket_units_per_min) || 20) / (cost || 1)));
+    }
+    const v = rl && typeof rl === 'object' ? rl[res] : undefined;
+    return typeof v === 'number' ? v : undefined;
+  })() : undefined;
 
   // 本地 dev 降级用占位图：避免 MOCK_MEDIA_LIST 的平台专有路径 404
   const LOCAL_PLACEHOLDER_SVG = `data:image/svg+xml,${encodeURIComponent(

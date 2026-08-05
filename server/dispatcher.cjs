@@ -12,12 +12,16 @@ let GLOBAL_ACTIVE = 0;
 let GLOBAL_MAX = 10;
 let RR_POINTER = 0;
 
-// ─── RPM 感知调度：每账号每分辨率令牌桶 + 最少使用优先 ───
+// ─── 统一共享 B 桶调度（方向 A 受限账号）/ unlimited（方向 B 普通付费）───
 // 单实例内存态（PM2 必须 instances:1，见 deploy/ecosystem.config.cjs）。
 // 多实例横向扩展需把 ACCT 状态迁至 Redis（deployment-plan.md §6）。
 const ACCT = {};
-const DEFAULT_RPM = { '1k': 20, '2k': 10, '4k': 1, '8k': 1 };
-const CONC_CAP = { '1k': 4, '2k': 3, '4k': 1, '8k': 1 };
+const DEFAULT_BUCKET = 20;                              // 默认 B：每账号每 60s 可用 B 个「单位」
+const DEFAULT_OP_COST = { '1k': 1, '2k': 2, '4k': 20, 'video': 20 }; // 各操作消耗单位（cap=floor(B/cost)）
+const DEFAULT_RPM = { '1k': 20, '2k': 10, '4k': 1, '8k': 1 };        // 仅旧格式 {RPM上限} 归一用
+const DEFAULT_COOLDOWN_MS = 60000;                     // 整账号冷却默认 60s（可调）
+const ACCOUNT_CONC_CAP = 4;                            // 单账号并发硬上限（与 provider.max_concurrent 取小）
+const MAX_RETRY = 3;                                   // 单任务「全部账号不可用」时的最多重试（无感切换）
 
 // ─── 占位符替换 ─────────────────────────────────────
 function fillTemplate(template, vars) {
@@ -210,89 +214,138 @@ function makeError(body, status, fallback) {
   return { status: 'error', error: `${fallback}：${errMsg}`, images: [], videoUrl: '', rateLimited: status === 429 };
 }
 
-// ─── RPM 感知调度：令牌获取 / 释放 ───────────────────
-// 每个 (账号 × 分辨率) 一桶：令牌桶按时间回流（cap 个/60s），
-// 累计用量 used[tier] 用于「最少使用优先」精确均匀分配。
-// 厂商限额：1K=20 RPM、2K=10 RPM、4K=1 RPM（可由 providers.rate_limits 覆盖）
-function rateFor(provider, tier) {
-  const rl = provider && provider.rate_limits;
-  const v = rl && typeof rl === 'object' ? rl[tier] : undefined;
-  if (typeof v === 'number' && v > 0) return v;
-  return DEFAULT_RPM[tier] || 10;
+// ─── 统一共享 B 桶调度 ─────────────────────────────
+// 旧格式 rate_limits = {"1k":20,"2k":10,"4k":1}（值为每分钟上限 RPM）。
+// 新格式 rate_limits = { bucket_units_per_min:B, ops:{1k,2k,4k,video}, manual_state? }
+//   · ops 的值是「每次操作消耗的单位数」，cap[op] = floor(B / cost[op])
+//   · 所有操作（1k/2k/4k/video）从同一桶扣 → 单账号额度共享
+//   · manual_state('hot'|'cold')：管理员手动强切（持久化到 rate_limits JSONB，随库恢复）
+function normalizeRateLimits(rl) {
+  if (rl && typeof rl === 'object' && rl.ops && typeof rl.bucket_units_per_min === 'number') {
+    const out = { bucket_units_per_min: rl.bucket_units_per_min, ops: { ...DEFAULT_OP_COST, ...rl.ops } };
+    if (rl.manual_state) out.manual_state = rl.manual_state;
+    return out;
+  }
+  // 旧格式：值是各分辨率 RPM 上限 → 归一为成本（cost = B / cap）
+  const old = (rl && typeof rl === 'object') ? rl : {};
+  const B = (typeof old['1k'] === 'number' && old['1k'] > 0) ? old['1k'] : DEFAULT_BUCKET;
+  const ops = {};
+  for (const t of ['1k', '2k', '4k', 'video']) {
+    const cap = (typeof old[t] === 'number' && old[t] > 0)
+      ? old[t]
+      : (t === '1k' ? DEFAULT_RPM['1k'] : t === '2k' ? DEFAULT_RPM['2k'] : DEFAULT_RPM['4k']);
+    ops[t] = Math.max(1, Math.round(B / cap));
+  }
+  return { bucket_units_per_min: B, ops };
 }
 
-function getAcct(pid, provider, tier) {
+function costFor(a, tier) {
+  const c = a.ops && a.ops[tier];
+  return (typeof c === 'number' && c > 0) ? c : (DEFAULT_OP_COST[tier] || 1);
+}
+
+function getAcct(pid, provider) {
   if (!ACCT[pid]) {
+    const norm = normalizeRateLimits(provider && provider.rate_limits);
     ACCT[pid] = {
-      tier: {},
-      conc: { '1k': 0, '2k': 0, '4k': 0 },
-      used: { '1k': 0, '2k': 0, '4k': 0 },
-      cooldown: { '1k': 0, '2k': 0, '4k': 0 },
+      bucketB: norm.bucket_units_per_min,
+      ops: norm.ops,
+      manualState: norm.manual_state || null,
+      cooldownMs: DEFAULT_COOLDOWN_MS,
+      bucket: { cap: norm.bucket_units_per_min, tokens: norm.bucket_units_per_min, last: Date.now() },
+      conc: 0,
+      cooldownUntil: 0,
+      consecutiveRejects: 0,
+      capacityModel: (provider && provider.capacity_model === 'unlimited') ? 'unlimited' : 'limited',
     };
   }
   const a = ACCT[pid];
-  if (!a.tier[tier]) {
-    const cap = rateFor(provider, tier);
-    a.tier[tier] = { cap, tokens: cap, last: Date.now() };
+  // 热改生效：DB 改 rate_limits / capacity_model / cooldown_ms 立即同步（不重置桶余额）
+  if (provider) {
+    const norm = normalizeRateLimits(provider.rate_limits);
+    a.bucketB = norm.bucket_units_per_min;
+    a.ops = norm.ops;
+    a.manualState = norm.manual_state || null;
+    a.bucket.cap = norm.bucket_units_per_min;
+    if (provider.capacity_model) a.capacityModel = (provider.capacity_model === 'unlimited') ? 'unlimited' : 'limited';
+    if (typeof provider.cooldown_ms === 'number' && provider.cooldown_ms > 0) a.cooldownMs = provider.cooldown_ms;
   }
   return a;
 }
 
-// 令牌桶按时间回流：cap 个令牌 / 60 秒
-function refill(b, now) {
-  const dt = (now - b.last) / 1000;
-  if (dt > 0) b.tokens = Math.min(b.cap, b.tokens + dt * (b.cap / 60));
-  b.last = now;
+// 令牌桶按时间回流：B 个令牌 / 60 秒
+function refillAccount(a, now) {
+  const dt = (now - a.bucket.last) / 1000;
+  if (dt > 0) a.bucket.tokens = Math.min(a.bucket.cap, a.bucket.tokens + dt * (a.bucket.cap / 60));
+  a.bucket.last = now;
 }
 
-function acquireOne(pairs, tier) {
-  tier = tier || '1k';
-  while (true) {
-    if (GLOBAL_ACTIVE < GLOBAL_MAX) {
-      const now = Date.now();
-      const order = pairs.slice(RR_POINTER).concat(pairs.slice(0, RR_POINTER));
-      const cand = [];
-      for (const p of order) {
-        const pid = p.provider.id;
-        const a = getAcct(pid, p.provider, tier);
-        a.tier[tier].cap = rateFor(p.provider, tier); // 运行时同步 cap（DB 改 rate_limits 立即生效）
-        if (now < a.cooldown[tier]) continue;          // 该账号该分辨率熔断中，跳过
-        refill(a.tier[tier], now);
-        if (a.tier[tier].tokens < 1) continue;         // 本账号本分辨率 RPM 已耗尽
-        const concCap = Math.min(Number(p.provider.max_concurrent) || 2, CONC_CAP[tier]);
-        if (a.conc[tier] >= concCap) continue;          // 单账号并发已满
-        cand.push({ p, a });
-      }
-      if (cand.length === 0) {
-        // 全部账号本分辨率都已满 → 让出事件循环稍后重试（不报错，避免 429）
-        return sleep(120).then(() => acquireOne(pairs, tier));
-      }
-      // ★ 精确均匀分配：挑「本分辨率累计用量最少」的账号
-      cand.sort((x, y) => x.a.used[tier] - y.a.used[tier]);
-      const { p, a } = cand[0];
-      a.tier[tier].tokens -= 1;
-      a.conc[tier] += 1;
-      a.used[tier] += 1;
-      GLOBAL_ACTIVE += 1;
-      RR_POINTER = (RR_POINTER + 1) % pairs.length;
-      return p;
+function isCold(a, now) {
+  if (a.manualState === 'cold') return true;
+  if (a.manualState === 'hot') return false;
+  return now < a.cooldownUntil;
+}
+
+// 拒单：切下一个供应商、不扣费、不返错；首次拒单即冷，连续 3 拒也冷（双路径，任一即冷却）
+function markReject(a, now) {
+  a.consecutiveRejects += 1;
+  a.cooldownUntil = now + (a.cooldownMs || DEFAULT_COOLDOWN_MS);
+}
+
+// 在单个账号上尝试一次生成；账号不可用（冷却/桶空/并发满）或失败（429/异常）返回 null（上层切下一个）
+async function attemptOnAccount(p, tier, input, contentType) {
+  const now = Date.now();
+  const a = getAcct(p.provider.id, p.provider);
+  if (isCold(a, now)) { markReject(a, now); return null; }     // 整账号冷却 → 拒单切下一个
+  refillAccount(a, now);
+  const cost = costFor(a, tier);
+  if (a.capacityModel !== 'unlimited' && a.bucket.tokens < cost) { markReject(a, now); return null; } // 共享桶空 → 拒单
+  const concCap = Math.min(Number(p.provider.max_concurrent) || 2, ACCOUNT_CONC_CAP);
+  if (a.conc >= concCap) return null;                          // 单账号并发满（非拒单，仅忙）
+  if (a.capacityModel !== 'unlimited') a.bucket.tokens -= cost; // 占用单位
+  a.conc += 1; GLOBAL_ACTIVE += 1;
+  try {
+    const res = contentType === 'video'
+      ? await videoGenerate(p.provider, p.model, input)
+      : await imageGenerate(p.provider, p.model, input);
+    if (res && res.rateLimited) {                              // 真实 429 → 退还、整账号冷却、拒单（不扣费）
+      if (a.capacityModel !== 'unlimited') a.bucket.tokens += cost;
+      a.conc -= 1; GLOBAL_ACTIVE -= 1;
+      markReject(a, now);
+      return null;
     }
-    return sleep(120).then(() => acquireOne(pairs, tier));
+    a.consecutiveRejects = 0;                                  // 成功 → 重置拒单计数、释放并发槽
+    a.conc -= 1; GLOBAL_ACTIVE -= 1;
+    return { ...res, providerId: p.provider.id };
+  } catch (e) {
+    if (a.capacityModel !== 'unlimited') a.bucket.tokens += cost;
+    a.conc -= 1; GLOBAL_ACTIVE -= 1;
+    markReject(a, now);
+    return null;
   }
 }
 
-function releaseOne(p, tier) {
-  tier = tier || '1k';
-  GLOBAL_ACTIVE = Math.max(0, GLOBAL_ACTIVE - 1);
-  const a = ACCT[p.provider.id];
-  if (a) a.conc[tier] = Math.max(0, a.conc[tier] - 1);
+// 单任务：轮询所有账号，拒单静默切下一个；全部不可用 → 有界退避重试；仍失败 → throttled（无硬错、前台无感）
+async function dispatchOne(pairs, tier, input, contentType) {
+  for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
+    const seq = pairs.slice(RR_POINTER).concat(pairs.slice(0, RR_POINTER));
+    for (const p of seq) {
+      if (GLOBAL_ACTIVE >= GLOBAL_MAX) { await sleep(120); break; }
+      const r = await attemptOnAccount(p, tier, input, contentType);
+      if (r) { RR_POINTER = (RR_POINTER + 1) % pairs.length; return r; }
+    }
+    await sleep(200 * (attempt + 1));                          // 整轮回不可用 → 短退避后重试
+  }
+  return { status: 'throttled', retryAfter: DEFAULT_COOLDOWN_MS, images: [], providerId: null, error: '资源紧张，请稍候重试' };
 }
 
 // ─── 主入口 ────────────────────────────────────────
 async function generate(pgPool, opts) {
   const { model, prompt, ratio, resolution, count, contentType, referenceImages } = opts;
-  // 分辨率 → RPM 桶：1k/2k/4k 各有独立限额；未知分辨率一律按 1k 处理
-  const tier = ['1k', '2k', '4k', '8k'].includes(resolution) ? resolution : '1k';
+  // 分辨率 → 桶档位：video 走 video 档（cost=20，与 4k 同权重）；8k 按 4k 计；未知按 1k
+  const tier = contentType === 'video' ? 'video'
+    : (['1k', '2k', '4k'].includes(resolution) ? resolution
+      : (resolution === '8k' ? '4k' : '1k'));
 
   // 1. 全局最大并发
   try {
@@ -329,37 +382,13 @@ async function generate(pgPool, opts) {
     return { status: 'failed', error: '该模型没有可用的已启用服务商（请检查服务商密钥与启用状态）', images: [] };
   }
 
-  // 5. 并发分配
+  // 5. 并发分配：单任务内部已做「拒单静默切下一个供应商」+「全部不可用 → throttled」
   const total = Math.max(1, Math.min(4, Number(count) || 1));
   const tasks = [];
   for (let i = 0; i < total; i++) {
     tasks.push((async () => {
-      const p = await acquireOne(pairs, tier);
-      try {
-        const input = {
-          provider: p.provider,
-          model: p.model,
-          prompt,
-          ratio,
-          resolution,
-          count: 1,
-          referenceImages,
-        };
-        const res = contentType === 'video' ? await videoGenerate(p.provider, p.model, input) : await imageGenerate(p.provider, p.model, input);
-        if (res && res.rateLimited) {
-          // 该账号该分辨率命中厂商 RPM/429 限流 → 临时熔断 60s，避免反复打爆
-          const a = getAcct(p.provider.id, p.provider, tier);
-          a.cooldown[tier] = Date.now() + 60000;
-        }
-        if (contentType === 'video') {
-          return res.videoUrl ? { images: [res.videoUrl], status: res.status, error: res.error, providerId: p.provider.id } : { images: [], status: res.status, error: res.error, providerId: p.provider.id };
-        }
-        return { ...res, providerId: p.provider.id };
-      } catch (e) {
-        return { images: [], status: 'error', error: (e && e.message) || String(e), providerId: p.provider.id };
-      } finally {
-        releaseOne(p, tier);
-      }
+      const input = { prompt, ratio, resolution, count: 1, referenceImages };
+      return dispatchOne(pairs, tier, input, contentType);
     })());
   }
 
@@ -367,8 +396,10 @@ async function generate(pgPool, opts) {
   const images = [];
   const errors = [];
   const usedProviders = [];
+  let throttled = false;
   for (const r of results) {
     if (r.providerId) usedProviders.push(r.providerId);
+    if (r.status === 'throttled') { throttled = true; if (r.error) errors.push(r.error); continue; }
     if (r.images && r.images.length) {
       images.push(r.images[0]);
     } else if (r.error) {
@@ -378,6 +409,9 @@ async function generate(pgPool, opts) {
   const usedProvidersUniq = [...new Set(usedProviders)];
   if (images.length > 0) {
     return { status: 'success', images, source: 'provider', errors: errors.length ? errors : undefined, usedProviders: usedProvidersUniq };
+  }
+  if (throttled) {
+    return { status: 'throttled', retryAfter: DEFAULT_COOLDOWN_MS, error: errors[0] || '资源紧张，请稍候重试', images: [], usedProviders: usedProvidersUniq };
   }
   return { status: 'failed', error: errors[0] || '所有服务商生成失败', images: [], usedProviders: usedProvidersUniq };
 }
@@ -510,5 +544,53 @@ async function listActiveTasks(pgPool, userId) {
 // 导出内部调度函数（供测试 / 调试断言 RPM 门控与均匀分配用）
 module.exports = {
   generate, generateAsync, getTaskStatus, listActiveTasks, callEndpoint, getByPath, getArrayByPath,
-  acquireOne, releaseOne, getAcct, rateFor,
+  getAcct, normalizeRateLimits, costFor, getAccountStates, setManualState,
 };
+
+// ─── 管理面板用：账号冷热状态快照 + 手动强切（持久化到 rate_limits JSONB / cooldown_ms 列）───
+function getAccountStates() {
+  const out = {};
+  const now = Date.now();
+  for (const pid of Object.keys(ACCT)) {
+    const a = ACCT[pid];
+    out[pid] = {
+      capacityModel: a.capacityModel,
+      bucketUnitsPerMin: a.bucketB,
+      tokens: Math.round(a.bucket.tokens * 100) / 100,
+      cap: a.bucket.cap,
+      conc: a.conc,
+      cooldownUntil: a.cooldownUntil,
+      cooldownMs: a.cooldownMs,
+      cold: isCold(a, now),
+      manualState: a.manualState,
+      consecutiveRejects: a.consecutiveRejects,
+      ops: a.ops,
+    };
+  }
+  return out;
+}
+
+function setManualState(pid, state, cooldownMs, pgPool) {
+  const a = ACCT[pid];
+  if (a) {
+    a.manualState = state || null;
+    if (typeof cooldownMs === 'number' && cooldownMs > 0) a.cooldownMs = cooldownMs;
+    if (state === 'cold') a.cooldownUntil = Date.now() + (a.cooldownMs || DEFAULT_COOLDOWN_MS);
+  }
+  // 持久化：manual_state 写入 rate_limits JSONB；cooldown_ms 写独立列（随库恢复，重启后仍生效）
+  if (pgPool) {
+    pgPool.query('SELECT rate_limits FROM providers WHERE id=$1', [pid])
+      .then((r) => {
+        if (!r.rows[0]) return;
+        const rl = (r.rows[0].rate_limits && typeof r.rows[0].rate_limits === 'object') ? r.rows[0].rate_limits : {};
+        if (state) rl.manual_state = state; else delete rl.manual_state;
+        const cols = ['rate_limits=$1'];
+        const params = [JSON.stringify(rl)];
+        if (typeof cooldownMs === 'number' && cooldownMs > 0) { cols.push('cooldown_ms=$2'); params.push(cooldownMs); }
+        params.push(pid);
+        return pgPool.query(`UPDATE providers SET ${cols.join(', ')} WHERE id=$${params.length}`, params);
+      })
+      .catch(() => {});
+  }
+  return a ? { ok: true, state: a.manualState } : { ok: false, error: '账号不存在' };
+}

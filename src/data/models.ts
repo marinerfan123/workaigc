@@ -101,8 +101,15 @@ export interface IModelProvider {
   defaultEndpoint?: IModelEndpoint;
   /** 单服务商最大同时生成数（调度器均衡分配用） */
   maxConcurrent?: number;
-  /** 每分辨率档位的 RPM 限速（每分钟请求数）；键为 '1k'|'2k'|'4k'|'8k'，缺省=不限制（用调度器默认档位上限） */
-  rateLimits?: Record<string, number>;
+  /** 限速配置。新格式：{ bucket_units_per_min:B, ops:{1k,2k,4k,video}(各操作单位消耗) }；
+   *  旧格式（兼容）：{ '1k':RPM,'2k':RPM,'4k':RPM } 值为每分钟上限，后端自动归一。 */
+  rateLimits?: { bucket_units_per_min?: number; ops?: Record<string, number>; [k: string]: any };
+  /** 容量模型：'limited'=共享B桶受限账号（方向A）；'unlimited'=普通付费账号无限速（方向B） */
+  capacityModel?: 'limited' | 'unlimited';
+  /** 粒度上限（B 的最大允许值）；留空=不限制（前端警告，可忽略） */
+  bucketMax?: number | null;
+  /** 整账号冷却时长（毫秒）；默认 60000 */
+  cooldownMs?: number;
 }
 
 export interface IAiModel {

@@ -107,6 +107,14 @@ export async function apiSaveProviders(items: any[]) {
 export async function apiDeleteProvider(id: string) {
   try { await apiFetch(`/api/providers/${id}`, { method: 'DELETE' }); } catch {}
 }
+// 账号冷热状态快照（调度器内存态）
+export async function apiGetProviderStates(): Promise<Record<string, any>> {
+  try { const r = await apiFetch<{ states: Record<string, any> }>('/api/providers/states'); return r.states || {}; } catch { return {}; }
+}
+// 手动强切账号冷热：state='hot'|'cold'|null；cooldownMs 可选（秒→毫秒由后端处理？此处传毫秒）
+export async function apiSetProviderCooldown(id: string, state: string | null, cooldownMs?: number) {
+  try { return await apiFetch(`/api/providers/${id}/cooldown`, { method: 'POST', body: JSON.stringify({ state, cooldownMs }) }); } catch { return null; }
+}
 
 // ─── Models ─────────────────────────────────────
 export async function apiGetModels(): Promise<any[]> {

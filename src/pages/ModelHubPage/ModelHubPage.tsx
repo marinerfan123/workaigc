@@ -50,7 +50,7 @@ import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { modelListClient } from '@/services/genericClient';
 import { MOCK_MEDIA_LIST } from '@/data/media';
-import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, stripBlobItems } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, stripBlobItems, apiGetProviderStates, apiSetProviderCooldown } from '@/services/api';
 import EndpointsTab from './EndpointsTab';
 import PairingTab from './PairingTab';
 import AsyncAddDialog from './AsyncAddDialog';
@@ -79,6 +79,89 @@ const PROVIDER_TYPE_ICONS: Record<ProviderType, typeof Server> = {
   relay: Server,
   custom: Puzzle,
 };
+
+// ─── 调度状态面板：账号冷热 / 实时共享桶，每 3s 轮询 + 管理员手动强切 ───
+function ProviderSchedulerStatus({ providers }: { providers: any[] }) {
+  const [states, setStates] = useState<Record<string, any>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      const s = await apiGetProviderStates();
+      if (alive) setStates(s || {});
+    };
+    load();
+    const t = setInterval(load, 3000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  const toggle = async (id: string, state: string | null) => {
+    const key = id + (state ?? 'auto');
+    setBusy(key);
+    await apiSetProviderCooldown(id, state);
+    setStates(await apiGetProviderStates() || {});
+    setBusy(null);
+  };
+
+  return (
+    <div className="rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="text-sm font-bold text-white">调度状态 · 账号冷热</h3>
+        <span className="text-[10px] text-zinc-500">每 3s 刷新</span>
+      </div>
+      {providers.length === 0 ? (
+        <p className="text-xs text-zinc-500">暂无服务商。</p>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          {providers.map((p) => {
+            const st = states[p.id];
+            const cold = !!st?.cold;
+            const manual = st?.manualState;
+            const isUnlimited = st?.capacityModel === 'unlimited' || p.capacityModel === 'unlimited';
+            return (
+              <div key={p.id} className="rounded-2xl border border-zinc-800 bg-zinc-800/30 p-3">
+                <div className="flex items-center justify-between">
+                  <span className="truncate text-xs font-semibold text-white">{p.name}</span>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${cold ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
+                    {cold ? '冷' : '热'}
+                  </span>
+                </div>
+                <div className="mt-2 text-[10px] text-zinc-500">
+                  {isUnlimited
+                    ? '方向B · 无限速'
+                    : `B=${st?.bucketUnitsPerMin ?? '?'} 余 ${st?.tokens ?? '?'} · 并发 ${st?.conc ?? 0}`}
+                  {manual ? ` · 手动:${manual}` : ''}
+                </div>
+                <div className="mt-2 flex gap-1.5">
+                  {(['cold', 'hot', null] as const).map((s) => {
+                    const key = p.id + (s ?? 'auto');
+                    const label = s === 'cold' ? '强制冷' : s === 'hot' ? '强制热' : '自动';
+                    const cls = s === 'cold'
+                      ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
+                      : s === 'hot'
+                        ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                        : 'bg-zinc-700/40 text-zinc-300 hover:bg-zinc-700';
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => toggle(p.id, s)}
+                        disabled={busy === key}
+                        className={`flex-1 rounded-lg py-1 text-[10px] transition-colors disabled:opacity-50 ${cls}`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function ModelHubPage() {
   const { providers, models, setProviders, setModels, deleteProvider, deleteModel, cleanupOrphanModels, getProviderName } = useModelHub();
@@ -144,8 +227,12 @@ export default function ModelHubPage() {
   const [formProtocol, setFormProtocol] = useState<'openai-compatible' | 'custom'>('openai-compatible');
   const [showApiKey, setShowApiKey] = useState(false);
   const [formMaxConcurrent, setFormMaxConcurrent] = useState(2);
-  // 每分辨率档位的 RPM（每分钟请求数）限速；留空=不限制（用调度器默认档位上限）
-  const [formRateLimits, setFormRateLimits] = useState<Record<string, number>>({});
+  // 容量模型与限速（统一共享 B 桶）
+  const [formCapacityModel, setFormCapacityModel] = useState<'limited' | 'unlimited'>('limited');
+  const [formBucketUnits, setFormBucketUnits] = useState(20);            // B：每账号每 60s 可用单位
+  const [formBucketMax, setFormBucketMax] = useState<number | ''>('');   // 粒度上限；''=不限制
+  const [formCooldownSec, setFormCooldownSec] = useState(60);            // 整账号冷却（秒）
+  const [formOpCosts, setFormOpCosts] = useState<Record<'1k' | '2k' | '4k' | 'video', number>>({ '1k': 1, '2k': 2, '4k': 20, video: 20 });
 
   // 全局调度设置（最大并发）
   const [maxThreads, setMaxThreads] = useState(10);
@@ -181,7 +268,11 @@ export default function ModelHubPage() {
     setFormRemark('');
     setFormProtocol('openai-compatible');
     setFormMaxConcurrent(2);
-    setFormRateLimits({});
+    setFormCapacityModel('limited');
+    setFormBucketUnits(20);
+    setFormBucketMax('');
+    setFormCooldownSec(60);
+    setFormOpCosts({ '1k': 1, '2k': 2, '4k': 20, video: 20 });
     setShowApiKey(false);
     setProviderDialogOpen(true);
   };
@@ -197,7 +288,26 @@ export default function ModelHubPage() {
     setFormRemark(provider.remark || '');
     setFormProtocol(provider.protocol || 'openai-compatible');
     setFormMaxConcurrent(provider.maxConcurrent ?? 2);
-    setFormRateLimits(provider.rateLimits || {});
+    // 解析限速配置（兼容新旧格式）
+    const rl = (provider.rateLimits || {}) as any;
+    if (rl && typeof rl === 'object' && rl.bucket_units_per_min != null && rl.ops) {
+      setFormCapacityModel(provider.capacityModel === 'unlimited' ? 'unlimited' : 'limited');
+      setFormBucketUnits(Number(rl.bucket_units_per_min) || 20);
+      setFormOpCosts({ '1k': rl.ops['1k'] ?? 1, '2k': rl.ops['2k'] ?? 2, '4k': rl.ops['4k'] ?? 20, video: rl.ops['video'] ?? 20 });
+    } else if (rl && typeof rl === 'object' && (rl['1k'] != null || rl['2k'] != null || rl['4k'] != null)) {
+      // 旧格式 RPM → 折算 B 与成本（仅展示用，后端会重新归一）
+      const B = Number(rl['1k']) || 20;
+      const cap = (t: string) => (rl[t] != null ? Number(rl[t]) : (t === '1k' ? B : t === '2k' ? B / 2 : 1));
+      setFormCapacityModel('limited');
+      setFormBucketUnits(B);
+      setFormOpCosts({ '1k': 1, '2k': Math.max(1, Math.round(B / cap('2k'))), '4k': Math.max(1, Math.round(B / cap('4k'))), video: Math.max(1, Math.round(B / cap('4k'))) });
+    } else {
+      setFormCapacityModel(provider.capacityModel === 'unlimited' ? 'unlimited' : 'limited');
+      setFormBucketUnits(20);
+      setFormOpCosts({ '1k': 1, '2k': 2, '4k': 20, video: 20 });
+    }
+    setFormBucketMax(provider.bucketMax != null ? Number(provider.bucketMax) : '');
+    setFormCooldownSec(Math.round((provider.cooldownMs || 60000) / 1000));
     setShowApiKey(false);
     setProviderDialogOpen(true);
   };
@@ -212,18 +322,29 @@ export default function ModelHubPage() {
       return;
     }
 
-    // 仅保留合法的正数 RPM 限速（0 / 空 / NaN 视为不限制，不入库）
-    const rateLimits: Record<string, number> = {};
-    for (const t of ['1k', '2k', '4k', '8k'] as const) {
-      const v = Number(formRateLimits[t]);
-      if (Number.isFinite(v) && v > 0) rateLimits[t] = v;
+    // 限速配置：方向 A 受限账号 → 新格式 {bucket_units_per_min, ops}；方向 B → 空
+    const rateLimits: any = formCapacityModel === 'limited'
+      ? {
+          bucket_units_per_min: Number(formBucketUnits) || 20,
+          ops: { '1k': formOpCosts['1k'], '2k': formOpCosts['2k'], '4k': formOpCosts['4k'], video: formOpCosts['video'] },
+        }
+      : {};
+    const capacityMeta = {
+      capacityModel: formCapacityModel,
+      bucketMax: formBucketMax === '' ? null : Number(formBucketMax),
+      cooldownMs: (Number(formCooldownSec) || 60) * 1000,
+    };
+    // 设了上限则 B 不得超过（后端同样会校验，此处前端先拦）
+    if (formCapacityModel === 'limited' && formBucketMax !== '' && (Number(formBucketUnits) || 20) > Number(formBucketMax)) {
+      toast.error(`B(${formBucketUnits}) 超过粒度上限 bucket_max(${formBucketMax})`);
+      return;
     }
 
     if (editingProvider) {
       setProviders((prev) =>
         prev.map((p) =>
           p.id === editingProvider.id
-            ? { ...p, name: formName, type: formType, baseUrl: formBaseUrl, apiKey: formApiKey, supportedTypes: formTypes, enabled: formEnabled, remark: formRemark, protocol: formProtocol, maxConcurrent: formMaxConcurrent, rateLimits }
+            ? { ...p, name: formName, type: formType, baseUrl: formBaseUrl, apiKey: formApiKey, supportedTypes: formTypes, enabled: formEnabled, remark: formRemark, protocol: formProtocol, maxConcurrent: formMaxConcurrent, rateLimits, ...capacityMeta }
             : p,
         ),
       );
@@ -238,6 +359,7 @@ export default function ModelHubPage() {
         apiKey: formApiKey,
         maxConcurrent: formMaxConcurrent,
         rateLimits,
+        ...capacityMeta,
         supportedTypes: formTypes,
         enabled: formEnabled,
         remark: formRemark,
@@ -1240,6 +1362,9 @@ export default function ModelHubPage() {
               </div>
             </div>
 
+          {/* 调度状态：账号冷热 / 实时共享桶（每 3s 刷新 + 手动强切） */}
+          <ProviderSchedulerStatus providers={providers} />
+
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {providers.map((provider) => {
               const TypeIcon = PROVIDER_TYPE_ICONS[provider.type];
@@ -2067,38 +2192,95 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                 </p>
               </div>
 
-              {/* 每分辨率档位 RPM 限速 */}
+              {/* 容量模型 + 统一共享 B 桶限速 */}
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">
-                  每分辨率限速（RPM）<span className="text-zinc-500">（每分钟请求数，留空=不限制）</span>
-                </label>
-                <div className="grid grid-cols-4 gap-2">
-                  {(['1k', '2k', '4k', '8k'] as const).map((t) => (
-                    <div key={t}>
-                      <div className="mb-1 text-center text-[10px] text-zinc-500">{t}</div>
-                      <input
-                        type="number"
-                        min={1}
-                        max={1000}
-                        value={formRateLimits[t] ?? ''}
-                        onChange={(e) =>
-                          setFormRateLimits((prev) => {
-                            const next = { ...prev };
-                            const val = e.target.value.trim();
-                            if (val === '') delete next[t];
-                            else next[t] = Number(val) || 0;
-                            return next;
-                          })
-                        }
-                        placeholder="不限"
-                        className="w-full rounded-xl bg-zinc-800/50 px-2 py-2 text-center text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                      />
-                    </div>
+                <label className="mb-1.5 block text-xs font-medium text-zinc-400">容量模型</label>
+                <div className="flex items-center gap-2">
+                  {([['limited', '受限账号（共享 B 桶）'], ['unlimited', '普通付费（无限速）']] as const).map(([v, label]) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setFormCapacityModel(v)}
+                      className={`flex-1 rounded-2xl py-2 text-xs font-semibold transition-all duration-200 ${
+                        formCapacityModel === v
+                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                          : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700 hover:text-white'
+                      }`}
+                    >
+                      {label}
+                    </button>
                   ))}
                 </div>
-                <p className="mt-1 text-[10px] text-zinc-500">
-                  对应服务商物理限速（如某些免费档 1 req/min）。调度器按此上限节流，避免触发服务商 429 限流。
-                </p>
+
+                {formCapacityModel === 'limited' ? (
+                  <div className="mt-3 space-y-3">
+                    {/* B 与上限 */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="mb-1 block text-[10px] text-zinc-500">B（每账号每分钟单位）</label>
+                        <input
+                          type="number" min={1} max={100000}
+                          value={formBucketUnits}
+                          onChange={(e) => setFormBucketUnits(Number(e.target.value) || 1)}
+                          className="w-full rounded-xl bg-zinc-800/50 px-3 py-2 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] text-zinc-500">粒度上限 bucket_max（留空=不限制）</label>
+                        <input
+                          type="number" min={1} max={100000}
+                          value={formBucketMax}
+                          onChange={(e) => setFormBucketMax(e.target.value === '' ? '' : Number(e.target.value))}
+                          placeholder="不限"
+                          className="w-full rounded-xl bg-zinc-800/50 px-3 py-2 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                        />
+                      </div>
+                    </div>
+                    {formBucketMax === '' && (
+                      <p className="text-[10px] text-amber-400/80">⚠ 未设上限：B 可任意调大，请确认服务商物理限速允许。</p>
+                    )}
+                    {formBucketMax !== '' && (Number(formBucketUnits) || 20) > Number(formBucketMax) && (
+                      <p className="text-[10px] text-red-400">✕ B 超过粒度上限，保存将被拒绝。</p>
+                    )}
+
+                    {/* 各操作单位消耗（cost）→ 派生每分钟上限 */}
+                    <div>
+                      <label className="mb-1 block text-[10px] text-zinc-500">各操作单位消耗（cost，可改；上限 = floor(B/cost)）</label>
+                      <div className="grid grid-cols-4 gap-2">
+                        {(['1k', '2k', '4k', 'video'] as const).map((t) => {
+                          const cost = formOpCosts[t] || 1;
+                          const cap = Math.max(0, Math.floor((Number(formBucketUnits) || 20) / (cost || 1)));
+                          return (
+                            <div key={t}>
+                              <div className="mb-1 text-center text-[10px] text-zinc-500">{t}</div>
+                              <input
+                                type="number" min={1} max={1000}
+                                value={cost}
+                                onChange={(e) => setFormOpCosts((prev) => ({ ...prev, [t]: Number(e.target.value) || 1 }))}
+                                className="w-full rounded-xl bg-zinc-800/50 px-2 py-2 text-center text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                              />
+                              <div className="mt-1 text-center text-[9px] text-emerald-400/80">≤ {cap}/min</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-[10px] text-zinc-500">方向 B：按付费计费，无速率限制，仅受并发约束。4k/视频亦无限速。</p>
+                )}
+
+                {/* 整账号冷却时长 */}
+                <div className="mt-3">
+                  <label className="mb-1 block text-[10px] text-zinc-500">整账号冷却时长（秒，默认 60，可调）</label>
+                  <input
+                    type="number" min={1} max={3600}
+                    value={formCooldownSec}
+                    onChange={(e) => setFormCooldownSec(Number(e.target.value) || 60)}
+                    className="w-full rounded-xl bg-zinc-800/50 px-3 py-2 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                  />
+                  <p className="mt-1 text-[10px] text-zinc-500">拒单（桶空 / 真实 429 / 连续失败）后整账号冷却此时长，到期自动恢复（冷→热）。</p>
+                </div>
               </div>
 
               {/* 协议类型 */}

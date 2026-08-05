@@ -49,6 +49,9 @@ async function initDB() {
         remark TEXT DEFAULT '',
         default_endpoint JSONB DEFAULT '{}',
         rate_limits JSONB DEFAULT '{"1k":20,"2k":10,"4k":1}',
+        capacity_model TEXT DEFAULT 'limited',
+        bucket_max INT,
+        cooldown_ms INT DEFAULT 60000,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
@@ -127,6 +130,16 @@ async function initDB() {
     // 兼容已部署库：补 rate_limits 列（RPM 感知调度用）
     await client.query(`
       ALTER TABLE providers ADD COLUMN IF NOT EXISTS rate_limits JSONB DEFAULT '{"1k":20,"2k":10,"4k":1}';
+    `);
+    // 兼容已部署库：补容量模型相关列（统一共享 B 桶 / unlimited / 冷却时长）
+    await client.query(`
+      ALTER TABLE providers ADD COLUMN IF NOT EXISTS capacity_model TEXT DEFAULT 'limited';
+    `);
+    await client.query(`
+      ALTER TABLE providers ADD COLUMN IF NOT EXISTS bucket_max INT;
+    `);
+    await client.query(`
+      ALTER TABLE providers ADD COLUMN IF NOT EXISTS cooldown_ms INT DEFAULT 60000;
     `);
 
     console.log('[PG] 数据库表初始化完成');

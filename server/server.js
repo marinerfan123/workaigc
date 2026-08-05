@@ -67,7 +67,7 @@ async function initDB() {
     });
     await pgPool.query('SELECT 1');
     await pgPool.query(`
-      CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT DEFAULT 'official', base_url TEXT DEFAULT '', api_key TEXT DEFAULT '', supported_types TEXT[] DEFAULT '{}', enabled BOOLEAN DEFAULT TRUE, protocol TEXT DEFAULT 'openai-compatible', remark TEXT DEFAULT '', default_endpoint JSONB DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT DEFAULT 'official', base_url TEXT DEFAULT '', api_key TEXT DEFAULT '', supported_types TEXT[] DEFAULT '{}', enabled BOOLEAN DEFAULT TRUE, protocol TEXT DEFAULT 'openai-compatible', remark TEXT DEFAULT '', default_endpoint JSONB DEFAULT '{}', capacity_model TEXT DEFAULT 'limited', bucket_max INT, cooldown_ms INT DEFAULT 60000, created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, mapping_name TEXT DEFAULT '', type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', credit_cost INT DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, title TEXT DEFAULT '', type TEXT DEFAULT 'image', thumbnail TEXT DEFAULT '', full_url TEXT DEFAULT '', prompt TEXT DEFAULT '', model TEXT DEFAULT '', ratio TEXT DEFAULT '1:1', source TEXT DEFAULT 'user', is_favorite BOOLEAN DEFAULT FALSE, is_deleted BOOLEAN DEFAULT FALSE, oss_url TEXT DEFAULT '', oss_object_key TEXT DEFAULT '', oss_uploaded BOOLEAN DEFAULT FALSE, category TEXT DEFAULT 'generated', status TEXT DEFAULT 'success', error_message TEXT DEFAULT '', failed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW());
       -- 兼容旧库：缺失列自动补齐
@@ -82,6 +82,9 @@ async function initDB() {
       CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value JSONB NOT NULL DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW());
       ALTER TABLE providers ADD COLUMN IF NOT EXISTS max_concurrent INT DEFAULT 2;
       ALTER TABLE providers ADD COLUMN IF NOT EXISTS rate_limits JSONB DEFAULT '{}'::jsonb;
+      ALTER TABLE providers ADD COLUMN IF NOT EXISTS capacity_model TEXT DEFAULT 'limited';
+      ALTER TABLE providers ADD COLUMN IF NOT EXISTS bucket_max INT;
+      ALTER TABLE providers ADD COLUMN IF NOT EXISTS cooldown_ms INT DEFAULT 60000;
       -- 生成任务表（用于刷新恢复：前端点生成即插一行，后台跑完后更新结果，前端刷新后能查到状态）
       CREATE TABLE IF NOT EXISTS generation_tasks (
         task_id TEXT PRIMARY KEY,
@@ -386,7 +389,7 @@ const SNAKE_MAP = {
   full_url:'fullUrl', oss_url:'ossUrl', oss_object_key:'ossObjectKey', oss_uploaded:'ossUploaded',
   is_favorite:'isFavorite', is_deleted:'isDeleted', created_at:'createdAt', base_url:'baseUrl',
   api_key:'apiKey', supported_types:'supportedTypes', default_endpoint:'defaultEndpoint',
-  display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent', rate_limits:'rateLimits', mapping_name:'mappingName', credit_cost:'creditCost',
+  display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent', rate_limits:'rateLimits', mapping_name:'mappingName', credit_cost:'creditCost', capacity_model:'capacityModel', bucket_max:'bucketMax', cooldown_ms:'cooldownMs',
   supported_resolutions:'supportedResolutions', access_point_name:'accessPointName',
   endpoint_external:'endpointExternal', endpoint_internal:'endpointInternal',
   access_key_id:'accessKeyId', access_key_secret:'accessKeySecret',
@@ -1105,9 +1108,14 @@ async function handleAPI(req, res) {
             const ex = await pgPool.query('SELECT api_key FROM providers WHERE id=$1', [s.id]);
             if (ex.rows[0]?.api_key) apiKey = ex.rows[0].api_key;
           }
+          // 容量上限校验：设了 bucket_max 则 B 不得超过（未设则不限制，前端警告可忽略）
+          const rl = (s.rate_limits && typeof s.rate_limits === 'object') ? s.rate_limits : {};
+          if (typeof rl.bucket_units_per_min === 'number' && s.bucket_max != null && rl.bucket_units_per_min > Number(s.bucket_max)) {
+            return sendJSON(res, 400, { error: `B(${rl.bucket_units_per_min}) 超过粒度上限 bucket_max(${s.bucket_max})` });
+          }
           await pgPool.query(
-            `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent,rate_limits) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled,max_concurrent=EXCLUDED.max_concurrent,rate_limits=EXCLUDED.rate_limits`,
-            [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2, JSON.stringify(s.rate_limits || {})]
+            `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent,rate_limits,capacity_model,bucket_max,cooldown_ms) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled,max_concurrent=EXCLUDED.max_concurrent,rate_limits=EXCLUDED.rate_limits,capacity_model=EXCLUDED.capacity_model,bucket_max=EXCLUDED.bucket_max,cooldown_ms=EXCLUDED.cooldown_ms`,
+            [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2, JSON.stringify(s.rate_limits || {}), s.capacity_model || 'limited', s.bucket_max != null ? Number(s.bucket_max) : null, Number(s.cooldown_ms) || 60000]
           );
         }
         return sendJSON(res, 200, { ok: true });
@@ -1120,6 +1128,19 @@ async function handleAPI(req, res) {
     for (const it of arr) { const idx = list.findIndex(p => p.id === it.id); if (idx >= 0) list[idx] = it; else list.push(it); }
     writeJSON('providers', list);
     return sendJSON(res, 200, { ok: true });
+  }
+  // 账号冷热状态快照（内存态，供管理面板展示 + 手动强切）
+  if (url === '/api/providers/states' && method === 'GET') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    return sendJSON(res, 200, { states: dispatcher.getAccountStates() });
+  }
+  // 手动强切账号冷热：{ state:'hot'|'cold'|null, cooldownMs? }（持久化到 rate_limits.manual_state / cooldown_ms 列）
+  if (url.match(/^\/api\/providers\/[^/]+\/cooldown$/) && method === 'POST') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    const id = url.split('/api/providers/')[1].split('/')[0];
+    const body = await parseBody(req); if (!body) return sendJSON(res, 400, { error: 'Invalid JSON' });
+    const r = dispatcher.setManualState(id, body.state || null, Number(body.cooldownMs) || null, pgPool);
+    return sendJSON(res, r.ok ? 200 : 400, r);
   }
   if (url.startsWith('/api/providers/') && method === 'DELETE') {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
