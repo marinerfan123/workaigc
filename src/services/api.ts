@@ -228,22 +228,30 @@ export async function apiTestOss(config: Record<string, any>): Promise<{
 }
 
 /**
- * 上传文件到 active OSS（走后端代理，按 provider_type 自动分发到阿里云/腾讯云）
+ * 向业务服务器申请 OSS 直传预签名（后端零字节：只鉴权 + 锁 userId 前缀 + 签发 PUT/GET 预签名）。
+ * 返回的 putUrl 由浏览器直接 fetch PUT 到 OSS；getUrl 为 7 天有效访问签名。
  */
-export async function apiUploadToOss(
-  objectKey: string,
-  contentBase64: string,
-): Promise<{ success: boolean; url: string; objectKey: string; size?: number; message?: string; providerType?: string }> {
+export async function apiSignOssUpload(
+  fileName: string,
+  contentType: string,
+): Promise<{
+  success: boolean;
+  objectKey?: string;
+  putUrl?: string;
+  getUrl?: string;
+  putExpires?: number;
+  expires?: number;
+  providerType?: string;
+  message?: string;
+}> {
   try {
-    return await apiFetch('/api/oss/upload', {
+    return await apiFetch('/api/oss/sign-upload', {
       method: 'POST',
-      body: JSON.stringify({ objectKey, contentBase64 }),
+      body: JSON.stringify({ fileName, contentType }),
     });
   } catch (e) {
     return {
       success: false,
-      url: '',
-      objectKey,
       message: (e instanceof Error ? e.message : String(e)).slice(0, 100),
     };
   }

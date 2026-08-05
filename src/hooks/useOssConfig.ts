@@ -7,7 +7,7 @@ import {
 import {
   apiGetOss, apiSetOssEnabled, apiCreateOssSlot, apiUpdateOssSlot,
   apiDeleteOssSlot, apiActivateOssSlot, apiTestOssSlot, apiTestOss,
-  apiUploadToOss, ensureApi,
+  apiSignOssUpload, ensureApi,
 } from '@/services/api';
 
 // ─── 多槽位 OSS 共享状态（仅内存，持久化全部走后端 API） ────────────
@@ -140,37 +140,64 @@ export function useOssConfig() {
   }, [active]);
 
   /**
-   * 上传文件到 active OSS
+   * 上传文件到 active OSS —— 浏览器直连 OSS 预签名 PUT（业务服务器零字节）。
+   * 流程：① 向业务服务器申请 PUT 预签名（仅鉴权 + 签 URL）② 浏览器直接 fetch PUT blob 到 OSS ③ 返回 7 天 GET 签名。
    */
   const uploadFile = useCallback(
     async (
       file: File | Blob,
       fileName: string,
-    ): Promise<{ success: boolean; url: string; objectKey: string; providerType?: string }> => {
+    ): Promise<{ success: boolean; url: string; objectKey: string; providerType?: string; error?: string }> => {
       if (!s.enabled || !active) {
-        return { success: false, url: '', objectKey: '' };
+        return { success: false, url: '', objectKey: '', error: 'OSS 未启用或无 active 槽位' };
       }
       if (!active.accessKeyId || !active.accessKeySecret) {
-        return { success: false, url: '', objectKey: '' };
+        return { success: false, url: '', objectKey: '', error: 'active 槽位缺少 AK/SK' };
       }
-      const base64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          const idx = result.indexOf(',');
-          resolve(idx >= 0 ? result.slice(idx + 1) : result);
+      const contentType = file.type || 'image/jpeg';
+      // ① 向业务服务器要 PUT 预签名（零字节，后端只鉴权 + 锁 userId 前缀 + 签名）
+      const sign = await apiSignOssUpload(fileName, contentType);
+      if (!sign.success || !sign.putUrl) {
+        return {
+          success: false,
+          url: '',
+          objectKey: sign.objectKey || '',
+          providerType: sign.providerType,
+          error: sign.message || 'sign-upload 失败（无 putUrl）',
         };
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-      });
-      const prefix = active.pathPrefix || 'images/';
-      const fileNameOnly = fileName.includes('/') ? fileName.split('/').pop()! : fileName;
-      const objectKey = `${prefix}${Date.now()}_${fileNameOnly}`;
-      const result = await apiUploadToOss(objectKey, base64);
-      if (result.success) {
-        return { success: true, url: result.url, objectKey: result.objectKey, providerType: result.providerType };
       }
-      return { success: false, url: '', objectKey, providerType: result.providerType };
+      // ② 浏览器直接 PUT 字节到 OSS（直连，业务服务器不经过字节流）
+      try {
+        const putRes = await fetch(sign.putUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': contentType },
+          body: file,
+        });
+        if (!putRes.ok) {
+          const txt = await putRes.text().catch(() => '');
+          const snippet = txt.slice(0, 120);
+          console.error(`[OSS] 直传失败 HTTP ${putRes.status}:`, snippet);
+          return {
+            success: false,
+            url: '',
+            objectKey: sign.objectKey,
+            providerType: sign.providerType,
+            error: `PUT HTTP ${putRes.status}${putRes.statusText ? ' ' + putRes.statusText : ''}${snippet ? `: ${snippet}` : ''}`,
+          };
+        }
+        // ③ 返回 7 天 GET 签名作为可访问 URL
+        return { success: true, url: sign.getUrl || '', objectKey: sign.objectKey || '', providerType: sign.providerType };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error('[OSS] 直传异常:', e);
+        return {
+          success: false,
+          url: '',
+          objectKey: sign.objectKey,
+          providerType: sign.providerType,
+          error: `直传异常: ${msg}`,
+        };
+      }
     },
     [s.enabled, active],
   );

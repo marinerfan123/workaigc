@@ -195,7 +195,7 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
         }
         toast.success('已上传到 OSS ✅');
       } else {
-        toast.error(`OSS 上传失败：${(result as any).message || '未知错误'}`);
+        toast.error(`OSS 上传失败：${result.error || '未知错误'}`);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

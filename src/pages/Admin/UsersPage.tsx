@@ -171,27 +171,6 @@ export async function apiTestOss(config: Record<string, any>): Promise<{
     return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 100) };
   }
 }
-/**
- * 上传文件到 OSS（走后端代理）
- */
-export async function apiUploadToOss(
-  objectKey: string,
-  contentBase64: string,
-): Promise<{ success: boolean; url: string; objectKey: string; size?: number; message?: string }> {
-  try {
-    return await apiFetch('/api/oss/upload', {
-      method: 'POST',
-      body: JSON.stringify({ objectKey, contentBase64 }),
-    });
-  } catch (e) {
-    return {
-      success: false,
-      url: '',
-      objectKey,
-      message: (e instanceof Error ? e.message : String(e)).slice(0, 100),
-    };
-  }
-}
 
 // ─── Characters ─────────────────────────────────
 export async function apiGetCharacters(): Promise<any[]> {

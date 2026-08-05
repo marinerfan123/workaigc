@@ -45,6 +45,7 @@ import adminMod from './admin.cjs'; // Phase 2 运营总控台(M3) + 全局智�
 import shopMod from './shop.cjs';   // Phase 5 电商模块（AI 市集）：商品/购物车/订单
 import paymentsMod from './payments.cjs'; // Phase 2 收尾：充值订单 + DEV 支付适配器(M2 账务)
 import monitorMod from './monitor.cjs'; // 后台「实时监控 · API 活动流」(全路径环形缓冲 + SSE 广播)
+import ossLoggerMod from './oss-logger.cjs'; // OssConfigPanel 专用实时日志（仅 /api/oss/*，含脱敏）
 import logbusMod from './logbus.cjs';   // 后台「实时日志 · 数据库/Redis/控制台」(统一日志总线 + SSE 广播)
 import financeMod from './finance.cjs';  // Phase 4 后台账务系统（底层：总览/对账/账本/套餐）
 import meMod from './me.cjs';            // 用户侧账务（积分流水 / 充值订单 / 概览）
@@ -629,6 +630,8 @@ const traffic = {
 const monitor = monitorMod.createMonitor();   // 后台实时监控：所有 HTTP 请求(API + 静态资产)的环形缓冲 + SSE 流
 monitor.startMetricsTimer();                   // 1s 广播一次 60s 滚动指标
 
+const ossLogger = ossLoggerMod.createOssLogger();  // OSS 实时日志：仅 /api/oss/* 端点埋点 + SSE 流（前端 OssConfigPanel 订阅）
+
 const admin = adminMod.createAdmin({
   getPg: () => pgPool,
   session,
@@ -778,7 +781,7 @@ async function handleMe(req, res) {
 }
 
 async function handleAPI(req, res) {
-  const url = req.url.replace(/\/$/, '');
+  const url = req.url.replace(/\/$/, '').split('?')[0];   // 去掉尾部斜杠 + query，让所有 `url === '/api/...'` 路由不吃 query
   const method = req.method;
   const reqUrl = new URL(req.url, 'http://localhost');
   req.query = Object.fromEntries(reqUrl.searchParams);
@@ -1617,6 +1620,34 @@ async function handleAPI(req, res) {
     const host = `https://${hostName}`;
     return { rawUrl: `${host}/${objectKey}`, signedUrl: `${host}/${objectKey}?q-sign-algorithm=sha1&q-ak=${secretId}&q-sign-time=${qKeyTime}&q-key-time=${qKeyTime}&q-header-list=host&q-url-param-list=&q-signature=${signature}`, expires: Math.floor(Date.now() / 1000) + 7 * 24 * 3600 };
   }
+  // ── 浏览器直传专用：query-string 形式 PUT 预签名（不依赖 forbidden header） ──
+  // 阿里云 OSS 的 header 签名依赖 Date/Content-MD5（浏览器无法手动设置），
+  // 腾讯云 COS 的 header 签名依赖 Host（浏览器会覆写），两者直传都必须走 URL 签名。
+  function aliyunPutSignUrl(cfg, objectKey, contentType) {
+    const host = aliyunHost(cfg);
+    const rawUrl = `https://${host}/${objectKey}`;
+    const expires = Math.floor(Date.now() / 1000) + 3600; // PUT 预签名 1h 足够
+    // PUT 签名（无 MD5）：PUT\n\n{contentType}\n{expires}\n/{bucket}/{objectKey}
+    const putSignStr = `PUT\n\n${contentType}\n${expires}\n/${cfg.bucket}/${objectKey}`;
+    const putSig = crypto.createHmac('sha1', cfg.accessKeySecret).update(putSignStr).digest('base64');
+    const putUrl = `${rawUrl}?OSSAccessKeyId=${encodeURIComponent(cfg.accessKeyId)}&Expires=${expires}&Signature=${encodeURIComponent(putSig)}`;
+    const { signedUrl, expires: getExpires } = aliyunBuildSignedUrls(cfg, objectKey);
+    return { rawUrl, putUrl, getUrl: signedUrl, expires: getExpires, putExpires: expires };
+  }
+  function tencentCosPutSignUrl(cfg, objectKey, contentType) {
+    const hostName = cfg._hostName || `${cfg.bucket}${cfg.appId ? '-' + cfg.appId : ''}.cos.${cfg.region || 'ap-shanghai'}.myqcloud.com`;
+    const host = `https://${hostName}`;
+    const secretId = cfg.accessKeyId;
+    const secretKey = cfg.accessKeySecret;
+    const qKeyTime = `${Math.floor(Date.now() / 1000)};${Math.floor(Date.now() / 1000) + 3600}`;
+    const signKey = crypto.createHmac('sha1', secretKey).update(qKeyTime).digest();
+    const httpString = `put\n/${objectKey}\n\nhost=${hostName}\n`;
+    const stringToSign = `sha1\n${qKeyTime}\n${crypto.createHash('sha1').update(httpString).digest('hex')}\n`;
+    const signature = crypto.createHmac('sha1', signKey).update(stringToSign).digest('hex');
+    const putUrl = `${host}/${objectKey}?q-sign-algorithm=sha1&q-ak=${secretId}&q-sign-time=${qKeyTime}&q-key-time=${qKeyTime}&q-header-list=host&q-url-param-list=&q-signature=${signature}`;
+    const { signedUrl, expires } = tencentCosSignUrl(cfg, objectKey);
+    return { rawUrl: `${host}/${objectKey}`, putUrl, getUrl: signedUrl, expires, putExpires: Math.floor(Date.now() / 1000) + 3600 };
+  }
   // 公共：从 oss_configs 拉所有（或单条）
   async function loadOssConfigs(pgPool) {
     if (pgPool) {
@@ -1646,11 +1677,16 @@ async function handleAPI(req, res) {
       return `腾讯云 COS PUT HTTP ${status}: ${text}`;
     }
   }
+  // OSS 实时日志（前端 OssConfigPanel 订阅）。细节会在 record() 内自动脱敏。
+  const ossLog = (level, action, message, details) => ossLogger[level](action, message, details);
+  const adminId = (req) => req.user?.id || req.user?.email || 'guest';
 
   // ── OSS 总览（enabled + active + configs 列表） ──
   if (url === '/api/oss' && method === 'GET') {
+    const t0 = Date.now();
     const { enabled, activeId, list } = await loadOssConfigs(pgPool);
     const active = list.find(c => c.id === activeId) || null;
+    ossLog('info', 'list', `读取 OSS 总览：${list.length} 个槽位，活跃 ${active?.bucket || '无'}`, { durationMs: Date.now() - t0, slotCount: list.length, activeBucket: active?.bucket });
     return sendJSON(res, 200, {
       enabled,
       activeId,
@@ -1674,13 +1710,15 @@ async function handleAPI(req, res) {
   if (url === '/api/oss' && method === 'PUT') {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const body = await parseBody(req) || {};
+    const next = body.enabled !== false;
     if (pgPool) {
-      await pgPool.query("UPDATE oss_config SET enabled=$1 WHERE id=1", [body.enabled !== false]);
-      return sendJSON(res, 200, { ok: true });
+      await pgPool.query("UPDATE oss_config SET enabled=$1 WHERE id=1", [next]);
+    } else {
+      const settings = readJSON('oss_settings') || {};
+      settings.enabled = next;
+      writeJSON('oss_settings', settings);
     }
-    const settings = readJSON('oss_settings') || {};
-    settings.enabled = body.enabled !== false;
-    writeJSON('oss_settings', settings);
+    ossLog('success', 'toggle', `OSS 总开关 → ${next ? '开' : '关'}（操作员 ${adminId(req)}）`, { enabled: next });
     return sendJSON(res, 200, { ok: true });
   }
 
@@ -1691,6 +1729,7 @@ async function handleAPI(req, res) {
     const id = decodeURIComponent(cfgMatch[1]);
     const body = await parseBody(req) || {};
     if (!body.providerType || !['aliyun-oss', 'tencent-cos'].includes(body.providerType)) {
+      ossLog('warn', 'save', `保存槽位 ${id} 失败：providerType 非法`, { id });
       return sendJSON(res, 200, { ok: false, error: 'providerType 必须为 aliyun-oss 或 tencent-cos' });
     }
     const row = {
@@ -1721,6 +1760,7 @@ async function handleAPI(req, res) {
       if (idx >= 0) arr[idx] = row; else arr.push(row);
       writeJSON('oss_configs', arr);
     }
+    ossLog('success', 'save', `保存槽位 ${id}（${row.providerType}, bucket=${row.bucket}）`, { id, providerType: row.providerType, bucket: row.bucket, displayName: row.displayName });
     return sendJSON(res, 200, { ok: true, id });
   }
   if (cfgMatch && method === 'DELETE') {
@@ -1733,6 +1773,7 @@ async function handleAPI(req, res) {
       const arr = Array.isArray(readJSON('oss_configs')) ? readJSON('oss_configs') : [];
       writeJSON('oss_configs', arr.filter(c => c.id !== id));
     }
+    ossLog('success', 'delete', `删除槽位 ${id}`, { id });
     return sendJSON(res, 200, { ok: true });
   }
   const newCfgMatch = url === '/api/oss/configs' && method === 'POST';
@@ -1752,6 +1793,7 @@ async function handleAPI(req, res) {
       arr.push(row);
       writeJSON('oss_configs', arr);
     }
+    ossLog('success', 'create', `创建槽位 ${id}（${row.providerType}）`, { id, providerType: row.providerType, displayName: row.displayName });
     return sendJSON(res, 200, { ok: true, ...row });
   }
 
@@ -1761,7 +1803,10 @@ async function handleAPI(req, res) {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const id = decodeURIComponent(actMatch[1]);
     const { list } = await loadOssConfigs(pgPool);
-    if (!list.find(c => c.id === id)) return sendJSON(res, 200, { ok: false, error: '槽位不存在' });
+    if (!list.find(c => c.id === id)) {
+      ossLog('warn', 'activate', `切活失败：槽位 ${id} 不存在`, { id });
+      return sendJSON(res, 200, { ok: false, error: '槽位不存在' });
+    }
     if (pgPool) {
       await pgPool.query('UPDATE oss_config SET active_id=$1 WHERE id=1', [id]);
     } else {
@@ -1769,6 +1814,7 @@ async function handleAPI(req, res) {
       settings.activeId = id;
       writeJSON('oss_settings', settings);
     }
+    ossLog('success', 'activate', `切活 → ${id}`, { id });
     return sendJSON(res, 200, { ok: true, activeId: id });
   }
 
@@ -1782,18 +1828,24 @@ async function handleAPI(req, res) {
   if (testMatch || cfgTestMatch) {
     const paramCfg = await parseBody(req) || {};
     if (testMatch && (cfgMatch || cfgTestMatch)) {/* not here */}
+    let testSlotId = null;
     if (testMatch) {
       if (!paramCfg?.accessKeyId || !paramCfg?.accessKeySecret || !paramCfg?.bucket) {
+        ossLog('warn', 'test', '试连失败：AccessKey/AccessKeySecret/Bucket 不能为空', { providerType: paramCfg.providerType });
         return sendJSON(res, 200, { success: false, message: 'AccessKey/AccessKeySecret/Bucket 不能为空' });
       }
       cfg = { providerType: paramCfg.providerType || 'aliyun-oss', bucket: paramCfg.bucket, region: paramCfg.region, appId: paramCfg.appId, accessKeyId: paramCfg.accessKeyId, accessKeySecret: paramCfg.accessKeySecret, endpointExternal: paramCfg.endpointExternal };
     } else {
       if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
-      const id = decodeURIComponent(cfgTestMatch[1]);
+      testSlotId = decodeURIComponent(cfgTestMatch[1]);
       const { list } = await loadOssConfigs(pgPool);
-      cfg = list.find(c => c.id === id);
-      if (!cfg) return sendJSON(res, 200, { success: false, message: '槽位不存在' });
+      cfg = list.find(c => c.id === testSlotId);
+      if (!cfg) {
+        ossLog('warn', 'test', `试连失败：槽位 ${testSlotId} 不存在`, { id: testSlotId });
+        return sendJSON(res, 200, { success: false, message: '槽位不存在' });
+      }
     }
+    const t0 = Date.now();
     try {
       let url2put, headers;
       if (cfg.providerType === 'tencent-cos') {
@@ -1808,70 +1860,102 @@ async function handleAPI(req, res) {
         headers = h.headers;
       }
       const r = await fetch(url2put, { method: 'PUT', headers, body: Buffer.alloc(1) });
+      const dur = Date.now() - t0;
       // 200 = 写到了；403/401/400 = 鉴权/权限错，但说明能连上；404 = 不该发生的；200 + 403 各自含义不同
-      if (r.status === 200) return sendJSON(res, 200, { success: true, message: `连接成功，${cfg.providerType} Bucket "${cfg.bucket}" 可写`, status: 200 });
-      if (r.status === 403) return sendJSON(res, 200, { success: false, message: diagnoseOssError(cfg.providerType, 403, await r.text()), status: 403 });
-      if (r.status === 404) return sendJSON(res, 200, { success: false, message: diagnoseOssError(cfg.providerType, 404, await r.text()), status: 404 });
-      return sendJSON(res, 200, { success: false, message: diagnoseOssError(cfg.providerType, r.status, await r.text()), status: r.status });
+      if (r.status === 200) {
+        ossLog('success', 'test', `试连成功：${cfg.providerType} ${cfg.bucket}（${dur}ms）`, { id: testSlotId, providerType: cfg.providerType, bucket: cfg.bucket, status: 200, durationMs: dur });
+        return sendJSON(res, 200, { success: true, message: `连接成功，${cfg.providerType} Bucket "${cfg.bucket}" 可写`, status: 200 });
+      }
+      const msg = diagnoseOssError(cfg.providerType, r.status, await r.text());
+      ossLog('error', 'test', `试连失败：${cfg.providerType} ${cfg.bucket} → HTTP ${r.status}`, { id: testSlotId, providerType: cfg.providerType, bucket: cfg.bucket, status: r.status, durationMs: dur, error: msg });
+      if (r.status === 403) return sendJSON(res, 200, { success: false, message: msg, status: 403 });
+      if (r.status === 404) return sendJSON(res, 200, { success: false, message: msg, status: 404 });
+      return sendJSON(res, 200, { success: false, message: msg, status: r.status });
     } catch (e) {
-      return sendJSON(res, 200, { success: false, message: `网络异常：${e.message.slice(0, 100)}` });
+      const msg = `网络异常：${e.message.slice(0, 100)}`;
+      ossLog('error', 'test', `试连异常：${cfg.providerType} ${cfg.bucket}`, { id: testSlotId, providerType: cfg.providerType, bucket: cfg.bucket, error: msg });
+      return sendJSON(res, 200, { success: false, message: msg });
     }
   }
 
-  // ── OSS 上传（按 active 配置的 provider_type 分发到阿里云/腾讯云） ──
-  if (url === '/api/oss/upload' && method === 'POST') {
+  // ── OSS 预签名直传（后端零字节：只鉴权 + 锁 userId 前缀 + 签发 PUT/GET 预签名） ──
+  // 浏览器拿到 putUrl 后直接 fetch PUT 到 OSS；getUrl 是 7 天有效访问签名。
+  if (url === '/api/oss/sign-upload' && method === 'POST') {
+    const t0 = Date.now();
     const body = await parseBody(req);
-    if (!body?.objectKey) return sendJSON(res, 400, { success: false, message: '缺少 objectKey' });
     const { enabled, activeId, list } = await loadOssConfigs(pgPool);
-    if (!enabled) return sendJSON(res, 200, { success: false, message: 'OSS 总开关未启用' });
+    if (!enabled) {
+      ossLog('warn', 'sign', '签发失败：OSS 总开关未启用', { userId: req.user?.id });
+      return sendJSON(res, 200, { success: false, message: 'OSS 总开关未启用' });
+    }
     const activeCfg = list.find(c => c.id === activeId);
-    if (!activeCfg) return sendJSON(res, 200, { success: false, message: '未配置 active OSS 槽位' });
-    if (!activeCfg.enabled) return sendJSON(res, 200, { success: false, message: 'active OSS 槽位已停用' });
+    if (!activeCfg) {
+      ossLog('warn', 'sign', '签发失败：未配置 active OSS 槽位', { userId: req.user?.id });
+      return sendJSON(res, 200, { success: false, message: '未配置 active OSS 槽位' });
+    }
+    if (!activeCfg.enabled) {
+      ossLog('warn', 'sign', '签发失败：active OSS 槽位已停用', { userId: req.user?.id, activeId });
+      return sendJSON(res, 200, { success: false, message: 'active OSS 槽位已停用' });
+    }
     if (!activeCfg.accessKeyId || !activeCfg.accessKeySecret || !activeCfg.bucket) {
+      ossLog('warn', 'sign', '签发失败：active 配置不完整（缺 AccessKey 或 Bucket）', { userId: req.user?.id, activeId });
       return sendJSON(res, 200, { success: false, message: 'active 配置不完整（缺 AccessKey 或 Bucket）' });
     }
-    if (!body.contentBase64) return sendJSON(res, 200, { success: false, message: '缺少 contentBase64' });
-
-    const prefix = activeCfg.pathPrefix || 'images/';
-    const objectKey = body.objectKey.startsWith(prefix) ? body.objectKey : `${prefix}${body.objectKey}`;
-    const buffer = Buffer.from(body.contentBase64, 'base64');
-    const size = buffer.length;
-    const contentType = 'image/jpeg';
+    // 锁前缀：images/{userId}/，防止越权写他人目录
+    const userId = req.user?.id || '__anon__';
+    const p = (activeCfg.pathPrefix || 'images/').replace(/^\/+|\/+$/g, '');
+    const rawName = (body?.fileName || 'file').includes('/') ? body.fileName.split('/').pop() : body.fileName;
+    const safeName = String(rawName || 'file').replace(/[^A-Za-z0-9._-]/g, '_');
+    const objectKey = `${p}/${userId}/${Date.now()}_${safeName}`;
+    const contentType = body?.contentType || 'image/jpeg';
     const providerTag = activeCfg.providerType === 'tencent-cos' ? 'COS' : 'OSS';
 
     try {
-      let rawUrl, signedUrl, expires;
-      let putHeaders, hostStr;
+      let signed;
       if (activeCfg.providerType === 'tencent-cos') {
         cfg = { ...activeCfg };
         cfg._hostName = `${cfg.bucket}${cfg.appId ? '-' + cfg.appId : ''}.cos.${cfg.region || 'ap-shanghai'}.myqcloud.com`;
-        putHeaders = tencentCosPutHeaders(cfg, objectKey, buffer, contentType).headers;
-        hostStr = cfg._hostName;
-        rawUrl = `https://${cfg._hostName}/${objectKey}`;
-        ({ signedUrl, expires } = tencentCosSignUrl(cfg, objectKey));
+        signed = tencentCosPutSignUrl(cfg, objectKey, contentType);
       } else {
-        putHeaders = aliyunPutHeaders(activeCfg, objectKey, buffer, contentType).headers;
-        hostStr = aliyunHost(activeCfg).split('/')[0];
-        ({ rawUrl, signedUrl, expires } = aliyunBuildSignedUrls(activeCfg, objectKey));
+        signed = aliyunPutSignUrl(activeCfg, objectKey, contentType);
       }
-      const putRes = await fetch(rawUrl, { method: 'PUT', headers: putHeaders, body: buffer });
-      const putText = await putRes.text();
-
-      if (putRes.ok || putRes.status === 200) {
-        console.log(`[${providerTag}] ✅ ${objectKey} → ${rawUrl} (${size} bytes, signed GET 7d)`);
-        return sendJSON(res, 200, { success: true, url: signedUrl, rawUrl, objectKey, size, expires, providerType: activeCfg.providerType });
-      }
-      console.warn(`[${providerTag}] ❌ ${objectKey} HTTP ${putRes.status}`);
-      console.warn(`[${providerTag}] ${putText.slice(0, 500)}`);
+      const dur = Date.now() - t0;
+      ossLog('success', 'sign', `[${providerTag}] 🔏 签发直传 ${objectKey} → PUT 1h / GET 7d（${dur}ms）`, {
+        userId,
+        providerType: activeCfg.providerType,
+        bucket: activeCfg.bucket,
+        objectKey,
+        fileName: body?.fileName,
+        contentType,
+        putExpires: signed.putExpires,
+        expires: signed.expires,
+        durationMs: dur,
+      });
       return sendJSON(res, 200, {
-        success: false,
-        message: diagnoseOssError(activeCfg.providerType, putRes.status, putText),
-        objectKey, size, providerType: activeCfg.providerType,
+        success: true,
+        objectKey,
+        putUrl: signed.putUrl,
+        getUrl: signed.getUrl,
+        putExpires: signed.putExpires,
+        expires: signed.expires,
+        providerType: activeCfg.providerType,
       });
     } catch (e) {
-      console.error(`[${providerTag}] ❌ ${objectKey} 网络异常:`, e.message);
-      return sendJSON(res, 200, { success: false, message: `${providerTag} 上传失败：${e.message.slice(0, 100)}`, objectKey, size });
+      const msg = `签名签发失败：${e.message.slice(0, 100)}`;
+      ossLog('error', 'sign', `签发异常：${activeCfg.providerType} ${activeCfg.bucket}`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, error: msg });
+      return sendJSON(res, 200, { success: false, message: msg });
     }
+  }
+
+  // ── OSS 实时日志：拉历史 + SSE 订阅（仅 admin） ──
+  if (url === '/api/oss/logs/recent' && method === 'GET') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    const limit = Math.min(parseInt((new URL(req.url, 'http://x').searchParams.get('limit') || '100'), 10) || 100, 500);
+    return sendJSON(res, 200, { records: ossLogger.getRecent(limit) });
+  }
+  if (url === '/api/oss/logs/stream' && method === 'GET') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    return ossLogger.stream(req, res);
   }
 
   return sendJSON(res, 404, { error: 'Not Found' });
