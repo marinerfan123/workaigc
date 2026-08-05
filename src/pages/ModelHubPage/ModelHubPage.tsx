@@ -19,7 +19,6 @@ import {
   Database,
   RefreshCw,
   UploadCloud,
-  FileText,
   Sparkles,
   Clock,
   Tag,
@@ -169,27 +168,10 @@ export default function ModelHubPage() {
   // 模型行「⚙ 协议」抽屉：保存当前要编辑的模型组快照
   const [protocolDrawerGroup, setProtocolDrawerGroup] = useState<DrawerModelGroup | null>(null);
 
-  // ── OSS 状态：精简。新 OssConfigPanel 自含编辑/测试/账号日志 ──
+  // ── OSS 状态：精简。新 OssConfigPanel 自含实时日志（后端 SSE），这里只保留批量上传进度 ──
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkUploadProgress, setBulkUploadProgress] = useState({ current: 0, total: 0 });
 
-  // 批量上传的"操作日志"（与 OssConfigPanel 的账号日志解耦，独立）
-  type IOssLogLevel = 'info' | 'success' | 'error';
-  type IOssLogAction = 'test' | 'upload' | 'bulk' | 'backfill';
-  interface IOssLogEntry {
-    id: string;
-    timestamp: number;
-    level: IOssLogLevel;
-    action: IOssLogAction;
-    message: string;
-  }
-  const [ossLog, setOssLog] = useState<IOssLogEntry[]>([]);
-  const addOssLog = (level: IOssLogLevel, action: IOssLogAction, message: string) => {
-    setOssLog((prev) => {
-      const next = [{ id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, timestamp: Date.now(), level, action, message }, ...prev];
-      return next.slice(0, 50); // 最多保留 50 条
-    });
-  };
   const [typeFilter, setTypeFilter] = useState<ModelType | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [providerDialogOpen, setProviderDialogOpen] = useState(false);
@@ -790,7 +772,6 @@ export default function ModelHubPage() {
       return;
     }
     setBulkUploading(true);
-    addOssLog('info', 'bulk', `开始批量上传现有素材到 OSS...`);
     try {
       // 获取真实素材列表（走后端 API，不是 MOCK）
       const allMedia = await apiGetMedia();
@@ -800,13 +781,11 @@ export default function ModelHubPage() {
       );
       if (items.length === 0) {
         toast.info('没有需要上传的素材（都已 OSS 持久化或为本地素材）');
-        addOssLog('info', 'bulk', '没有需要上传的素材');
         setBulkUploading(false);
         return;
       }
       setBulkUploadProgress({ current: 0, total: items.length });
       toast.info(`开始上传 ${items.length} 个素材到 OSS...`);
-      addOssLog('info', 'bulk', `找到 ${items.length} 个待上传素材`);
 
       let successCount = 0;
       for (let i = 0; i < items.length; i++) {
@@ -829,23 +808,18 @@ export default function ModelHubPage() {
             const updated = { ...item, ossUrl: uploadResult.url, ossObjectKey: uploadResult.objectKey, ossUploaded: true, fullUrl: uploadResult.url, thumbnail: uploadResult.url };
             await apiSaveMedia(stripBlobItems([updated]));
             successCount++;
-            addOssLog('success', 'upload', `${item.title || item.id} → ${uploadResult.url.split('/').pop()}`);
           } else {
             logger.warn(`OSS 上传失败: ${item.title || item.id}`);
-            addOssLog('error', 'upload', `上传失败：${item.title || item.id}`);
           }
         } catch (e) {
           logger.warn(`上传 ${item.title || item.id} 失败: ${e instanceof Error ? e.message : String(e)}`);
-          addOssLog('error', 'upload', `${item.title || item.id}：${e instanceof Error ? e.message : String(e).slice(0, 50)}`);
         }
         // 间隔避免频率限制
         await new Promise((r) => setTimeout(r, 200));
       }
       toast.success(`已上传 ${successCount}/${items.length} 个素材到 OSS`);
-      addOssLog('success', 'bulk', `批量完成：${successCount}/${items.length} 成功`);
     } catch (e) {
       toast.error(`批量上传失败：${e instanceof Error ? e.message : String(e).slice(0, 80)}`);
-      addOssLog('error', 'bulk', `批量失败：${e instanceof Error ? e.message : String(e).slice(0, 80)}`);
     } finally {
       setBulkUploading(false);
     }
@@ -957,64 +931,16 @@ export default function ModelHubPage() {
       </div>
 
       {/* 内容区 */}
-      <div className="flex-1 overflow-y-auto p-6">
+      {/* key={activeTab} 触发重挂载：切走再回当页面 = 初始状态（清掉编辑草稿、滚动位置、临时筛选） */}
+      <div key={activeTab} className="flex-1 overflow-y-auto p-6">
         {activeTab === 'storage' ? (
-          <div className="mx-auto max-w-3xl space-y-6">
-            {/* OSS 操作日志面板 */}
-            <div className="rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-blue-500/10 text-blue-400">
-                    <FileText className="size-4" />
-                  </div>
-                  <div>
-                    <div className="text-sm font-bold text-white">OSS 操作日志</div>
-                    <div className="text-[10px] text-zinc-500 mt-0.5">最近 {ossLog.length} 条记录（最多保留 50 条）</div>
-                  </div>
-                </div>
-                {ossLog.length > 0 && (
-                  <button
-                    onClick={() => setOssLog([])}
-                    className="rounded-full bg-zinc-800 px-3 py-1 text-[10px] font-semibold text-zinc-400 hover:bg-zinc-700 hover:text-white transition-colors"
-                  >
-                    清空
-                  </button>
-                )}
-              </div>
-              {ossLog.length === 0 ? (
-                <div className="rounded-xl bg-zinc-900/40 py-8 text-center text-xs text-zinc-600">
-                  暂无日志 · OSS 操作将自动记录在这里
-                </div>
-              ) : (
-                <div className="max-h-60 space-y-1 overflow-y-auto rounded-xl bg-zinc-950/60 p-2">
-                  {ossLog.map((log) => {
-                    const time = new Date(log.timestamp).toLocaleTimeString('zh-CN', { hour12: false });
-                    const color =
-                      log.level === 'success' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
-                      : log.level === 'error' ? 'text-red-400 bg-red-500/10 border-red-500/20'
-                      : 'text-blue-400 bg-blue-500/10 border-blue-500/20';
-                    const actionLabel =
-                      log.action === 'test' ? '测试'
-                      : log.action === 'bulk' ? '批量'
-                      : log.action === 'backfill' ? '补传'
-                      : '上传';
-                    return (
-                      <div key={log.id} className={`flex items-start gap-2 rounded-lg border px-2.5 py-1.5 text-[11px] ${color}`}>
-                        <span className="shrink-0 font-mono text-[10px] opacity-70">{time}</span>
-                        <span className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold bg-black/30">{actionLabel}</span>
-                        <span className="flex-1 break-all">{log.message}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
+          <div className="mx-auto max-w-7xl">
+            {/* 实时日志 + 配置操作：由 OssConfigPanel 内部双栏接管（左 lg:w-[380px] xl:w-[420px] 实时日志 / 右 flex-1 配置表单） */}
             <OssConfigPanel />
 
             {/* 批量上传进度 */}
             {bulkUploading && (
-              <div className="rounded-[1.5rem] border border-emerald-500/20 bg-emerald-500/5 p-5">
+              <div className="mt-6 rounded-[1.5rem] border border-emerald-500/20 bg-emerald-500/5 p-5">
                 <div className="flex items-center gap-3">
                   <Loader2 className="size-5 animate-spin text-emerald-400" />
                   <div className="flex-1">
@@ -1032,7 +958,7 @@ export default function ModelHubPage() {
             )}
 
             {/* 操作按钮 */}
-            <div id="oss-bulk-upload-section" className="flex flex-wrap items-center gap-2">
+            <div id="oss-bulk-upload-section" className="mt-6 flex flex-wrap items-center gap-2">
               <button
                 onClick={handleBulkUploadExisting}
                 disabled={bulkUploading || !ossEnabled}
