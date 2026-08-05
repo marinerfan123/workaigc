@@ -16,21 +16,15 @@ import {
   Zap,
   Puzzle,
   Loader2,
-  HardDriveUpload,
   Database,
-  Globe,
-  Key,
-  FolderOpen,
   RefreshCw,
   UploadCloud,
-  Link,
-  Eye,
-  EyeOff,
   FileText,
   Sparkles,
   Clock,
   Tag,
   Briefcase,
+  Boxes,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -50,11 +44,14 @@ import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { modelListClient } from '@/services/genericClient';
 import { MOCK_MEDIA_LIST } from '@/data/media';
-import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, stripBlobItems, apiGetProviderStates, apiSetProviderCooldown } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, apiDeleteModel, stripBlobItems, apiGetProviderStates, apiSetProviderCooldown } from '@/services/api';
 import EndpointsTab from './EndpointsTab';
 import PairingTab from './PairingTab';
 import AsyncAddDialog from './AsyncAddDialog';
 import AddModelDialog from './AddModelDialog';
+import { OssConfigPanel } from '@/components/OssConfigPanel';
+import ProviderModelsPanel from './ProviderModelsPanel';
+import ModelProtocolDrawer, { type DrawerModelGroup } from '@/components/ModelProtocolDrawer';
 
 const TYPE_LABELS: Record<ModelType, string> = {
   image: '图片',
@@ -165,21 +162,18 @@ function ProviderSchedulerStatus({ providers }: { providers: any[] }) {
 
 export default function ModelHubPage() {
   const { providers, models, setProviders, setModels, deleteProvider, deleteModel, cleanupOrphanModels, getProviderName } = useModelHub();
-  const { config: ossConfig, updateConfig: updateOssConfig, testConnection: testOssConnection, uploadFile: uploadToOss } = useOssConfig();
+  const { enabled: ossEnabled, uploadFile: uploadToOss } = useOssConfig();
   const [activeTab, setActiveTab] = useState<'providers' | 'models' | 'endpoints' | 'pairing' | 'storage'>('models');
   const [asyncAddOpen, setAsyncAddOpen] = useState(false);
   const [addModelOpen, setAddModelOpen] = useState(false);
+  // 模型行「⚙ 协议」抽屉：保存当前要编辑的模型组快照
+  const [protocolDrawerGroup, setProtocolDrawerGroup] = useState<DrawerModelGroup | null>(null);
 
-  // OSS 表单状态
-  const [ossForm, setOssForm] = useState(ossConfig);
-  const [ossTesting, setOssTesting] = useState(false);
-  const [ossTestResult, setOssTestResult] = useState<{ success: boolean; message: string; files?: { name: string; size: number; lastModified: string }[] } | null>(null);
-  const [showAccessKeyId, setShowAccessKeyId] = useState(false);
-  const [showAccessKeySecret, setShowAccessKeySecret] = useState(false);
+  // ── OSS 状态：精简。新 OssConfigPanel 自含编辑/测试/账号日志 ──
   const [bulkUploading, setBulkUploading] = useState(false);
   const [bulkUploadProgress, setBulkUploadProgress] = useState({ current: 0, total: 0 });
 
-  // OSS 操作日志
+  // 批量上传的"操作日志"（与 OssConfigPanel 的账号日志解耦，独立）
   type IOssLogLevel = 'info' | 'success' | 'error';
   type IOssLogAction = 'test' | 'upload' | 'bulk' | 'backfill';
   interface IOssLogEntry {
@@ -209,6 +203,9 @@ export default function ModelHubPage() {
   const [fetchedModels, setFetchedModels] = useState<Array<{ id: string; modelId: string; displayName: string; mappingName?: string; type: ModelType; selected: boolean; supportedResolutions: Resolution[]; creditCost?: number }>>([]);
   const [modelSearchQuery, setModelSearchQuery] = useState('');
   const [syncingProviderId, setSyncingProviderId] = useState<string | null>(null);
+  // 「管理模型」抽屉
+  const [manageProviderId, setManageProviderId] = useState<string | null>(null);
+  const [manageOpen, setManageOpen] = useState(false);
 
   // 已保存模型卡的内联编辑（displayName + mappingName + creditCost）
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
@@ -234,19 +231,30 @@ export default function ModelHubPage() {
   const [formCooldownSec, setFormCooldownSec] = useState(60);            // 整账号冷却（秒）
   const [formOpCosts, setFormOpCosts] = useState<Record<'1k' | '2k' | '4k' | 'video', number>>({ '1k': 1, '2k': 2, '4k': 20, video: 20 });
 
-  // 全局调度设置（最大并发）
+  // 全局调度设置（最大并发 + 等待区阈值）
   const [maxThreads, setMaxThreads] = useState(10);
+  const [waitingAreaThreshold, setWaitingAreaThreshold] = useState(10);
   useEffect(() => {
-    apiGetSettings().then((s) => { if (s && s.maxThreads) setMaxThreads(Number(s.maxThreads) || 10); }).catch(() => {});
+    apiGetSettings().then((s) => {
+      if (s && s.maxThreads) setMaxThreads(Number(s.maxThreads) || 10);
+      if (s && typeof s.waitingAreaThreshold === 'number' && s.waitingAreaThreshold > 0) {
+        setWaitingAreaThreshold(Math.floor(s.waitingAreaThreshold));
+      }
+    }).catch(() => {});
   }, []);
   const saveScheduler = async () => {
     const cur = (await apiGetSettings().catch(() => ({}))) || {};
-    await apiSaveSettings({ ...cur, maxThreads: Number(maxThreads) || 10 });
+    const thr = Math.max(1, Math.floor(Number(waitingAreaThreshold) || 10));
+    await apiSaveSettings({ ...cur, maxThreads: Number(maxThreads) || 10, waitingAreaThreshold: thr });
+    setWaitingAreaThreshold(thr);
     toast.success('调度设置已保存');
   };
 
   const filteredModels = useMemo(() => {
     return models.filter((m) => {
+      // 主模型库「天然控制在前端」：enabled=false 的模型完全不出现
+      // （OFF 模型仅在「管理模型」抽屉里可见，便于重新开启）
+      if (!m.enabled) return false;
       if (typeFilter !== 'all' && m.type !== typeFilter) return false;
       if (searchQuery && !m.displayName.toLowerCase().includes(searchQuery.toLowerCase())
         && !m.modelId.toLowerCase().includes(searchQuery.toLowerCase())) return false;
@@ -715,18 +723,26 @@ export default function ModelHubPage() {
         return;
       }
 
-      const existingIds = new Set(
-        models.filter((m) => m.providerId === providerId).map((m) => m.modelId),
+      // 服务端当前模型 ID 集合（来源真实，作为存在性基准）
+      const serverModelIds = new Set<string>(
+        modelList
+          .map((m) => m.id || m.model || m.name || '')
+          .filter((x) => !!x),
       );
 
+      // 本地该服务商现有模型（保留它们的显示属性 / 价格 / 并发等全部设置）
+      const localModels = models.filter((m) => m.providerId === providerId);
+      const localModelIds = new Set(localModels.map((m) => m.modelId));
+
+      // 1) 新增：服务端有、本地无 —— 新模型默认显示（enabled:true），不动任何旧模型
       let added = 0;
       const newModels: typeof models = [];
-      for (const m of modelList) {
+      modelList.forEach((m, idx) => {
         const mid = m.id || m.model || m.name || '';
-        if (!mid || existingIds.has(mid)) continue;
+        if (!mid || localModelIds.has(mid)) return;
         const name = m.name || m.display_name || m.displayName || mid;
         newModels.push({
-          id: `model-${Date.now()}-${added}`,
+          id: `model-${Date.now()}-${idx}`,
           modelId: mid,
           displayName: name,
           type: detectModelType(mid),
@@ -734,13 +750,31 @@ export default function ModelHubPage() {
           enabled: true,
         });
         added++;
-      }
+      });
 
-      if (added > 0) {
-        setModels((prev) => [...prev, ...newModels]);
-        toast.success(`同步完成，新增 ${added} 个模型`);
+      // 2) 删除：本地有、服务端已不存在 —— 仅移除，绝不修改保留模型的 enabled
+      const toDelete = localModels.filter((m) => !serverModelIds.has(m.modelId));
+
+      // 3) 更新本地状态：保留（不动）+ 新增；剔除已删除项
+      setModels((prev) =>
+        prev
+          .filter(
+            (m) =>
+              !(m.providerId === providerId && toDelete.some((d) => d.id === m.id)),
+          )
+          .concat(newModels),
+      );
+
+      // 4) 后端真删（走单条 DELETE 接口，避免下次 sync 又回弹）
+      toDelete.forEach((d) => apiDeleteModel(d.id));
+
+      const addedMsg = added > 0 ? `新增 ${added} 个` : '';
+      const delMsg = toDelete.length > 0 ? `移除 ${toDelete.length} 个` : '';
+      const parts = [addedMsg, delMsg].filter(Boolean);
+      if (parts.length === 0) {
+        toast.info('已是最新，无变化');
       } else {
-        toast.info('已是最新，无新增模型');
+        toast.success(`同步完成：${parts.join('，')}（已有模型的显隐设置保持不变）`);
       }
     } catch (e) {
       logger.error('sync models failed:', String(e));
@@ -750,46 +784,8 @@ export default function ModelHubPage() {
     }
   }, [providers, models, detectModelType, setModels]);
 
-  // OSS 配置相关
-  const handleOssChange = (key: keyof typeof ossForm, value: string | boolean) => {
-    setOssForm((prev) => ({ ...prev, [key]: value }));
-  };
-
-  const handleSaveOssConfig = () => {
-    updateOssConfig(ossForm);
-    toast.success('OSS 配置已保存');
-  };
-
-  const handleTestOssConnection = async () => {
-    setOssTesting(true);
-    setOssTestResult(null);
-    addOssLog('info', 'test', `测试连接：${ossForm.bucket || '未填 Bucket'}`);
-    // 先用表单值临时更新（不保存），测试用当前表单值
-    const prev = ossConfig;
-    updateOssConfig(ossForm);
-    try {
-      const result = await testOssConnection();
-      setOssTestResult(result);
-      if (result.success) {
-        toast.success(result.message);
-        addOssLog('success', 'test', `连接成功：Bucket "${ossForm.bucket}"`);
-      } else {
-        toast.error(result.message);
-        addOssLog('error', 'test', result.message);
-      }
-    } catch (e) {
-      logger.error('OSS test failed:', String(e));
-      toast.error('测试连接失败');
-      addOssLog('error', 'test', `测试异常：${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setOssTesting(false);
-      // 恢复之前的配置（测试不自动保存）
-      updateOssConfig(prev);
-    }
-  };
-
   const handleBulkUploadExisting = async () => {
-    if (!ossConfig.enabled) {
+    if (!ossEnabled) {
       toast.error('请先启用 OSS 存储');
       return;
     }
@@ -949,11 +945,12 @@ export default function ModelHubPage() {
           )}
           {activeTab === 'storage' && (
             <button
-              onClick={handleSaveOssConfig}
-              className="flex items-center gap-1.5 rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-black hover:bg-emerald-400 transition-colors shrink-0 whitespace-nowrap"
+              onClick={() => document.getElementById('oss-bulk-upload-section')?.scrollIntoView({ behavior: 'smooth' })}
+              disabled={!ossEnabled}
+              className="flex items-center gap-1.5 rounded-full bg-emerald-500 px-4 py-2 text-xs font-bold text-black hover:bg-emerald-400 transition-colors shrink-0 whitespace-nowrap disabled:opacity-50"
             >
-              <Check className="size-3.5" />
-              保存配置
+              <UploadCloud className="size-3.5" />
+              上传现有图片
             </button>
           )}
         </div>
@@ -1013,232 +1010,7 @@ export default function ModelHubPage() {
               )}
             </div>
 
-            {/* 存储类型选择 */}
-            <div className="rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
-              <div className="mb-4 flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-400">
-                  <Database className="size-5" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-bold text-white">存储配置</h2>
-                  <p className="text-xs text-zinc-500">配置对象存储服务，生成的媒体文件自动上传到云端</p>
-                </div>
-                <div className="ml-auto flex items-center gap-2">
-                  <span className={`text-xs font-semibold ${ossConfig.enabled ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                    {ossConfig.enabled ? '已启用' : '未启用'}
-                  </span>
-                  <button
-                    onClick={() => handleOssChange('enabled', !ossForm.enabled)}
-                    className={`relative h-6 w-11 shrink-0 rounded-full transition-all duration-300 ${
-                      ossForm.enabled ? 'bg-emerald-500' : 'bg-zinc-700'
-                    }`}
-                  >
-                    <div
-                      className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all duration-300 ${
-                        ossForm.enabled ? 'left-[22px]' : 'left-0.5'
-                      }`}
-                    />
-                  </button>
-                </div>
-              </div>
-
-              {/* 存储类型 */}
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">存储类型</label>
-                <div className="flex items-center gap-2">
-                  <button
-                    className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-emerald-500/10 py-2.5 text-xs font-semibold text-emerald-400 border border-emerald-500/30"
-                  >
-                    <HardDriveUpload className="size-4" />
-                    阿里云 OSS
-                  </button>
-                  <button
-                    disabled
-                    className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-zinc-800/30 py-2.5 text-xs font-semibold text-zinc-600 border border-zinc-800 cursor-not-allowed"
-                  >
-                    <Server className="size-4" />
-                    腾讯云 COS
-                    <span className="rounded-full bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500">即将上线</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* 接入点信息 */}
-            <div className="rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
-              <div className="mb-4 flex items-center gap-2">
-                <Globe className="size-4 text-emerald-400" />
-                <h3 className="text-sm font-bold text-white">接入点信息</h3>
-              </div>
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-zinc-400">接入点名称</label>
-                    <input
-                      value={ossForm.accessPointName}
-                      onChange={(e) => handleOssChange('accessPointName', e.target.value)}
-                      className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-zinc-400">地域</label>
-                    <input
-                      value={ossForm.regionLabel}
-                      onChange={(e) => handleOssChange('regionLabel', e.target.value)}
-                      className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">Bucket 名称</label>
-                  <div className="relative">
-                    <FolderOpen className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
-                    <input
-                      value={ossForm.bucket}
-                      onChange={(e) => handleOssChange('bucket', e.target.value)}
-                      className="w-full rounded-2xl bg-zinc-800/50 pl-9 pr-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">外网 Endpoint</label>
-                  <input
-                    value={ossForm.endpointExternal}
-                    onChange={(e) => handleOssChange('endpointExternal', e.target.value)}
-                    className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono text-xs"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">内网 Endpoint</label>
-                  <input
-                    value={ossForm.endpointInternal}
-                    onChange={(e) => handleOssChange('endpointInternal', e.target.value)}
-                    className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono text-xs"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* 访问凭证 */}
-            <div className="rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
-              <div className="mb-4 flex items-center gap-2">
-                <Key className="size-4 text-emerald-400" />
-                <h3 className="text-sm font-bold text-white">访问凭证</h3>
-                <span className="ml-auto rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-400 border border-amber-500/20">
-                  敏感信息
-                </span>
-              </div>
-              <div className="space-y-4">
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">AccessKey ID</label>
-                  <div className="relative">
-                    <input
-                      type={showAccessKeyId ? 'text' : 'password'}
-                      value={ossForm.accessKeyId}
-                      onChange={(e) => handleOssChange('accessKeyId', e.target.value)}
-                      placeholder="请输入 AccessKey ID"
-                      className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 pr-20 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowAccessKeyId(!showAccessKeyId)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-xl px-2 py-1 text-xs text-zinc-500 hover:text-white transition-colors"
-                    >
-                      {showAccessKeyId ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                    </button>
-                  </div>
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">AccessKey Secret</label>
-                  <div className="relative">
-                    <input
-                      type={showAccessKeySecret ? 'text' : 'password'}
-                      value={ossForm.accessKeySecret}
-                      onChange={(e) => handleOssChange('accessKeySecret', e.target.value)}
-                      placeholder="请输入 AccessKey Secret"
-                      className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 pr-20 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowAccessKeySecret(!showAccessKeySecret)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-xl px-2 py-1 text-xs text-zinc-500 hover:text-white transition-colors"
-                    >
-                      {showAccessKeySecret ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 高级设置 */}
-            <div className="rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
-              <div className="mb-4 flex items-center gap-2">
-                <Settings2 className="size-4 text-emerald-400" />
-                <h3 className="text-sm font-bold text-white">高级设置</h3>
-              </div>
-              <div className="space-y-4">
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">存储路径前缀</label>
-                  <div className="relative">
-                    <FolderOpen className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
-                    <input
-                      value={ossForm.pathPrefix}
-                      onChange={(e) => handleOssChange('pathPrefix', e.target.value)}
-                      placeholder="images/"
-                      className="w-full rounded-2xl bg-zinc-800/50 pl-9 pr-4 py-2.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
-                    />
-                  </div>
-                  <p className="mt-1 text-[10px] text-zinc-600">生成的文件将上传到此路径下，默认为 images/</p>
-                </div>
-                <div>
-                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">自定义 CDN 域名（可选）</label>
-                  <div className="relative">
-                    <Link className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-500" />
-                    <input
-                      value={ossForm.customDomain}
-                      onChange={(e) => handleOssChange('customDomain', e.target.value)}
-                      placeholder="如 cdn.example.com，不填则使用默认域名"
-                      className="w-full rounded-2xl bg-zinc-800/50 pl-9 pr-4 py-2.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
-                    />
-                  </div>
-                  <p className="mt-1 text-[10px] text-zinc-600">配置 CDN 加速域名后，访问链接将使用此域名</p>
-                </div>
-              </div>
-            </div>
-
-            {/* 测试连接结果 */}
-            {ossTestResult && (
-              <div className={`rounded-[1.5rem] border p-5 ${
-                ossTestResult.success
-                  ? 'bg-emerald-500/5 border-emerald-500/20'
-                  : 'bg-red-500/5 border-red-500/20'
-              }`}>
-                <div className="flex items-start gap-3">
-                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
-                    ossTestResult.success ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'
-                  }`}>
-                    {ossTestResult.success ? <Check className="size-4" /> : <X className="size-4" />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-sm font-medium ${ossTestResult.success ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {ossTestResult.message}
-                    </p>
-                    {ossTestResult.files && ossTestResult.files.length > 0 && (
-                      <div className="mt-3 space-y-1">
-                        <p className="text-xs text-zinc-500">Bucket 内容预览（前 {ossTestResult.files.length} 条）：</p>
-                        {ossTestResult.files.map((f) => (
-                          <div key={f.name} className="flex items-center gap-2 rounded-xl bg-zinc-900/50 px-3 py-2">
-                            <FileText className="size-3.5 text-zinc-500" />
-                            <span className="flex-1 truncate text-xs text-zinc-400 font-mono">{f.name}</span>
-                            <span className="text-[10px] text-zinc-600">{(f.size / 1024).toFixed(1)} KB</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
+            <OssConfigPanel />
 
             {/* 批量上传进度 */}
             {bulkUploading && (
@@ -1260,29 +1032,16 @@ export default function ModelHubPage() {
             )}
 
             {/* 操作按钮 */}
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={handleTestOssConnection}
-                disabled={ossTesting}
-                className="flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs text-white hover:border-zinc-600 transition-colors disabled:opacity-50"
-              >
-                {ossTesting ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-                <span>{ossTesting ? '测试中...' : '测试连接'}</span>
-              </button>
+            <div id="oss-bulk-upload-section" className="flex flex-wrap items-center gap-2">
               <button
                 onClick={handleBulkUploadExisting}
-                disabled={bulkUploading || !ossConfig.enabled}
+                disabled={bulkUploading || !ossEnabled}
                 className="flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs text-white hover:border-zinc-600 transition-colors disabled:opacity-50"
               >
                 <UploadCloud className="size-3.5" />
-                上传现有图片
-              </button>
-              <button
-                onClick={handleSaveOssConfig}
-                className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-500 px-5 py-2 text-xs font-bold text-black hover:bg-emerald-400 transition-colors"
-              >
-                <Check className="size-3.5" />
-                保存配置
+                {bulkUploading && bulkUploadProgress.total > 0
+                  ? `上传中 ${bulkUploadProgress.current}/${bulkUploadProgress.total}`
+                  : '上传现有图片'}
               </button>
             </div>
           </div>
@@ -1350,6 +1109,20 @@ export default function ModelHubPage() {
                   />
                   <p className="mt-1 text-[10px] text-zinc-500">
                     所有供应商同时进行的生成请求上限，超过则排队等待空闲令牌。
+                  </p>
+                </div>
+                <div className="w-full sm:w-56">
+                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">等待区提示阈值</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={waitingAreaThreshold}
+                    onChange={(e) => setWaitingAreaThreshold(Number(e.target.value) || 1)}
+                    className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                  />
+                  <p className="mt-1 text-[10px] text-zinc-500">
+                    所有账号不可用且等待区积压超过该值，前台提示"资源不足"。
                   </p>
                 </div>
                 <button
@@ -1474,6 +1247,13 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                       <span>同步模型</span>
                     </button>
                     <button
+                      onClick={() => { setManageProviderId(provider.id); setManageOpen(true); }}
+                      title="管理模型（显隐 / 价格 / 并发 / 耗时 / 分类 / 商用）"
+                      className="flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-indigo-500/10 hover:text-indigo-300 transition-colors"
+                    >
+                      <Boxes className="size-3.5" />
+                    </button>
+                    <button
                       onClick={() => openEditDialog(provider)}
                       className="flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
                     >
@@ -1558,7 +1338,7 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                     </h3>
                     <span className="text-xs text-zinc-600">{list.length} 个模型</span>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                  <div className="flex flex-col gap-2">
 {list.map((group) => {
                       const isEditing = editingGroupId === group.modelId;
                       const rep = group.rows[0];
@@ -1607,6 +1387,20 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                               </div>
                             </div>
                             <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                onClick={() =>
+                                  setProtocolDrawerGroup({
+                                    modelId: group.modelId,
+                                    displayName: group.displayName,
+                                    type: group.type,
+                                    providerIds: group.providerIds,
+                                  })
+                                }
+                                title="配置该模型的协议 / 端点"
+                                className="flex h-7 w-7 items-center justify-center rounded-lg border border-zinc-700 bg-zinc-800/60 text-zinc-400 hover:border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-400 transition-all"
+                              >
+                                <Settings2 className="size-3" />
+                              </button>
                               <button
                                 onClick={() => {
                                   if (isEditing) {
@@ -1747,6 +1541,8 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                               </div>
                             </div>
                           )}
+                        {/* 能力 / 服务商 / 元信息 合并为单行 wrap */}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px] text-zinc-500">
                         {/* 能力 chip */}
                         {group.rows[0]?.capabilities && (
                           <div className="flex flex-wrap items-center gap-1">
@@ -1859,6 +1655,7 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                               </button>
                             );
                           })()}
+                        </div>
                         </div>
                       </div>
                       );
@@ -2090,11 +1887,26 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
         </div>
       )}
 
-      {/* 添加/编辑服务商弹窗 */}
+      {/* 模型协议配置抽屉（models tab 每行「⚙ 协议」触发）*/}
+      {protocolDrawerGroup && (
+        <ModelProtocolDrawer
+          open={!!protocolDrawerGroup}
+          onClose={() => setProtocolDrawerGroup(null)}
+          group={protocolDrawerGroup}
+          providers={providers}
+          models={models}
+          setProviders={setProviders}
+          setModels={setModels}
+          getProviderName={getProviderName}
+        />
+      )}
+
+      {/* 添加/编辑服务商弹窗 — 左右两列布局，无滚动条 */}
       {providerDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-[2rem] bg-zinc-900 border border-zinc-800 p-6">
-            <div className="mb-5 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="flex w-full max-w-4xl max-h-[92vh] flex-col rounded-[2rem] bg-zinc-900 border border-zinc-800 p-5">
+            {/* 顶栏：标题 + 关闭 */}
+            <div className="mb-4 flex items-center justify-between shrink-0">
               <h2 className="text-lg font-bold text-white">
                 {editingProvider ? '编辑服务商' : '添加服务商'}
               </h2>
@@ -2106,114 +1918,205 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
               </button>
             </div>
 
-            <div className="space-y-4">
-              {/* 服务商名称 */}
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">服务商名称 <span className="text-red-400">*</span></label>
-                <input
-                  value={formName}
-                  onChange={(e) => setFormName(e.target.value)}
-                  placeholder="如：OpenAI 官方"
-                  className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                />
-              </div>
+            {/* 两列内容区 */}
+            <div className="grid flex-1 min-h-0 grid-cols-2 gap-x-5 gap-y-3 overflow-hidden">
+              {/* ============ 左列：连接配置 ============ */}
+              <div className="flex flex-col gap-3 min-h-0 overflow-hidden">
+                {/* 服务商名称 + 类型（同行） */}
+                <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-zinc-400">服务商名称 <span className="text-red-400">*</span></label>
+                    <input
+                      value={formName}
+                      onChange={(e) => setFormName(e.target.value)}
+                      placeholder="如：OpenAI 官方"
+                      className="w-full rounded-xl bg-zinc-800/50 px-3 py-1.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-zinc-400">类型</label>
+                    <div className="flex items-center gap-1">
+                      {(['official', 'relay', 'custom'] as const).map((t) => {
+                        const Icon = PROVIDER_TYPE_ICONS[t];
+                        return (
+                          <button
+                            key={t}
+                            onClick={() => setFormType(t)}
+                            title={PROVIDER_TYPE_LABELS[t]}
+                            className={`flex h-8 items-center justify-center gap-1 rounded-xl px-2.5 text-[11px] font-semibold transition-all duration-200 ${
+                              formType === t
+                                ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700 hover:text-white'
+                            }`}
+                          >
+                            <Icon className="size-3" />
+                            {PROVIDER_TYPE_LABELS[t]}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
 
-              {/* 类型 */}
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">服务商类型</label>
-                <div className="flex items-center gap-2">
-                  {(['official', 'relay', 'custom'] as const).map((t) => {
-                    const Icon = PROVIDER_TYPE_ICONS[t];
-                    return (
+                {/* API Base URL */}
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-zinc-400">API Base URL <span className="text-red-400">*</span></label>
+                  <input
+                    value={formBaseUrl}
+                    onChange={(e) => setFormBaseUrl(e.target.value)}
+                    placeholder="https://api.example.com/v1"
+                    className="w-full rounded-xl bg-zinc-800/50 px-3 py-1.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
+                  />
+                </div>
+
+                {/* API Key */}
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-zinc-400">API Key</label>
+                  <div className="relative">
+                    <input
+                      type={showApiKey ? 'text' : 'password'}
+                      value={formApiKey}
+                      onChange={(e) => setFormApiKey(e.target.value)}
+                      placeholder="sk-xxxxxxxxxxxxxxxx"
+                      className="w-full rounded-xl bg-zinc-800/50 px-3 py-1.5 pr-16 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-lg px-2 py-0.5 text-[11px] text-zinc-500 hover:text-white transition-colors"
+                    >
+                      {showApiKey ? '隐藏' : '显示'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* 接口协议 + 获取模型（同行） */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-zinc-400">接口协议</label>
+                    <div className="grid grid-cols-2 gap-1.5">
                       <button
-                        key={t}
-                        onClick={() => setFormType(t)}
-                        className={`flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-2 text-xs font-semibold transition-all duration-200 ${
-                          formType === t
-                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                        type="button"
+                        onClick={() => setFormProtocol('openai-compatible')}
+                        className={`flex flex-col items-start gap-0 rounded-xl px-2.5 py-1.5 text-left transition-all duration-200 ${
+                          formProtocol === 'openai-compatible'
+                            ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
                             : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700 hover:text-white'
                         }`}
                       >
-                        <Icon className="size-3.5" />
-                        {PROVIDER_TYPE_LABELS[t]}
+                        <span className="text-[11px] font-semibold leading-tight">OpenAI 兼容</span>
+                        <span className="text-[9px] text-zinc-500 leading-tight">/v1/images/generations</span>
                       </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Base URL */}
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">API Base URL <span className="text-red-400">*</span></label>
-                <input
-                  value={formBaseUrl}
-                  onChange={(e) => setFormBaseUrl(e.target.value)}
-                  placeholder="https://api.example.com/v1"
-                  className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
-                />
-              </div>
-
-              {/* API Key */}
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">API Key</label>
-                <div className="relative">
-                  <input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={formApiKey}
-                    onChange={(e) => setFormApiKey(e.target.value)}
-                    placeholder="sk-xxxxxxxxxxxxxxxx"
-                    className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 pr-20 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-xl px-2 py-1 text-xs text-zinc-500 hover:text-white transition-colors"
-                  >
-                    {showApiKey ? '隐藏' : '显示'}
-                  </button>
-                </div>
-              </div>
-
-              {/* 并发线程数 */}
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">
-                  并发线程数 <span className="text-zinc-500">（单服务商最大同时生成数）</span>
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  value={formMaxConcurrent}
-                  onChange={(e) => setFormMaxConcurrent(Number(e.target.value) || 1)}
-                  className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                />
-                <p className="mt-1 text-[10px] text-zinc-500">
-                  多供应商同模型时，后台按此上限 + 全局最大并发均衡分配请求。
-                </p>
-              </div>
-
-              {/* 容量模型 + 统一共享 B 桶限速 */}
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">容量模型</label>
-                <div className="flex items-center gap-2">
-                  {([['limited', '受限账号（共享 B 桶）'], ['unlimited', '普通付费（无限速）']] as const).map(([v, label]) => (
+                      <button
+                        type="button"
+                        onClick={() => setFormProtocol('custom')}
+                        className={`flex flex-col items-start gap-0 rounded-xl px-2.5 py-1.5 text-left transition-all duration-200 ${
+                          formProtocol === 'custom'
+                            ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                            : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700 hover:text-white'
+                        }`}
+                      >
+                        <span className="text-[11px] font-semibold leading-tight">自定义</span>
+                        <span className="text-[9px] text-zinc-500 leading-tight">「自定义协议」Tab</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-zinc-400">拉取模型</label>
                     <button
-                      key={v}
                       type="button"
-                      onClick={() => setFormCapacityModel(v)}
-                      className={`flex-1 rounded-2xl py-2 text-xs font-semibold transition-all duration-200 ${
-                        formCapacityModel === v
-                          ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                          : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700 hover:text-white'
-                      }`}
+                      onClick={() => fetchModels(formBaseUrl, formApiKey, formProtocol)}
+                      disabled={fetchingModels}
+                      className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-emerald-500/30 bg-emerald-500/5 py-1.5 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/50 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {label}
+                      {fetchingModels ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="size-3.5" />
+                      )}
+                      <span>{fetchingModels ? '获取中...' : '获取模型列表'}</span>
                     </button>
-                  ))}
+                  </div>
                 </div>
 
+                {/* 支持的模型类型 */}
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-zinc-400">支持的模型类型</label>
+                  <div className="flex items-center gap-1.5">
+                    {(['image', 'video', 'text'] as const).map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => toggleFormType(t)}
+                        className={`flex flex-1 items-center justify-center gap-1 rounded-xl py-1.5 text-[11px] font-semibold transition-all duration-200 ${
+                          formTypes.includes(t)
+                            ? `${TYPE_COLORS[t]} border`
+                            : 'bg-zinc-800/50 text-zinc-500 border border-zinc-700 hover:text-zinc-300'
+                        }`}
+                      >
+                        {formTypes.includes(t) && <Check className="size-3" />}
+                        {t === 'image' && <ImageIcon className="size-3.5" />}
+                        {t === 'video' && <Video className="size-3.5" />}
+                        {t === 'text' && <MessageSquare className="size-3.5" />}
+                        {TYPE_LABELS[t]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 备注 */}
+                <div className="flex-1 min-h-0">
+                  <label className="mb-1 block text-xs font-medium text-zinc-400">备注</label>
+                  <textarea
+                    value={formRemark}
+                    onChange={(e) => setFormRemark(e.target.value)}
+                    placeholder="可选，添加备注说明..."
+                    rows={2}
+                    className="w-full resize-none rounded-xl bg-zinc-800/50 px-3 py-1.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                  />
+                </div>
+              </div>
+
+              {/* ============ 右列：调度配置 ============ */}
+              <div className="flex flex-col gap-3 min-h-0 overflow-hidden">
+                {/* 并发线程数 + 容量模型（同行） */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-zinc-400">
+                      并发线程数 <span className="text-zinc-500">（单服务商最大同时生成数）</span>
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={formMaxConcurrent}
+                      onChange={(e) => setFormMaxConcurrent(Number(e.target.value) || 1)}
+                      className="w-full rounded-xl bg-zinc-800/50 px-3 py-1.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-zinc-400">容量模型</label>
+                    <div className="flex items-center gap-1.5">
+                      {([['limited', '受限账号'], ['unlimited', '普通付费']] as const).map(([v, label]) => (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => setFormCapacityModel(v)}
+                          className={`flex-1 rounded-xl py-1.5 text-[11px] font-semibold transition-all duration-200 ${
+                            formCapacityModel === v
+                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700 hover:text-white'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 受限账号 B 桶配置 / 普通付费提示 */}
                 {formCapacityModel === 'limited' ? (
-                  <div className="mt-3 space-y-3">
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 space-y-2.5">
                     {/* B 与上限 */}
                     <div className="grid grid-cols-2 gap-2">
                       <div>
@@ -2222,183 +2125,101 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                           type="number" min={1} max={100000}
                           value={formBucketUnits}
                           onChange={(e) => setFormBucketUnits(Number(e.target.value) || 1)}
-                          className="w-full rounded-xl bg-zinc-800/50 px-3 py-2 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                          className="w-full rounded-lg bg-zinc-800/50 px-2.5 py-1.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
                         />
                       </div>
                       <div>
-                        <label className="mb-1 block text-[10px] text-zinc-500">粒度上限 bucket_max（留空=不限制）</label>
+                        <label className="mb-1 block text-[10px] text-zinc-500">上限 bucket_max（留空=不限）</label>
                         <input
                           type="number" min={1} max={100000}
                           value={formBucketMax}
                           onChange={(e) => setFormBucketMax(e.target.value === '' ? '' : Number(e.target.value))}
                           placeholder="不限"
-                          className="w-full rounded-xl bg-zinc-800/50 px-3 py-2 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                          className="w-full rounded-lg bg-zinc-800/50 px-2.5 py-1.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
                         />
                       </div>
                     </div>
                     {formBucketMax === '' && (
-                      <p className="text-[10px] text-amber-400/80">⚠ 未设上限：B 可任意调大，请确认服务商物理限速允许。</p>
+                      <p className="text-[10px] text-amber-400/80">� 未设上限：B 可任意调大，请确认服务商物理限速允许。</p>
                     )}
                     {formBucketMax !== '' && (Number(formBucketUnits) || 20) > Number(formBucketMax) && (
                       <p className="text-[10px] text-red-400">✕ B 超过粒度上限，保存将被拒绝。</p>
                     )}
 
-                    {/* 各操作单位消耗（cost）→ 派生每分钟上限 */}
-                    <div>
-                      <label className="mb-1 block text-[10px] text-zinc-500">各操作单位消耗（cost，可改；上限 = floor(B/cost)）</label>
-                      <div className="grid grid-cols-4 gap-2">
-                        {(['1k', '2k', '4k', 'video'] as const).map((t) => {
-                          const cost = formOpCosts[t] || 1;
-                          const cap = Math.max(0, Math.floor((Number(formBucketUnits) || 20) / (cost || 1)));
-                          return (
-                            <div key={t}>
-                              <div className="mb-1 text-center text-[10px] text-zinc-500">{t}</div>
-                              <input
-                                type="number" min={1} max={1000}
-                                value={cost}
-                                onChange={(e) => setFormOpCosts((prev) => ({ ...prev, [t]: Number(e.target.value) || 1 }))}
-                                className="w-full rounded-xl bg-zinc-800/50 px-2 py-2 text-center text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                              />
-                              <div className="mt-1 text-center text-[9px] text-emerald-400/80">≤ {cap}/min</div>
-                            </div>
-                          );
-                        })}
+                    {/* 各操作 cost + 冷却时长（同行） */}
+                    <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                      <div>
+                        <label className="mb-1 block text-[10px] text-zinc-500">各操作成本（上限 = floor(B/cost) /min）</label>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {(['1k', '2k', '4k', 'video'] as const).map((t) => {
+                            const cost = formOpCosts[t] || 1;
+                            const cap = Math.max(0, Math.floor((Number(formBucketUnits) || 20) / (cost || 1)));
+                            return (
+                              <div key={t}>
+                                <div className="mb-0.5 text-center text-[9px] text-zinc-500">{t}</div>
+                                <input
+                                  type="number" min={1} max={1000}
+                                  value={cost}
+                                  onChange={(e) => setFormOpCosts((prev) => ({ ...prev, [t]: Number(e.target.value) || 1 }))}
+                                  className="w-full rounded-lg bg-zinc-800/50 px-1.5 py-1 text-center text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                                />
+                                <div className="mt-0.5 text-center text-[9px] text-emerald-400/80">≤ {cap}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[10px] text-zinc-500">整账号冷却（秒）</label>
+                        <input
+                          type="number" min={1} max={3600}
+                          value={formCooldownSec}
+                          onChange={(e) => setFormCooldownSec(Number(e.target.value) || 60)}
+                          className="w-20 rounded-lg bg-zinc-800/50 px-2.5 py-1.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                        />
                       </div>
                     </div>
+                    <p className="text-[10px] text-zinc-500 leading-tight">拒单（桶空 / 429 / 连续失败）后整账号冷却此时长，到期自动恢复。</p>
                   </div>
                 ) : (
-                  <p className="mt-2 text-[10px] text-zinc-500">方向 B：按付费计费，无速率限制，仅受并发约束。4k/视频亦无限速。</p>
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+                    <p className="text-[10px] text-zinc-500 leading-relaxed">方向 B：按付费计费，无速率限制，仅受并发约束。4k/视频亦无限速。</p>
+                  </div>
                 )}
 
-                {/* 整账号冷却时长 */}
-                <div className="mt-3">
-                  <label className="mb-1 block text-[10px] text-zinc-500">整账号冷却时长（秒，默认 60，可调）</label>
-                  <input
-                    type="number" min={1} max={3600}
-                    value={formCooldownSec}
-                    onChange={(e) => setFormCooldownSec(Number(e.target.value) || 60)}
-                    className="w-full rounded-xl bg-zinc-800/50 px-3 py-2 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                  />
-                  <p className="mt-1 text-[10px] text-zinc-500">拒单（桶空 / 真实 429 / 连续失败）后整账号冷却此时长，到期自动恢复（冷→热）。</p>
-                </div>
-              </div>
-
-              {/* 协议类型 */}
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">接口协议</label>
-                <div className="grid grid-cols-2 gap-2">
+                {/* 启用开关（贴底） */}
+                <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-2.5 mt-auto">
+                  <div>
+                    <div className="text-sm font-medium text-white leading-tight">启用该服务商</div>
+                    <div className="text-[10px] text-zinc-500 leading-tight">关闭后该服务商模型不出现在选择器</div>
+                  </div>
                   <button
-                    type="button"
-                    onClick={() => setFormProtocol('openai-compatible')}
-                    className={`flex flex-col items-start gap-0.5 rounded-2xl px-3 py-2 text-left transition-all duration-200 ${
-                      formProtocol === 'openai-compatible'
-                        ? 'bg-blue-500/15 text-blue-400 border border-blue-500/30'
-                        : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700 hover:text-white'
+                    onClick={() => setFormEnabled(!formEnabled)}
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition-all duration-300 ${
+                      formEnabled ? 'bg-emerald-500' : 'bg-zinc-700'
                     }`}
                   >
-                    <span className="text-xs font-semibold">OpenAI 兼容</span>
-                    <span className="text-[10px] text-zinc-500">/v1/images/generations 等</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setFormProtocol('custom')}
-                    className={`flex flex-col items-start gap-0.5 rounded-2xl px-3 py-2 text-left transition-all duration-200 ${
-                      formProtocol === 'custom'
-                        ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
-                        : 'bg-zinc-800/50 text-zinc-400 border border-zinc-700 hover:text-white'
-                    }`}
-                  >
-                    <span className="text-xs font-semibold">自定义协议</span>
-                    <span className="text-[10px] text-zinc-500">在「自定义协议」Tab 配置端点</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* 获取模型列表 */}
-              <div>
-                <button
-                  type="button"
-                  onClick={() => fetchModels(formBaseUrl, formApiKey, formProtocol)}
-                  disabled={fetchingModels}
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 py-2.5 text-sm font-semibold text-emerald-400 hover:bg-emerald-500/10 hover:border-emerald-500/50 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {fetchingModels ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="size-4" />
-                  )}
-                  <span>{fetchingModels ? '获取中...' : '获取模型列表'}</span>
-                </button>
-              </div>
-
-              {/* 支持的模型类型 */}
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">支持的模型类型</label>
-                <div className="flex items-center gap-2">
-                  {(['image', 'video', 'text'] as const).map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => toggleFormType(t)}
-                      className={`flex flex-1 items-center justify-center gap-1.5 rounded-2xl py-2 text-xs font-semibold transition-all duration-200 ${
-                        formTypes.includes(t)
-                          ? `${TYPE_COLORS[t]} border`
-                          : 'bg-zinc-800/50 text-zinc-500 border border-zinc-700 hover:text-zinc-300'
+                    <div
+                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all duration-300 ${
+                        formEnabled ? 'left-[18px]' : 'left-0.5'
                       }`}
-                    >
-                      {formTypes.includes(t) && <Check className="size-3" />}
-                      {t === 'image' && <ImageIcon className="size-3.5" />}
-                      {t === 'video' && <Video className="size-3.5" />}
-                      {t === 'text' && <MessageSquare className="size-3.5" />}
-                      {TYPE_LABELS[t]}
-                    </button>
-                  ))}
+                    />
+                  </button>
                 </div>
-              </div>
-
-              {/* 启用开关 */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm font-medium text-white">启用该服务商</div>
-                  <div className="text-xs text-zinc-500">关闭后该服务商的模型将不会出现在选择器中</div>
-                </div>
-                <button
-                  onClick={() => setFormEnabled(!formEnabled)}
-                  className={`relative h-6 w-11 shrink-0 rounded-full transition-all duration-300 ${
-                    formEnabled ? 'bg-emerald-500' : 'bg-zinc-700'
-                  }`}
-                >
-                  <div
-                    className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all duration-300 ${
-                      formEnabled ? 'left-[22px]' : 'left-0.5'
-                    }`}
-                  />
-                </button>
-              </div>
-
-              {/* 备注 */}
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-zinc-400">备注</label>
-                <textarea
-                  value={formRemark}
-                  onChange={(e) => setFormRemark(e.target.value)}
-                  placeholder="可选，添加备注说明..."
-                  rows={2}
-                  className="w-full resize-none rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white placeholder:text-zinc-600 border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                />
               </div>
             </div>
 
-            {/* 底部按钮 */}
-            <div className="mt-6 flex items-center justify-end gap-2">
+            {/* 底栏：按钮 */}
+            <div className="mt-4 flex items-center justify-end gap-2 shrink-0">
               <button
                 onClick={() => setProviderDialogOpen(false)}
-                className="rounded-full border border-zinc-700 px-5 py-2 text-sm text-white hover:bg-zinc-800/50 transition-colors"
+                className="rounded-full border border-zinc-700 px-5 py-1.5 text-sm text-white hover:bg-zinc-800/50 transition-colors"
               >
                 取消
               </button>
               <button
                 onClick={handleSaveProvider}
-                className="rounded-full bg-emerald-500 px-5 py-2 text-sm font-bold text-black hover:bg-emerald-400 transition-colors"
+                className="rounded-full bg-emerald-500 px-5 py-1.5 text-sm font-bold text-black hover:bg-emerald-400 transition-colors"
               >
                 {editingProvider ? '保存修改' : '添加服务商'}
               </button>
@@ -2425,6 +2246,14 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
         providers={providers}
         models={models}
         setModels={setModels}
+      />
+
+      {/* 服务商维度的「逐模型管理」抽屉（显隐 / 价格 / 并发 / 耗时 / 分类 / 商用） */}
+      <ProviderModelsPanel
+        providerId={manageProviderId}
+        providerName={providers.find((p) => p.id === manageProviderId)?.name || ''}
+        open={manageOpen}
+        onClose={() => setManageOpen(false)}
       />
     </div>
   );

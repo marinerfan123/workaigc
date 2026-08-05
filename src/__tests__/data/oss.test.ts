@@ -4,20 +4,19 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { DEFAULT_OSS_CONFIG } from '../../data/oss.ts';
-import type { IOssConfig } from '../../data/oss.ts';
+import { DEFAULT_OSS_CONFIG, DEFAULT_OSS_SLOT } from '../../data/oss.ts';
+import type { IOssConfig, OssProviderType } from '../../data/oss.ts';
 
 describe('data/oss.ts', () => {
   describe('DEFAULT_OSS_CONFIG', () => {
-    it('should have provider "aliyun-oss"', () => {
-      assert.strictEqual(DEFAULT_OSS_CONFIG.provider, 'aliyun-oss');
+    it('should have providerType "aliyun-oss"', () => {
+      assert.strictEqual(DEFAULT_OSS_CONFIG.providerType, 'aliyun-oss');
     });
 
     it('should have required string fields', () => {
       const fields = [
-        'accessPointName',
+        'displayName',
         'endpointExternal',
-        'endpointInternal',
         'bucket',
         'region',
         'regionLabel',
@@ -40,38 +39,52 @@ describe('data/oss.ts', () => {
       assert.strictEqual(DEFAULT_OSS_CONFIG.pathPrefix, 'images/');
     });
 
-    it('should have enabled as false by default', () => {
-      assert.strictEqual(DEFAULT_OSS_CONFIG.enabled, false);
-    });
-
     it('should have region "cn-shanghai"', () => {
       assert.strictEqual(DEFAULT_OSS_CONFIG.region, 'cn-shanghai');
     });
+  });
 
-    it('should have valid endpoint URLs', () => {
-      assert.ok(DEFAULT_OSS_CONFIG.endpointExternal.includes('oss-cn-shanghai'));
-      assert.ok(DEFAULT_OSS_CONFIG.endpointInternal.includes('-internal'));
+  describe('DEFAULT_OSS_SLOT', () => {
+    it('defaults to aliyun-oss', () => {
+      assert.strictEqual(DEFAULT_OSS_SLOT.providerType, 'aliyun-oss');
+      assert.strictEqual(DEFAULT_OSS_SLOT.region, 'cn-shanghai');
+      assert.strictEqual(DEFAULT_OSS_SLOT.endpointExternal, 'oss-cn-shanghai.aliyuncs.com');
+    });
+
+    it('has empty secrets (user must fill in)', () => {
+      assert.strictEqual(DEFAULT_OSS_SLOT.accessKeyId, '');
+      assert.strictEqual(DEFAULT_OSS_SLOT.accessKeySecret, '');
+      assert.strictEqual(DEFAULT_OSS_SLOT.bucket, '');
+    });
+  });
+
+  describe('OssProviderType union', () => {
+    it('includes both clouds', () => {
+      const a: OssProviderType = 'aliyun-oss';
+      const t: OssProviderType = 'tencent-cos';
+      assert.ok(a && t);
     });
   });
 
   describe('IOssConfig type', () => {
-    it('should allow complete config object', () => {
-      const config: IOssConfig = {
-        provider: 'aliyun-oss',
-        accessPointName: 'test',
-        endpointExternal: 'https://test.oss-cn-shanghai.aliyuncs.com',
-        endpointInternal: 'https://test.oss-cn-shanghai-internal.aliyuncs.com',
-        bucket: 'test-bucket',
-        region: 'cn-shanghai',
-        regionLabel: '华东2（上海）',
-        accessKeyId: 'test-key',
-        accessKeySecret: 'test-secret',
+    it('should accept tencent-cos config', () => {
+      const cfg: IOssConfig = {
+        id: 'oss-test',
+        providerType: 'tencent-cos',
+        displayName: 'shanghai',
+        bucket: 'huabu-1250000000',
+        region: 'ap-shanghai',
+        regionLabel: '上海',
+        appId: '1250000000',
+        accessKeyId: 'AKID...',
+        accessKeySecret: 'xxx',
+        endpointExternal: 'cos.ap-shanghai.myqcloud.com',
         pathPrefix: 'uploads/',
         customDomain: '',
         enabled: true,
       };
-      assert.strictEqual(config.enabled, true);
-      assert.strictEqual(config.provider, 'aliyun-oss');
+      assert.strictEqual(cfg.providerType, 'tencent-cos');
+      assert.strictEqual(cfg.appId, '1250000000');
     });
   });
 });

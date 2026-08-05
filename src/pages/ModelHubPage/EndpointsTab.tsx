@@ -16,15 +16,15 @@ interface Props {
   getProviderName: (id: string) => string;
 }
 
-type EndpointKind = 'listModels' | 'generate' | 'poll';
+export type EndpointKind = 'listModels' | 'generate' | 'poll';
 
-const KIND_LABELS: Record<EndpointKind, string> = {
+export const KIND_LABELS: Record<EndpointKind, string> = {
   listModels: '获取模型列表',
   generate: '生成调用',
   poll: '拉取结果（异步任务）',
 };
 
-const EMPTY_ENDPOINT: IEndpoint = { path: '' };
+export const EMPTY_ENDPOINT: IEndpoint = { path: '' };
 
 export default function EndpointsTab({ providers, setProviders, setModels, models, getProviderName }: Props) {
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(
@@ -413,8 +413,8 @@ export default function EndpointsTab({ providers, setProviders, setModels, model
   );
 }
 
-// ─── 端点编辑器子组件 ───
-function EndpointEditor({
+// ─── 端点编辑器子组件（导出供 ModelProtocolDrawer 复用）───
+export function EndpointEditor({
   endpoint,
   kind,
   onChange,

@@ -68,8 +68,10 @@ export default function App() {
           <Route path="user/:id" element={<UserPage />} />
         </Route>
 
-        {/* 管理后台壳（整区需管理员） */}
-        <Route path="/admin" element={<RequireAdmin><AdminLayout /></RequireAdmin>}>
+        {/* 管理后台壳（整区需管理员 — 登录检查放这里，角色检查交给 AdminLayout 提供更友好的"无权限"页）
+            之前 RequireAdmin 包外层会在 user 还在异步恢复或角色不匹配时直接 <Navigate to="/" replace />，
+            用户体验是"F5 立刻被丢到主页，看不到原因"，改为 RequireAuth 后，角色不符场景由 AdminLayout 自渲染提示页。 */}
+        <Route path="/admin" element={<RequireAuth><AdminLayout /></RequireAuth>}>
           <Route index element={<ConsolePage />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="users" element={<UsersPage />} />

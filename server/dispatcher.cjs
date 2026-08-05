@@ -300,7 +300,9 @@ async function attemptOnAccount(p, tier, input, contentType) {
   refillAccount(a, now);
   const cost = costFor(a, tier);
   if (a.capacityModel !== 'unlimited' && a.bucket.tokens < cost) { markReject(a, now); return null; } // 共享桶空 → 拒单
-  const concCap = Math.min(Number(p.provider.max_concurrent) || 2, ACCOUNT_CONC_CAP);
+  // per-model 并发覆盖：模型自身设了 max_concurrent（非 null 正数）则优先用，否则回退服务商默认
+  const modelConc = (p.model && typeof p.model.max_concurrent === 'number' && p.model.max_concurrent > 0) ? p.model.max_concurrent : null;
+  const concCap = Math.min(modelConc ?? (Number(p.provider.max_concurrent) || 2), ACCOUNT_CONC_CAP);
   if (a.conc >= concCap) return null;                          // 单账号并发满（非拒单，仅忙）
   if (a.capacityModel !== 'unlimited') a.bucket.tokens -= cost; // 占用单位
   a.conc += 1; GLOBAL_ACTIVE += 1;
@@ -347,11 +349,14 @@ async function generate(pgPool, opts) {
     : (['1k', '2k', '4k'].includes(resolution) ? resolution
       : (resolution === '8k' ? '4k' : '1k'));
 
-  // 1. 全局最大并发
+  // 1. 全局最大并发 + 等待区阈值（均可被 settings.app 实时覆盖）
   try {
     const r = await pgPool.query("SELECT value FROM settings WHERE key='app'");
     const v = r.rows[0] && r.rows[0].value;
     if (v && v.maxThreads) GLOBAL_MAX = Number(v.maxThreads) || 10;
+    if (v && typeof v.waitingAreaThreshold === 'number' && v.waitingAreaThreshold > 0) {
+      WAITING_THRESHOLD = Math.floor(v.waitingAreaThreshold);
+    }
   } catch {}
 
   // 2. 按 display_name / model_id 找模型行
@@ -447,15 +452,27 @@ async function generateAsync(pgPool, opts) {
           // 注意：media 由前端负责写入（含 OSS 上传 + 探活 + 永久化），后端不重复写，
           // 避免双写重复行 + 原始服务商 URL 易过期（与 OSS 永久化目标冲突）。
           await billing.commitCredits(pgPool, user_id, cost, idempotencyKey);
+          await pgPool.query(
+            `UPDATE generation_tasks SET status=$2, result=$3, error=$4, completed_at=NOW(), user_id=$5
+             WHERE task_id=$1`,
+            [taskId, 'done', JSON.stringify(result || {}), (result && result.error) || '', user_id],
+          );
+        } else if (result && result.status === 'throttled') {
+          // 资源全不可用（该任务所有可用供应商都冷却/限流）→ 进入等待区后台重试，
+          // 不立即判失败、不释放积分（仍持有，等待真正生成或超时再释放）。
+          // 前台是否提示"资源不足"由等待区积压 + 平台全冷状态决定（见 getWaitingAreaStatus）。
+          enqueueWaiting(taskId, opts);
+          await updateTaskStatus(pgPool, taskId, 'running', null, '资源紧张，已进入等待区排队重试', user_id);
+          runWaitingPump(pgPool).catch((e) => console.warn('[waiting] pump error:', e.message));
         } else {
           // 生成失败：释放 held 积分（G3 释放点）
           await billing.releaseCredits(pgPool, user_id, cost, idempotencyKey);
+          await pgPool.query(
+            `UPDATE generation_tasks SET status=$2, result=$3, error=$4, completed_at=NOW(), user_id=$5
+             WHERE task_id=$1`,
+            [taskId, 'failed', JSON.stringify(result || {}), (result && result.error) || '', user_id],
+          );
         }
-        await pgPool.query(
-          `UPDATE generation_tasks SET status=$2, result=$3, error=$4, completed_at=NOW(), user_id=$5
-           WHERE task_id=$1`,
-          [taskId, ok ? 'done' : 'failed', JSON.stringify(result || {}), (result && result.error) || '', user_id],
-        );
       } catch (e) {
         console.warn('[dispatcher] 完成回调失败:', e.message);
       }
@@ -545,11 +562,164 @@ async function listActiveTasks(pgPool, userId) {
 module.exports = {
   generate, generateAsync, getTaskStatus, listActiveTasks, callEndpoint, getByPath, getArrayByPath,
   getAcct, normalizeRateLimits, costFor, getAccountStates, setManualState,
+  // ── 等待区（资源全不可用时积压 + 前台"资源不足"提示）───
+  getWaitingAreaStatus, enqueueWaiting, dequeueWaiting, waitingAreaSize,
+  allResourcesDown, waitingAreaTriggered, setWaitingThreshold, getWaitingThreshold,
+  refreshWaitingThreshold, runWaitingPump, updateTaskStatus, planPriority,
 };
 
+// ─── 等待区（资源全不可用时积压请求；超阈值触发前台"资源不足"）───
+// 仅当某任务的所有可用供应商都不可用时，dispatchOne 返回 'throttled'；
+// 该任务不立即判失败，而是进入等待区后台重试，直到资源恢复或超时。
+// 当「所有账号全冷（平台级全不可用）」且「等待区积压 > 阈值」时，前台提示"资源不足"。
+// 阈值（默认 10）可调：写入 settings.app.waitingAreaThreshold（管理面板「调度设置」）。
+//
+// 会员优先调度（商业优化）：不同套餐在等待区拥有不同出队优先级，
+// 资源一旦恢复，会员任务优先抢到空闲账号 → 把"资源不足"从痛点转成付费理由。
+// 优先级仅影响排队次序，不豁免计费/限额。后续若需可配置权重，可迁到 settings.app.planPriority。
+const PLAN_PRIORITY = { free: 0, pro: 1, team: 2 };
+function planPriority(plan) {
+  return typeof PLAN_PRIORITY[plan] === 'number' ? PLAN_PRIORITY[plan] : 0;
+}
+const WAITING_AREA = new Map();            // taskId -> { enqueueAt, lastAttempt, attempts, priority, opts }
+let WAITING_THRESHOLD = 10;                // 可调：所有资源不可用时，等待区积压超过该值 → 触发前台提示
+const WAITING_MAX_WAIT_MS = 5 * 60 * 1000; // 单任务最长等待 5 分钟，超时判失败（释放积分）
+let waitingPumpRunning = false;
+
+function setWaitingThreshold(n) {
+  if (typeof n === 'number' && n > 0) WAITING_THRESHOLD = Math.floor(n);
+}
+function getWaitingThreshold() { return WAITING_THRESHOLD; }
+
+// 从 settings.app.waitingAreaThreshold 实时刷新内存阈值（供 queue-status 接口在返回前调用，
+// 保证前台阈值调整即时生效，无需等下一次 generate()）。
+async function refreshWaitingThreshold(pgPool) {
+  if (!pgPool) return;
+  try {
+    const r = await pgPool.query("SELECT value FROM settings WHERE key='app'");
+    const v = r.rows[0] && r.rows[0].value;
+    if (v && typeof v.waitingAreaThreshold === 'number' && v.waitingAreaThreshold > 0) {
+      WAITING_THRESHOLD = Math.floor(v.waitingAreaThreshold);
+    }
+  } catch {}
+}
+
+// 平台级"所有资源不可用"：所有已加载账号都冷（含手动 cold / 冷却中）。
+// 无账号配置时不算"全不可用"，避免误报（没有账号本就该报"无可用模型"而非"资源不足"）。
+function allResourcesDown() {
+  const entries = Object.values(getAccountStates());
+  if (entries.length === 0) return false;
+  return entries.every((s) => !!s.cold);
+}
+
+function enqueueWaiting(taskId, opts) {
+  if (!WAITING_AREA.has(taskId)) {
+    WAITING_AREA.set(taskId, {
+      enqueueAt: Date.now(),
+      lastAttempt: 0,
+      attempts: 0,
+      priority: planPriority(opts && opts.userPlan),
+      opts,
+    });
+  }
+}
+function dequeueWaiting(taskId) { WAITING_AREA.delete(taskId); }
+function waitingAreaSize() { return WAITING_AREA.size; }
+
+// 触发条件：所有资源不可用 且 等待区积压 > 阈值（阈值可调，默认 10）
+function waitingAreaTriggered() {
+  return allResourcesDown() && waitingAreaSize() > WAITING_THRESHOLD;
+}
+
+function getWaitingAreaStatus() {
+  const down = allResourcesDown();
+  const size = waitingAreaSize();
+  let memberWaiting = 0;
+  for (const item of WAITING_AREA.values()) if (item.priority > 0) memberWaiting++;
+  return {
+    waitingAreaSize: size,
+    memberWaiting,
+    allResourcesDown: down,
+    threshold: WAITING_THRESHOLD,
+    triggered: down && size > WAITING_THRESHOLD,
+  };
+}
+
+// 退避间隔：随重试次数指数增长，封顶 30s，避免打爆供应商
+function waitingBackoff(attempts) {
+  return Math.min(30000, 2000 * Math.pow(1.6, attempts));
+}
+
+// 统一任务状态写回（完成 / 失败 / 重置为 running）。done/failed 时落 completed_at。
+async function updateTaskStatus(pgPool, taskId, status, result, error, userId) {
+  try {
+    await pgPool.query(
+      `UPDATE generation_tasks SET status=$2, result=$3, error=$4,
+         completed_at = CASE WHEN $2 IN ('done','failed') THEN NOW() ELSE completed_at END,
+         user_id=$5
+       WHERE task_id=$1`,
+      [taskId, status, result ? JSON.stringify(result) : null, error || '', userId || null],
+    );
+  } catch (e) {
+    console.warn('[waiting] 更新任务状态失败:', e.message);
+  }
+}
+
+// 等待区后台泵：周期性重试积压任务，资源恢复即出队；超时则判失败释放积分。
+// 同一进程内单例（waitingPumpRunning 守卫），由首个入队任务触发，跑完自动退出。
+async function runWaitingPump(pgPool) {
+  if (waitingPumpRunning) return;
+  waitingPumpRunning = true;
+  try {
+    while (WAITING_AREA.size > 0) {
+      const now = Date.now();
+      const due = [];
+      for (const [taskId, item] of WAITING_AREA) {
+        if (now - item.enqueueAt > WAITING_MAX_WAIT_MS) {
+          due.push({ taskId, item, reason: 'timeout' });
+        } else if (now - item.lastAttempt >= waitingBackoff(item.attempts)) {
+          due.push({ taskId, item, reason: 'retry' });
+        }
+      }
+      // 会员优先出队：priority 降序（会员先抢恢复的资源），同优先级按入队时间升序（FIFO）。
+      due.sort((a, b) => (b.item.priority - a.item.priority) || (a.item.enqueueAt - b.item.enqueueAt));
+      for (const { taskId, item, reason } of due) {
+        if (WAITING_AREA.get(taskId) !== item) continue; // 已被其它分支移除
+        const opts = item.opts;
+        if (reason === 'timeout') {
+          // 等待超时：释放 held 积分 + 判失败
+          await billing.releaseCredits(pgPool, opts.user_id, opts.cost, opts.idempotencyKey).catch(() => {});
+          await updateTaskStatus(pgPool, taskId, 'failed', null, '等待区超时：资源长时间不可用', opts.user_id);
+          WAITING_AREA.delete(taskId);
+          continue;
+        }
+        item.lastAttempt = now;
+        item.attempts += 1;
+        const result = await generate(pgPool, opts);
+        const ok = result && result.status === 'success' && Array.isArray(result.images) && result.images.length;
+        if (ok) {
+          await billing.commitCredits(pgPool, opts.user_id, opts.cost, opts.idempotencyKey).catch(() => {});
+          await updateTaskStatus(pgPool, taskId, 'done', result, null, opts.user_id);
+          WAITING_AREA.delete(taskId);
+        } else if (result && result.status === 'throttled') {
+          // 仍不可用：继续留在等待区，下一轮再试（任务保持 running，前台仍显示"生成中"）
+        } else {
+          // 真实失败（非资源问题）：释放积分 + 判失败
+          await billing.releaseCredits(pgPool, opts.user_id, opts.cost, opts.idempotencyKey).catch(() => {});
+          await updateTaskStatus(pgPool, taskId, 'failed', result, (result && result.error) || '生成失败', opts.user_id);
+          WAITING_AREA.delete(taskId);
+        }
+      }
+      if (WAITING_AREA.size === 0) break;
+      await sleep(1500);
+    }
+  } finally {
+    waitingPumpRunning = false;
+  }
+}
+
 // ─── 管理面板用：账号冷热状态快照 + 手动强切（持久化到 rate_limits JSONB / cooldown_ms 列）───
-function getAccountStates() {
-  const out = {};
+function getAccountStates() {  const out = {};
   const now = Date.now();
   for (const pid of Object.keys(ACCT)) {
     const a = ACCT[pid];

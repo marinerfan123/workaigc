@@ -7,7 +7,7 @@ import {
   type ModelType,
   getEffectiveModelName,
 } from '@/data/models';
-import { apiGetProviders, apiGetModels, apiSaveProviders, apiSaveModels, apiDeleteProvider, apiDeleteModel, ensureApi } from '@/services/api';
+import { apiGetProviders, apiGetModels, apiSaveProviders, apiSaveModels, apiDeleteProvider, apiDeleteModel, apiPatchModel, ensureApi } from '@/services/api';
 
 // 模块级共享状态（仅内存，持久化全部走后端 API）
 let providersState: IModelProvider[] = [];
@@ -112,6 +112,26 @@ function cleanupOrphanModels(): number {
   return orphans.length;
 }
 
+/**
+ * 单模型局部更新（管理员）：乐观更新本地状态 + 调 PATCH 仅写变更列；
+ * 失败自动回滚本地状态。用于「管理模型」抽屉里的显隐/价格/并发/耗时等字段级编辑。
+ */
+async function patchModel(id: string, patch: Record<string, any>) {
+  const prev = modelsState.find((m) => m.id === id);
+  if (!prev) return;
+  const backup = { ...prev };
+  modelsState = modelsState.map((m) => (m.id === id ? { ...m, ...patch } : m));
+  notify();
+  try {
+    const r = await apiPatchModel(id, patch);
+    if (!r || r.ok === false) throw new Error((r && r.error) || '更新失败');
+  } catch (e) {
+    modelsState = modelsState.map((m) => (m.id === id ? backup : m));
+    notify();
+    throw e;
+  }
+}
+
 export function useModelHub() {
   const providers = useSyncExternalStore(subscribe, getProvidersSnapshot, getProvidersSnapshot);
   const models = useSyncExternalStore(subscribe, getModelsSnapshot, getModelsSnapshot);
@@ -140,6 +160,7 @@ export function useModelHub() {
     models,
     setProviders,
     setModels,
+    patchModel,
     deleteProvider,
     deleteModel,
     cleanupOrphanModels,

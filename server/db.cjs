@@ -65,6 +65,7 @@ async function initDB() {
         supported_resolutions TEXT[] DEFAULT '{}',
         capabilities JSONB DEFAULT '{}',
         endpoint JSONB DEFAULT '{}',
+        max_concurrent INT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
@@ -140,6 +141,10 @@ async function initDB() {
     `);
     await client.query(`
       ALTER TABLE providers ADD COLUMN IF NOT EXISTS cooldown_ms INT DEFAULT 60000;
+    `);
+    // 兼容已部署库：补 models 的 per-model 并发/耗时/分类/商用/创作者列
+    await client.query(`
+      ALTER TABLE models ADD COLUMN IF NOT EXISTS max_concurrent INT;
     `);
 
     console.log('[PG] 数据库表初始化完成');

@@ -11,6 +11,12 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   const { user, ready } = useAuth();
   const location = useLocation();
 
+  // DEV 调试：F5 跳走时可在这里看到 ready/user 真实值
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.debug('[RequireAuth]', location.pathname, 'ready=', ready, 'user=', user?.role, 'email=', user?.email);
+  }
+
   if (!ready) {
     return (
       <div className="flex h-full w-full items-center justify-center text-sm text-zinc-500">

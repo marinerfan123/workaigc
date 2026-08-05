@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect, useImperativeHandle } from 'react';
+import { useState, useRef, useEffect, useImperativeHandle, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { probeImageLoad } from '@/utils/imageProbe';
 import {
   ArrowUp,
@@ -30,8 +31,8 @@ import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
-import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, apiListActiveGenerations } from '@/services/api';
-import { refreshUser, setAuthModalOpen } from '@/services/authStore';
+import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus } from '@/services/api';
+import { refreshUser, setAuthModalOpen, useAuth } from '@/services/authStore';
 import { ALL_RESOLUTIONS, type Resolution, getEffectiveModelName } from '@/data/models';
 import type { Ratio, Quality } from '@/data/settings';
 // 注意：原 probeImageLoad(persistentUrl) 在 OSS 失败分支探测 provider URL，因 CORS 不可靠
@@ -454,6 +455,68 @@ function GenerationBar({
       <text x="200" y="165" text-anchor="middle" fill="#1e293b" font-size="12" font-family="sans-serif">AI 生成示例 · 本地预览</text>
     </svg>`
   )}`;
+
+  // 后台调度实时反馈：轮询 /api/providers/states 拿各账号冷热/限额/并发。
+  // 只在用户已选模型时才挂轮询（无意义的早期请求不浪费），离开页面自动停。
+  // —— 触发条件：
+  //   - 全平台账号 100% cold → 红色徽章「无可用账号」
+  //   - cold 占比 ≥ 50%     → 黄色徽章「可用账号紧张 a/b」
+  //   - 否则                 不显示（默认无干扰）
+  const [providerStates, setProviderStates] = useState<Record<string, any>>({});
+  useEffect(() => {
+    if (!currentModel) return;
+    let alive = true;
+    const load = async () => {
+      try {
+        const s = await apiGetProviderStates();
+        if (alive) setProviderStates(s || {});
+      } catch { /* 静默：states 拉取失败不打扰用户 */ }
+    };
+    load();
+    const t = setInterval(load, 4000);
+    return () => { alive = false; clearInterval(t); };
+  }, [currentModel]);
+
+  // 派生"当前模型关联账号 / 全局账号"的可用度
+  type Level = 'critical' | 'tight' | 'ok' | 'unknown';
+  const availability: { level: Level; label: string; cold: number; total: number } = useMemo(() => {
+    const entries = Object.values(providerStates || {});
+    const total = entries.length;
+    if (total === 0) return { level: 'unknown', label: '', cold: 0, total: 0 };
+
+    // 视角：平台级冷热（states 含所有账号）。当前模型能调度的账号只是子集，
+    // 但 GenerationBar 没拿到全 providers，无 providerId→accounts 映射；
+    // 平台级"调度池可用度"对"现在能不能跑起来"是更直接的口径。
+    const cold = entries.filter((s: any) => !!s?.cold).length;
+    const ratio = cold / total;
+    if (ratio >= 1) return { level: 'critical', label: `无可用账号（${total}/${total} 冷）`, cold, total };
+    if (ratio >= 0.5) return { level: 'tight', label: `可用账号紧张（${total - cold}/${total} 热）`, cold, total };
+    return { level: 'ok', label: '', cold, total };
+  }, [providerStates, currentModel]);
+
+  // 等待区聚合状态（公开接口，无需 admin）：后台反馈"资源不足"提示的唯一来源。
+  // - triggered=true → 所有资源不可用 且 等待区积压 > 阈值（阈值可调，默认 10）→ 红色"资源不足"
+  // 当前登录用户的套餐（用于区分会员/非会员的等待区提示与升级 CTA）
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const isMember = !!user && user.plan && user.plan !== 'free';
+
+  // 优先级高于上面的 availability 徽章（资源不足比"账号紧张"更严重）。
+  const [queueStatus, setQueueStatus] = useState<{ waitingAreaSize: number; memberWaiting: number; allResourcesDown: boolean; threshold: number; triggered: boolean }>({
+    waitingAreaSize: 0, memberWaiting: 0, allResourcesDown: false, threshold: 10, triggered: false,
+  });
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const s = await apiGetQueueStatus();
+        if (alive) setQueueStatus(s || { waitingAreaSize: 0, allResourcesDown: false, threshold: 10, triggered: false });
+      } catch { /* 静默：队列状态拉取失败不打扰用户 */ }
+    };
+    load();
+    const t = setInterval(load, 4000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
 
   // 降级：用本地 mock 数据填充生成结果（平台能力不可用时）
   // 注意：mock items 用传入的 pendingIds —— 这样父级 onGenerate 按 id 替换能命中 pending
@@ -982,14 +1045,58 @@ function GenerationBar({
                     免费
                   </span>
                 )}
-                {/* 限速提示：当前分辨率档有配置 RPM 限速时显示 */}
-                {typeof currentRateLimit === 'number' && currentRateLimit > 0 && (
-                  <span className="shrink-0 rounded-full bg-rose-500/10 text-rose-300 border border-rose-500/20 px-1.5 py-0.5 text-[9px] font-semibold">
-                    限速 {currentRateLimit}/分钟
+                {/* 等待区触发的"资源不足"提示（最高优先级）：所有资源不可用 且 等待区积压 > 阈值。
+                    - 会员：正面安抚徽章「会员优先调度中」（已享优先出队，无需恐慌）
+                    - 非会员：红色脉冲「资源不足 · 等待 N」—— 痛点即付费理由，配套升级 CTA 在按钮外 */}
+                {queueStatus.triggered && isMember && (
+                  <span
+                    className="shrink-0 rounded-full bg-amber-500/15 text-amber-200 border border-amber-500/30 px-1.5 py-0.5 text-[9px] font-semibold"
+                    title={`后台等待区积压 ${queueStatus.waitingAreaSize} 个请求（阈值 ${queueStatus.threshold}），您作为会员已优先调度`}
+                  >
+                    会员优先调度中 · 等待 {queueStatus.waitingAreaSize}
+                  </span>
+                )}
+                {queueStatus.triggered && !isMember && (
+                  <span
+                    className="shrink-0 rounded-full bg-rose-500/20 text-rose-200 border border-rose-500/40 px-1.5 py-0.5 text-[9px] font-semibold animate-pulse"
+                    title={`后台等待区积压 ${queueStatus.waitingAreaSize} 个请求（阈值 ${queueStatus.threshold}），所有调度账号均不可用。升级会员可优先调度`}
+                  >
+                    资源不足 · 等待 {queueStatus.waitingAreaSize}
+                  </span>
+                )}
+                {/* 调度可用度徽章：仅在后端 states 反馈「无可用 / 紧张」时才显示，默认隐藏。
+                    - 'critical'：100% 全冷 → 红色
+                    - 'tight'  ：≥50% 冷  → 黄色
+                    - 'ok'/'unknown'：不显示（用户原本的预期：上来不触发，节流时才提示） */}
+                {!queueStatus.triggered && availability.level === 'critical' && (
+                  <span
+                    className="shrink-0 rounded-full bg-rose-500/15 text-rose-300 border border-rose-500/30 px-1.5 py-0.5 text-[9px] font-semibold animate-pulse"
+                    title="后台反馈：所有调度账号都在冷却中，可能暂无可调度账号"
+                  >
+                    无可用账号
+                  </span>
+                )}
+                {!queueStatus.triggered && availability.level === 'tight' && (
+                  <span
+                    className="shrink-0 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 text-[9px] font-semibold"
+                    title="后台反馈：可用账号紧张，部分供应商正在冷却"
+                  >
+                    {availability.label}
                   </span>
                 )}
                 <ChevronDown className="size-3 text-zinc-500" />
               </button>
+              {/* 升级 CTA（仅非会员、且触发资源不足时）：把"资源不足"痛点直接转成付费入口 */}
+              {queueStatus.triggered && !isMember && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/account')}
+                  className="flex h-7 items-center gap-1 rounded-full bg-rose-500 px-2.5 text-[10px] font-semibold text-white hover:bg-rose-400 transition-colors"
+                  title="升级会员，等待区优先调度，资源恢复时优先出队"
+                >
+                  升级会员免排队
+                </button>
+              )}
               {modelMenuOpen && (
                 <>
                   <div

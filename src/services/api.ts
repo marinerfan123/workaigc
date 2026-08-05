@@ -126,6 +126,10 @@ export async function apiSaveModels(items: any[]) {
 export async function apiDeleteModel(id: string) {
   try { await apiFetch(`/api/models/${id}`, { method: 'DELETE' }); } catch {}
 }
+/** 单模型局部更新（管理员）：传任意可编辑字段子集，后端 PATCH 仅更新传入列 */
+export async function apiPatchModel(id: string, patch: Record<string, any>) {
+  try { return await apiFetch(`/api/models/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }); } catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
 
 /**
  * 代理下载外部图片（绕开浏览器 CORS）
@@ -153,15 +157,63 @@ export async function apiSaveSettings(settings: Record<string, any>) {
   try { await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); } catch {}
 }
 
-// ─── OSS ────────────────────────────────────────
-export async function apiGetOss(): Promise<any> {
-  try { return await apiFetch('/api/oss'); } catch { return {}; }
+// ─── OSS（多槽位 + 总开关） ────────────────────────────────────────
+export interface IOssOverview {
+  enabled: boolean;
+  activeId: string;
+  active: any | null;
+  configs: any[];
+  [k: string]: any;
 }
-export async function apiSaveOss(config: Record<string, any>) {
-  try { await apiFetch('/api/oss', { method: 'PUT', body: JSON.stringify(config) }); } catch {}
+
+export async function apiGetOss(): Promise<IOssOverview> {
+  try {
+    const r = await apiFetch('/api/oss');
+    return (r || {}) as IOssOverview;
+  } catch {
+    return { enabled: true, activeId: '', active: null, configs: [] } as IOssOverview;
+  }
+}
+/** 切总开关（enabled） */
+export async function apiSetOssEnabled(enabled: boolean) {
+  try { await apiFetch('/api/oss', { method: 'PUT', body: JSON.stringify({ enabled }) }); } catch {}
+}
+
+/** 新建 OSS 槽位（POST /api/oss/configs）；返回后端生成的 id */
+export async function apiCreateOssSlot(slot: Partial<any>): Promise<any> {
+  try { return await apiFetch('/api/oss/configs', { method: 'POST', body: JSON.stringify(slot) }); }
+  catch (e) { return { ok: false, error: String(e).slice(0, 120) }; }
+}
+/** 更新槽位（PUT /api/oss/configs/:id） */
+export async function apiUpdateOssSlot(id: string, slot: Partial<any>): Promise<any> {
+  try { return await apiFetch(`/api/oss/configs/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ id, ...slot }) }); }
+  catch (e) { return { ok: false, error: String(e).slice(0, 120) }; }
+}
+/** 删除槽位 */
+export async function apiDeleteOssSlot(id: string): Promise<any> {
+  try { return await apiFetch(`/api/oss/configs/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+  catch (e) { return { ok: false, error: String(e).slice(0, 120) }; }
+}
+/** 设为 active（POST /api/oss/configs/:id/activate） */
+export async function apiActivateOssSlot(id: string): Promise<any> {
+  try { return await apiFetch(`/api/oss/configs/${encodeURIComponent(id)}/activate`, { method: 'POST' }); }
+  catch (e) { return { ok: false, error: String(e).slice(0, 120) }; }
+}
+
+/**
+ * 测试槽位连接（真探活；走 PUT 一字节 + 错误码诊断）
+ * 推荐用具体槽位 ID。若没传 id 则走老的"按 body 里的字段试"模式（兼容）
+ */
+export async function apiTestOssSlot(id: string): Promise<{ success: boolean; message: string; status?: number }> {
+  try {
+    const r = await apiFetch(`/api/oss/configs/${encodeURIComponent(id)}/test`, { method: 'POST' });
+    return r || { success: false, message: '无响应' };
+  } catch (e) {
+    return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 100) };
+  }
 }
 /**
- * 测试 OSS 连接（走后端代理）
+ * 旧：传 cfg 试探（无槽位 ID 时使用，如 UI 在保存前即时校验）
  */
 export async function apiTestOss(config: Record<string, any>): Promise<{
   success: boolean;
@@ -174,13 +226,14 @@ export async function apiTestOss(config: Record<string, any>): Promise<{
     return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 100) };
   }
 }
+
 /**
- * 上传文件到 OSS（走后端代理）
+ * 上传文件到 active OSS（走后端代理，按 provider_type 自动分发到阿里云/腾讯云）
  */
 export async function apiUploadToOss(
   objectKey: string,
   contentBase64: string,
-): Promise<{ success: boolean; url: string; objectKey: string; size?: number; message?: string }> {
+): Promise<{ success: boolean; url: string; objectKey: string; size?: number; message?: string; providerType?: string }> {
   try {
     return await apiFetch('/api/oss/upload', {
       method: 'POST',
@@ -277,6 +330,22 @@ export async function apiGetGenerationStatus(taskId: string): Promise<{
   }
 }
 
+// 等待区聚合状态（公开接口，仅返回聚合数，不含逐账号明细）：
+// 供前台判断是否提示"资源不足"（所有资源不可用 且 等待区积压 > 阈值）。
+export async function apiGetQueueStatus(): Promise<{
+  waitingAreaSize: number;
+  memberWaiting: number;
+  allResourcesDown: boolean;
+  threshold: number;
+  triggered: boolean;
+}> {
+  try {
+    return await apiFetch('/api/generate/queue-status');
+  } catch {
+    return { waitingAreaSize: 0, memberWaiting: 0, allResourcesDown: false, threshold: 10, triggered: false };
+  }
+}
+
 // 列出在途任务（用于页面刷新后批量恢复）
 export async function apiListActiveGenerations(): Promise<{
   tasks: Array<{
@@ -368,6 +437,7 @@ export interface AuthUser {
   displayName: string;
   credits: number;
   role: string;
+  plan?: string;
 }
 
 /** 注册：成功后后端种下会话 cookie，返回用户（含赠送积分） */
