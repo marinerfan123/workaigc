@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Heart,
-  RefreshCw,
   MoreHorizontal,
   Play,
   Download,
@@ -61,8 +61,43 @@ export default function MediaCard({
   const [hovered, setHovered] = useState(false);
   const navigate = useNavigate();
 
+  // ── 更多菜单：用 Portal 渲染到 body，规避三处坑 ──
+  // 1) 卡片根节点有 overflow-hidden，会裁剪掉向下溢出的菜单
+  // 2) 卡片根节点 will-change-transform 会形成包含块，把菜单里的 fixed 锚定到卡片自身而非视口
+  // 3) 菜单处于卡片 z 上下文内，会被底部生成栏 (z-40) 盖住
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const openMenu = () => {
+    const r = moreBtnRef.current?.getBoundingClientRect();
+    if (r) setMenuPos({ top: r.bottom + 6, right: window.innerWidth - r.right });
+    setMoreOpen(true);
+  };
+  const closeMenu = () => {
+    setMoreOpen(false);
+    setMenuPos(null);
+  };
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onScrollOrResize = () => closeMenu();
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
+    return () => {
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moreOpen]);
+
   // ── 视口懒加载：离屏卡片不探测、不下载，进入视口前 300px 才激活 ──
+  // 兜底 1：hover 强制加载（用户鼠标划过去必须出来）
+  // 兜底 2：挂载 600ms 后强制加载（防止 IntersectionObserver 漏判已可见卡片）
   const { ref: inViewRef, inView } = useInView<HTMLDivElement>({ rootMargin: '300px' });
+  const [safetyLoad, setSafetyLoad] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setSafetyLoad(true), 600);
+    return () => clearTimeout(t);
+  }, []);
+  const shouldProbe = inView || hovered || safetyLoad;
 
   // ── 探测图片可用性 ──
   // item.status === 'failed' → 直接渲染占位，不探测
@@ -75,11 +110,19 @@ export default function MediaCard({
   const probe = useImageProbe(
     mediaUrl.reason === 'oss' ? '' : mediaUrl.url,
     item.status === 'pending' || item.status === 'failed' ? undefined : {
-      // 严格懒加载：仅当卡片进入视口后才发起探测请求，避免离屏图一次性全部下载
-      enabled: inView,
+      // 严格懒加载：仅当卡片进入视口/悬停/安全超时后才发起探测请求，避免离屏图一次性全部下载
+      enabled: shouldProbe,
       onProbeFailed: (info) => onProbeFailed?.(item, info.error),
     },
   );
+
+  // ── 兜底 3：探测超过 2.5s 仍 pending，直接渲染真实图片，不允许永久灰骨架 ──
+  const [showImageAnyway, setShowImageAnyway] = useState(false);
+  useEffect(() => {
+    if (probe.status !== 'pending') return;
+    const t = setTimeout(() => setShowImageAnyway(true), 2500);
+    return () => clearTimeout(t);
+  }, [probe.status]);
   const isFailed = item.status === 'failed' || probe.status === 'failed';
   const isPending = item.status === 'pending';
   const failedError = isFailed
@@ -244,7 +287,7 @@ export default function MediaCard({
               </button>
             )}
           </div>
-        ) : probe.status === 'pending' ? (
+        ) : probe.status === 'pending' && !showImageAnyway ? (
           /* ─── 探测中占位：渐变背景 + 大 spinner + shimmer，明确告诉用户"这是临时状态"── */
           <div className="relative flex h-full w-full flex-col items-center justify-center gap-2 overflow-hidden bg-gradient-to-br from-zinc-800/90 via-zinc-900/95 to-zinc-800/90 p-3 text-center">
             {/* shimmer 流光效果（从左到右的白色高光带，告诉用户「正在加载」） */}
@@ -331,14 +374,15 @@ export default function MediaCard({
             >
               <Edit3 className="size-4" />
             </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setMoreOpen(!moreOpen);
-              }}
-              className="flex h-8 w-8 items-center justify-center rounded-full bg-black/40 backdrop-blur-md text-white hover:bg-black/60 transition-colors"
-              title="更多"
-            >
+          <button
+            ref={moreBtnRef}
+            onClick={(e) => {
+              e.stopPropagation();
+              openMenu();
+            }}
+            className="flex h-8 w-8 items-center justify-center rounded-full bg-black/40 backdrop-blur-md text-white hover:bg-black/60 transition-colors"
+            title="更多"
+          >
               <MoreHorizontal className="size-4" />
             </button>
           </div>
@@ -352,19 +396,10 @@ export default function MediaCard({
               hovered ? 'opacity-100' : 'opacity-0'
             }`}
           >
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <span className="truncate text-xs font-medium text-white drop-shadow">
                 {item.title}
               </span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                }}
-                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-black/40 backdrop-blur-md text-white hover:bg-black/60 transition-colors"
-                title="重做"
-              >
-                <RefreshCw className="size-3.5" />
-              </button>
             </div>
           </div>
         )}
@@ -373,11 +408,14 @@ export default function MediaCard({
         <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/60 to-transparent pointer-events-none" />
       </div>
 
-      {/* 更多菜单 */}
-      {moreOpen && (
+      {/* 更多菜单：Portal 到 body，避免被 overflow-hidden 裁剪 / will-change 包含块 / 生成栏 z-40 遮挡 */}
+      {moreOpen && menuPos && createPortal(
         <>
-          <div className="fixed inset-0 z-30" onClick={() => setMoreOpen(false)} />
-          <div className="absolute right-2 top-10 z-40 w-40 overflow-hidden rounded-xl bg-zinc-900/95 backdrop-blur-xl p-1 border border-zinc-800/80 shadow-xl shadow-black/50">
+          <div className="fixed inset-0 z-[60]" onClick={closeMenu} />
+          <div
+            className="fixed z-[70] w-44 overflow-hidden rounded-xl bg-zinc-900/95 backdrop-blur-xl p-1 border border-zinc-800/80 shadow-xl shadow-black/50"
+            style={{ top: menuPos.top, right: menuPos.right }}
+          >
             {moreItems.map((mi) => {
               const Icon = mi.icon;
               return (
@@ -388,7 +426,7 @@ export default function MediaCard({
                     if (mi.label === '移至回收站') onDelete(item.id);
                     if (mi.label === '收藏' || mi.label === '取消收藏') onToggleFavorite(item.id);
                     if (mi.label === '添加为参考图' && onAddAsReference) onAddAsReference(item.fullUrl);
-                    setMoreOpen(false);
+                    closeMenu();
                   }}
                   className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs transition-colors ${
                     mi.danger
@@ -402,7 +440,8 @@ export default function MediaCard({
               );
             })}
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   );
