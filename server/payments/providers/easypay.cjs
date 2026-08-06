@@ -17,13 +17,16 @@ class EasyPayProvider extends ServiceProvider {
     return 'easypay';
   }
 
-  // 易支付标准签名：排除 sign，按 key 字典序拼接 `k=v&...` + key，再 md5(md5(key)+串)
+  // 易支付标准签名：
+  //   1) 排除 sign / sign_type / 空值；2) 按 key 字典序拼接 k=v&...；
+  //   3) 末尾直接追加商户密钥 KEY；4) md5(拼接串 + KEY)，结果小写。
+  // 参考：远付/彩虹/好收米等易支付二开平台均为此算法。
   _sign(params, key) {
     const keys = Object.keys(params)
-      .filter((k) => k !== 'sign' && params[k] !== '' && params[k] != null)
+      .filter((k) => k !== 'sign' && k !== 'sign_type' && params[k] !== '' && params[k] != null)
       .sort();
     const raw = keys.map((k) => `${k}=${params[k]}`).join('&') + key;
-    return md5(md5(key) + raw);
+    return md5(raw);
   }
 
   async createOrder({ order, method, notifyUrl, returnUrl }) {
@@ -32,12 +35,22 @@ class EasyPayProvider extends ServiceProvider {
       pid: this.cfg.pid,
       type: method === 'alipay' ? 'alipay' : 'wxpay',
       out_trade_no: order.outTradeNo,
-      name: `${this.cfg.product_name_prefix || '充值'} ${order.amount} 元`,
+      name: `${this.cfg.product_name_prefix || '充值'} ${(order.amount / 100).toFixed(2)} 元`,
       money: (order.amount / 100).toFixed(2), // 分 → 元
       notify_url: notifyUrl,
-      return_url: returnUrl || '',
     };
-    params.sign = this._sign(params, key);
+    if (returnUrl) params.return_url = returnUrl;
+
+    const sign = this._sign(params, key);
+    params.sign = sign;
+    params.sign_type = 'MD5';
+
+    // 调试用：参数值不暴露密钥，但可核对拼接顺序；上线稳定后可删除。
+    // 调试：输出真实签名原串（含密钥）。本地调通后建议删除本行，避免日志留存密钥。
+    const debugKeys = Object.keys(params).filter((k) => k !== 'sign' && k !== 'sign_type').sort();
+    const debugRaw = debugKeys.map((k) => `${k}=${params[k]}`).join('&') + key;
+    console.log('[easypay][DEBUG] sign raw:', debugRaw, '=> sign:', sign);
+
     const qs = new URLSearchParams(params).toString();
     const payUrl = `${String(this.cfg.api_base || '').replace(/\/$/, '')}/submit.php?${qs}`;
     return { payUrl, qrCode: null, payParams: params, outTradeNo: order.outTradeNo };

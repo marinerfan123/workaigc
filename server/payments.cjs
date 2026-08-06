@@ -66,7 +66,7 @@ const payments = {
           order: { outTradeNo: payOrderNo, amount },
           method,
           notifyUrl,
-          returnUrl: '',
+          returnUrl: `${proto}://${host}/account/credits`,
         });
         payUrl = r && r.payUrl ? r.payUrl : '';
       } catch (e) {
