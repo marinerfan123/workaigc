@@ -1160,33 +1160,52 @@ async function handleAPI(req, res) {
     const arr = Array.isArray(items) ? items : [items];
     if (pgPool) {
       try {
-        for (const it of arr) {
-          const s = toSnake(it);
-          // 安全：api_key 含 '*' 或太短视为占位，沿用 DB 现有值（避免误覆盖真实密钥）
-          let apiKey = s.api_key;
-          if (!apiKey || apiKey.includes('*') || apiKey.length < 6) {
-            const ex = await pgPool.query('SELECT api_key FROM providers WHERE id=$1', [s.id]);
-            if (ex.rows[0]?.api_key) apiKey = ex.rows[0].api_key;
+        const client = await pgPool.connect();
+        try {
+          await client.query('BEGIN');
+          const keepIds = arr.map(it => it.id).filter(Boolean);
+          // 全量同步：先删不在列表里的模型（防孤儿），再删不在列表里的服务商
+          if (keepIds.length > 0) {
+            await client.query('DELETE FROM models WHERE provider_id <> ALL($1::text[])', [keepIds]);
+            await client.query('DELETE FROM providers WHERE id <> ALL($1::text[])', [keepIds]);
+          } else {
+            await client.query('DELETE FROM models');
+            await client.query('DELETE FROM providers');
           }
-          // 容量上限校验：设了 bucket_max 则 B 不得超过（未设则不限制，前端警告可忽略）
-          const rl = (s.rate_limits && typeof s.rate_limits === 'object') ? s.rate_limits : {};
-          if (typeof rl.bucket_units_per_min === 'number' && s.bucket_max != null && rl.bucket_units_per_min > Number(s.bucket_max)) {
-            return sendJSON(res, 400, { error: `B(${rl.bucket_units_per_min}) 超过粒度上限 bucket_max(${s.bucket_max})` });
+          for (const it of arr) {
+            const s = toSnake(it);
+            // 安全：api_key 含 '*' 或太短视为占位，沿用 DB 现有值（避免误覆盖真实密钥）
+            let apiKey = s.api_key;
+            if (!apiKey || apiKey.includes('*') || apiKey.length < 6) {
+              const ex = await client.query('SELECT api_key FROM providers WHERE id=$1', [s.id]);
+              if (ex.rows[0]?.api_key) apiKey = ex.rows[0].api_key;
+            }
+            // 容量上限校验：设了 bucket_max 则 B 不得超过（未设则不限制，前端警告可忽略）
+            const rl = (s.rate_limits && typeof s.rate_limits === 'object') ? s.rate_limits : {};
+            if (typeof rl.bucket_units_per_min === 'number' && s.bucket_max != null && rl.bucket_units_per_min > Number(s.bucket_max)) {
+              await client.query('ROLLBACK');
+              return sendJSON(res, 400, { error: `B(${rl.bucket_units_per_min}) 超过粒度上限 bucket_max(${s.bucket_max})` });
+            }
+            await client.query(
+              `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent,rate_limits,capacity_model,bucket_max,cooldown_ms) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled,max_concurrent=EXCLUDED.max_concurrent,rate_limits=EXCLUDED.rate_limits,capacity_model=EXCLUDED.capacity_model,bucket_max=EXCLUDED.bucket_max,cooldown_ms=EXCLUDED.cooldown_ms`,
+              [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2, JSON.stringify(s.rate_limits || {}), s.capacity_model || 'limited', s.bucket_max != null ? Number(s.bucket_max) : null, Number(s.cooldown_ms) || 60000]
+            );
           }
-          await pgPool.query(
-            `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent,rate_limits,capacity_model,bucket_max,cooldown_ms) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled,max_concurrent=EXCLUDED.max_concurrent,rate_limits=EXCLUDED.rate_limits,capacity_model=EXCLUDED.capacity_model,bucket_max=EXCLUDED.bucket_max,cooldown_ms=EXCLUDED.cooldown_ms`,
-            [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2, JSON.stringify(s.rate_limits || {}), s.capacity_model || 'limited', s.bucket_max != null ? Number(s.bucket_max) : null, Number(s.cooldown_ms) || 60000]
-          );
+          await client.query('COMMIT');
+          return sendJSON(res, 200, { ok: true });
+        } catch (e) {
+          await client.query('ROLLBACK').catch(() => {});
+          throw e;
+        } finally {
+          client.release();
         }
-        return sendJSON(res, 200, { ok: true });
       } catch (e) {
         console.error('[providers] POST 失败', e.message);
         return sendJSON(res, 400, { error: '保存失败：' + e.message });
       }
     }
-    const list = readJSON('providers');
-    for (const it of arr) { const idx = list.findIndex(p => p.id === it.id); if (idx >= 0) list[idx] = it; else list.push(it); }
-    writeJSON('providers', list);
+    // 无 PG 时直接全量替换 JSON 文件
+    writeJSON('providers', arr);
     return sendJSON(res, 200, { ok: true });
   }
   // 账号冷热状态快照（内存态，供管理面板展示 + 手动强切）

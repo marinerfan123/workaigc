@@ -104,8 +104,8 @@ export async function apiGetProviders(): Promise<any[]> {
 export async function apiSaveProviders(items: any[]) {
   try { await apiFetch('/api/providers', { method: 'POST', body: JSON.stringify(items) }); } catch {}
 }
-export async function apiDeleteProvider(id: string) {
-  try { await apiFetch(`/api/providers/${id}`, { method: 'DELETE' }); } catch {}
+export async function apiDeleteProvider(id: string): Promise<void> {
+  await apiFetch(`/api/providers/${id}`, { method: 'DELETE' });
 }
 // 账号冷热状态快照（调度器内存态）
 export async function apiGetProviderStates(): Promise<Record<string, any>> {

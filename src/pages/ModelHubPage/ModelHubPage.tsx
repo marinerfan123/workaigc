@@ -279,11 +279,14 @@ export default function ModelHubPage() {
     setProviderDialogOpen(false);
   };
 
-  const handleDeleteProvider = (id: string) => {
-    // 走 hook 的 deleteProvider（后端单条 DELETE），不能只调 setProviders filter
-    // 因为后端 POST /api/providers 是 upsert，无法删除"前端未传但后端存在"的项
-    deleteProvider(id);
-    toast.success('服务商已删除');
+  const handleDeleteProvider = async (id: string) => {
+    // 走 hook 的 deleteProvider（后端单条 DELETE + 全量保存兜底）
+    const r = await deleteProvider(id);
+    if (r.ok) {
+      toast.success('服务商已删除');
+    } else {
+      toast.error(`删除失败：${r.error || '请刷新后重试'}`);
+    }
   };
 
   const handleToggleProvider = (id: string) => {

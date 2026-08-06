@@ -73,17 +73,32 @@ function setModels(updater: (prev: IAiModel[]) => IAiModel[]) {
 }
 
 /**
- * 单条删除 provider —— 必须走 DELETE 接口，不能只靠 setProviders+filter，
- * 因为后端 POST /api/providers 是 upsert 语义，filter 后的列表无法删除
- * 后端有但前端未传的项（用户报告"删了过一会儿又回来"就是这个 bug）。
+ * 单条删除 provider —— 必须走 DELETE 接口 + 全量保存，不能只靠 setProviders+filter。
+ * 后端 POST /api/providers 已改为全量同步（upsert + 删除列表外项），即使 DELETE 失败
+ * 也能通过保存过滤后的列表把删除落地。
  */
-function deleteProvider(id: string) {
+async function deleteProvider(id: string): Promise<{ ok: boolean; error?: string }> {
+  const prevProviders = providersState;
+  const prevModels = modelsState;
   providersState = providersState.filter((p) => p.id !== id);
   modelsState = modelsState.filter((m) => m.providerId !== id);
-  apiDeleteProvider(id); // 走单条 DELETE，后端直接 filter 写回
-  apiSaveProviders(providersState); // 兜底：让内存状态完全一致
-  apiSaveModels(modelsState);
   notify();
+  try {
+    // 并行：单条 DELETE + 全量保存兜底
+    await Promise.all([
+      apiDeleteProvider(id),
+      apiSaveProviders(providersState),
+      apiSaveModels(modelsState),
+    ]);
+    return { ok: true };
+  } catch (e) {
+    // 失败回滚本地状态，防止"前端删了、后端没删、刷新又回来"
+    providersState = prevProviders;
+    modelsState = prevModels;
+    notify();
+    console.error('[useModelHub] deleteProvider failed', e);
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /**
