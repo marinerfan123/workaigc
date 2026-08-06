@@ -724,3 +724,46 @@ export type {
   ShopProduct,
   ShopProductDetail,
 } from '@/pages/Admin/UsersPage';
+
+// ─── 首次部署初始化向导（公开接口，无需 token）───
+export interface ISetupModelPreset {
+  id: string;
+  modelId: string;
+  displayName: string;
+  type: string;
+  supportedResolutions: string[];
+}
+export interface ISetupStatus {
+  initialized: boolean;
+  presetProviders: { id: string; name: string }[];
+  presetModels: ISetupModelPreset[];
+}
+export interface ISetupInitPayload {
+  adminEmail: string;
+  adminPassword: string;
+  adminDisplayName?: string;
+  provider?: { name?: string; base_url?: string; api_key: string; protocol?: string } | null;
+  selectedModelIds?: string[];
+}
+export async function getSetupStatus(): Promise<ISetupStatus> {
+  const res = await fetch('/api/setup/status', { credentials: 'include' });
+  if (!res.ok) throw new Error(`setup status ${res.status}`);
+  return res.json();
+}
+export async function postSetupInit(
+  payload: ISetupInitPayload,
+): Promise<{ ok: boolean; initialized: boolean; adminEmail: string; providerCreated: boolean; modelsEnabled: number }> {
+  const res = await fetch('/api/setup/init', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || `setup init ${res.status}`) as Error & { code?: string };
+    err.code = data.error;
+    throw err;
+  }
+  return data;
+}

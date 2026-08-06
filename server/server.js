@@ -49,6 +49,10 @@ import ossLoggerMod from './oss-logger.cjs'; // OssConfigPanel 专用实时日�
 import logbusMod from './logbus.cjs';   // 后台「实时日志 · 数据库/Redis/控制台」(统一日志总线 + SSE 广播)
 import financeMod from './finance.cjs';  // Phase 4 后台账务系统（底层：总览/对账/账本/套餐）
 import meMod from './me.cjs';            // 用户侧账务（积分流水 / 充值订单 / 概览）
+import seedDefaultsMod from './seed-defaults.cjs'; // 首次部署兜底种子（占位服务商 + 常用模型）
+
+// 初始化向导限流（同一进程内 ≤20 次/10min；真正防护靠"建好即锁定"）
+const setupAttempts = new Map();
 
 // ─── 日志总线：先 installConsoleHook，再做后续 init，
 //    这样后续 console.warn/error 自动落入 logbus（同时保留原 console 行为）───
@@ -389,17 +393,28 @@ async function initDB() {
       ON CONFLICT (id) DO NOTHING;
     `);
 
-    // 种子：管理员账号（仅当尚无 admin 时；可用 ADMIN_SEED_EMAIL / ADMIN_SEED_PASSWORD 覆盖，公开仓库务必修改）
+    // 种子：管理员账号（opt-in：仅当显式设置 ADMIN_SEED_PASSWORD 才自动建；否则留空，
+    // 由 /setup 首次运行向导或运维手动创建，避免公开仓库硬编码弱口令的安全风险）
     const existingAdmin = await pgPool.query("SELECT 1 FROM users WHERE role='admin' LIMIT 1");
-    if (existingAdmin.rows.length === 0) {
+    if (existingAdmin.rows.length === 0 && process.env.ADMIN_SEED_PASSWORD) {
       const adminEmail = process.env.ADMIN_SEED_EMAIL || 'admin@huabu.local';
-      const adminPw = process.env.ADMIN_SEED_PASSWORD || 'A7mZ#9kPq2@XlV!Hb2026'; // 仅本地开发种子用；公开部署务必用环境变量覆盖
+      const adminPw = process.env.ADMIN_SEED_PASSWORD;
       await pgPool.query(
         `INSERT INTO users (id, email, display_name, password_hash, credits, role)
          VALUES ($1,$2,'平台管理员',$3,1000,'admin')`,
         ['u-' + crypto.randomUUID(), adminEmail, session.hashPassword(adminPw)]
       );
-      console.log(`[Seed] 已创建管理员账号 ${adminEmail}（默认密码仅本地开发用，公开部署前请用 ADMIN_SEED_PASSWORD 覆盖并尽快修改）`);
+      console.log(`[Seed] 已用环境变量 ADMIN_SEED_PASSWORD 创建管理员账号 ${adminEmail}`);
+    }
+
+    // 首次部署兜底种子：providers 表为空时写入占位服务商 + 常用模型（enabled=false，需填 Key 启用）
+    try {
+      const provCount = await pgPool.query('SELECT COUNT(*)::int AS c FROM providers');
+      if (provCount.rows[0].c === 0) {
+        await seedDefaultsMod.seedDefaults(pgPool);
+      }
+    } catch (e) {
+      console.warn('[Seed] 默认服务商/模型兜底写入失败（非致命）：', e.message);
     }
 
     // 公共默认资产种子（幂等：已存在则跳过）
@@ -781,6 +796,136 @@ async function handleMe(req, res) {
   });
 }
 
+// ── 首次部署初始化向导（公开，fails-closed）──────────────────────────────
+// GET /api/setup/status → { initialized, presetProviders, presetModels }
+// POST /api/setup/init  → 事务内建首个管理员 + 可选服务商 + 选中模型(enabled=true)
+async function handleSetupStatus(req, res) {
+  try {
+    let initialized = false;
+    if (pgPool) {
+      const r = await pgPool.query("SELECT COUNT(*)::int AS c FROM users WHERE role='admin'");
+      initialized = r.rows[0].c > 0;
+    }
+    return sendJSON(res, 200, {
+      initialized,
+      presetProviders: seedDefaultsMod.DEFAULT_PROVIDERS.map((p) => ({ id: p.id, name: p.name })),
+      presetModels: seedDefaultsMod.DEFAULT_MODELS.map((m) => ({
+        id: m.id,
+        modelId: m.model_id,
+        displayName: m.display_name,
+        type: m.type,
+        supportedResolutions: m.supported_resolutions,
+      })),
+    });
+  } catch {
+    return sendJSON(res, 200, { initialized: false, presetProviders: [], presetModels: [] });
+  }
+}
+
+async function handleSetupInit(req, res) {
+  const body = await parseBody(req);
+  if (!body) return sendJSON(res, 400, { error: 'invalid_body' });
+
+  const adminEmail = String(body.adminEmail || '').trim().toLowerCase();
+  const adminPassword = String(body.adminPassword || '');
+  const adminDisplayName = String(body.adminDisplayName || '平台管理员').trim() || '平台管理员';
+  const provider = body.provider || null;
+  const selectedModelIds = Array.isArray(body.selectedModelIds) ? body.selectedModelIds : [];
+
+  // 基础校验
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(adminEmail)) {
+    return sendJSON(res, 400, { error: 'invalid_email', message: '请输入有效的管理员邮箱' });
+  }
+  if (adminPassword.length < 8) {
+    return sendJSON(res, 400, { error: 'weak_password', message: '管理员密码至少 8 位' });
+  }
+  if (selectedModelIds.length > 0 && (!provider || !String(provider.api_key || '').trim())) {
+    return sendJSON(res, 400, {
+      error: 'provider_required',
+      message: '启用模型前必须先配置一个有效的服务商 API Key',
+    });
+  }
+  if (!pgPool) return sendJSON(res, 503, { error: 'no_db', message: '数据库未连接，请先配置并启动数据库' });
+
+  // fails-closed：已有管理员则锁定
+  const adminCheck = await pgPool.query("SELECT 1 FROM users WHERE role='admin' LIMIT 1");
+  if (adminCheck.rows.length > 0) {
+    return sendJSON(res, 409, { error: 'already_initialized', message: '平台已完成初始化，无需重复操作' });
+  }
+
+  // 轻量限流：同一 IP ≤20 次 / 10 分钟
+  const ip = req.socket?.remoteAddress || 'unknown';
+  const now = Date.now();
+  const win = setupAttempts.get(ip) || { count: 0, ts: now };
+  if (now - win.ts > 10 * 60 * 1000) { win.count = 0; win.ts = now; }
+  win.count += 1;
+  setupAttempts.set(ip, win);
+  if (win.count > 20) return sendJSON(res, 429, { error: 'too_many_attempts' });
+
+  const client = await pgPool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1) 首个管理员
+    const adminId = 'u-' + crypto.randomUUID();
+    await client.query(
+      `INSERT INTO users (id, email, display_name, password_hash, credits, role)
+       VALUES ($1,$2,$3,$4,1000,'admin')`,
+      [adminId, adminEmail, adminDisplayName, session.hashPassword(adminPassword)]
+    );
+
+    // 2) 服务商（可选）
+    let providerId = null;
+    const apiKey = provider ? String(provider.api_key || '').trim() : '';
+    if (apiKey) {
+      providerId = 'prov-' + crypto.randomUUID();
+      const pname = String(provider.name || '我的服务商').trim() || '我的服务商';
+      const baseUrl = String(provider.base_url || 'https://api.openai.com/v1').trim();
+      const protocol = String(provider.protocol || 'openai-compatible').trim();
+      const supportedTypes =
+        Array.isArray(provider.supported_types) && provider.supported_types.length
+          ? provider.supported_types
+          : ['image'];
+      await client.query(
+        `INSERT INTO providers (id, name, type, base_url, api_key, supported_types, enabled, protocol, remark, default_endpoint, capacity_model, cooldown_ms)
+         VALUES ($1,$2,'custom',$3,$4,$5,TRUE,$6,$7,'{}','limited',60000)`,
+        [providerId, pname, baseUrl, apiKey, supportedTypes, protocol, '初始化向导创建的服务商']
+      );
+    }
+
+    // 3) 选中的模型 → enabled=true，挂到刚建的服务商（无服务商则挂占位 prov-demo）
+    const known = new Map(seedDefaultsMod.DEFAULT_MODELS.map((m) => [m.id, m]));
+    let enabledCount = 0;
+    for (const mid of selectedModelIds) {
+      const m = known.get(String(mid));
+      if (!m) continue; // 忽略未知 id，防注入
+      const targetProvider = providerId || 'prov-demo';
+      await client.query(
+        `INSERT INTO models (id, model_id, display_name, type, provider_id, enabled, supported_resolutions, capabilities, endpoint)
+         VALUES ($1,$2,$3,$4,$5,TRUE,$6,'{}','{}')
+         ON CONFLICT (id) DO UPDATE SET enabled=TRUE, provider_id=EXCLUDED.provider_id`,
+        [m.id, m.model_id, m.display_name, m.type, targetProvider, m.supported_resolutions]
+      );
+      enabledCount += 1;
+    }
+
+    await client.query('COMMIT');
+    return sendJSON(res, 200, {
+      ok: true,
+      initialized: true,
+      adminEmail,
+      providerCreated: !!providerId,
+      modelsEnabled: enabledCount,
+    });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[Setup] 初始化失败:', e.message);
+    return sendJSON(res, 500, { error: 'setup_failed', message: e.message });
+  } finally {
+    client.release();
+  }
+}
+
 async function handleAPI(req, res) {
   const url = req.url.replace(/\/$/, '').split('?')[0];   // 去掉尾部斜杠 + query，让所有 `url === '/api/...'` 路由不吃 query
   const method = req.method;
@@ -821,6 +966,10 @@ async function handleAPI(req, res) {
     const wh = url.match(/^\/api\/credits\/webhook\/([a-z]+)$/);
     if (wh && method === 'POST') return payments.handleWebhook(req, res, wh[1]);
   }
+
+  // 首次部署初始化向导（公开，fails-closed：首个管理员建好后即锁定，任何人再调返回 409）
+  if (url === '/api/setup/status' && method === 'GET') return handleSetupStatus(req, res);
+  if (url === '/api/setup/init' && method === 'POST') return handleSetupInit(req, res);
 
   // 应用网关：API_TOKEN 或 用户会话 cookie 任一通过
   if (!appGateway(req)) return sendJSON(res, 401, { error: 'Unauthorized' });

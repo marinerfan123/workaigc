@@ -27,7 +27,7 @@
 │   ├── 前端静态文件  dist/build2 (vite build)  │
 │   ├── REST API        /api/*                  │
 │   └── PostgreSQL 17  (主库)                    │
-│         └── Redis 7  (预留，当前版本未启用)    │
+│         └── Redis 7.2  (队列状态 / 限流 / 缓存) │
 └─────────────────────────────────────────────┘
 ```
 
@@ -42,7 +42,7 @@
 |------|------|------|
 | Node.js | ≥ 20 | ✅ |
 | PostgreSQL | 17 | ✅ |
-| Redis | 7 | ⬜ 预留，当前未使用 |
+| Redis | 7 | ✅ 队列状态 / 限流 / 缓存 |
 | 阿里云 OSS bucket | — | ⬜ 可选（不配则用模型返回的原图 URL） |
 
 ---
@@ -136,7 +136,41 @@ CREATE DATABASE huabu;
 | Railway / Render / Fly.io / 任意 VPS / Docker | ✅ |
 | GitHub Pages | ❌ 本应用需要 Node 运行时 + PostgreSQL，Pages 仅托管静态文件 |
 
-### Docker 示例
+仓库已内置完整部署资产：`Dockerfile`、`docker-compose.yml`（含 PostgreSQL 17 + Redis 7.2）、`.env.example`、`migrate.cjs`，以及 `server.js` 启动时**自动建表**。从 GitHub 克隆后无需手动迁移。
+
+### 数据库拓扑（两种，部署者自选）
+
+应用只通过环境变量连接数据库，与「数据库在哪儿」解耦。两种方式任选其一：
+
+**① 本地数据库（推荐快速起步）** — 用 `docker-compose.yml` 内置的 PostgreSQL + Redis：
+
+```bash
+cp .env.example .env
+# 至少覆盖这两个占位符（生产环境务必改成强随机值）：
+#   JWT_SECRET=        一段长随机串
+#   PG_PASSWORD=       数据库密码
+docker compose up -d      # 自动拉起 pg + redis + 应用，并 npm run build 前端
+```
+
+**② 远程数据库（托管 RDS / 自建远端）** — 不启用 compose 内置 PG/Redis，改在 `.env` 指定远端：
+
+```bash
+# .env 关键项：
+PG_HOST=your-rds-host.example.com
+PG_PORT=5432
+PG_DATABASE=huabu
+PG_USER=huabu
+PG_PASSWORD=*****
+REDIS_HOST=your-redis-host.example.com
+REDIS_PORT=6379
+REDIS_PASSWORD=*****      # 无密码可留空
+```
+
+随后不启动 compose 的 `db` / `redis` 服务（或直接 `docker compose up app`），用你自己的数据库实例即可。应用在启动时会自动 `CREATE TABLE IF NOT EXISTS` 建好全部表。
+
+> ⚠️ `.env` 含私密凭据，已被 `.gitignore` 忽略，**切勿提交到公开仓库**。
+
+### Docker 示例（单容器，不含数据库）
 
 ```dockerfile
 FROM node:20-alpine
@@ -149,7 +183,21 @@ EXPOSE 3001
 CMD ["node", "server/server.js"]
 ```
 
-部署时需提供 `.env`（环境变量）与 `server/data/oss.json`（可通过挂载卷或构建参数注入）。
+---
+
+## 🧭 首次部署初始化向导
+
+部署完成后，打开站点根路径即会自动跳转到 **`/setup` 首次运行向导**（平台尚未初始化时）。向导帮你在没有管理员、也没有预置数据的情况下，一次性完成启动所需的最小配置：
+
+1. **管理员账号**：创建第一个账号（拥有后台全部权限）。密码至少 8 位。
+2. **服务商与模型（可选）**：填写一个 AI 服务商 API Key（OpenAI 兼容协议），并勾选要立即启用的常用图像模型（DALL·E 3 / SDXL / FLUX）。不填也可稍后在后台「模型 Hub」配置。
+
+**安全设计（fails-closed）**：
+- 首个管理员一旦创建，向导即**永久锁定**——任何后续对 `/api/setup/init` 的调用都返回 `409`，无法重复初始化或覆盖管理员。
+- 管理员账号**不再硬编码弱口令**。若希望用环境变量自动建管理员（而非走向导），需显式设置 `ADMIN_SEED_PASSWORD`（及可选 `ADMIN_SEED_EMAIL`），否则不会自动建号，由向导接管。
+- 若数据库中已存在管理员，访问 `/setup` 会直接提示「已完成初始化」并引导去登录。
+
+完成后访问 `/login` 用刚创建的管理员账号登录即可。
 
 ---
 

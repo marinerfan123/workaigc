@@ -1,3 +1,4 @@
+import { useEffect, type ReactNode } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
@@ -45,16 +46,34 @@ import SellerPage from '@/pages/Shop/SellerPage';
 // 登录 / 注册
 import AuthPage from '@/pages/Auth/AuthPage';
 
+// 首次部署初始化向导
+import SetupWizardPage from '@/pages/Setup/SetupWizardPage';
+import { getSetupStatus } from '@/services/api';
+
+// 首次部署：未初始化时访问站点根路径自动跳到 /setup 向导（完成后恢复着陆页）
+function FirstRunGate({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
+  useEffect(() => {
+    getSetupStatus()
+      .then((s) => { if (!s.initialized) navigate('/setup', { replace: true }); })
+      .catch(() => {});
+  }, [navigate]);
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
       <Routes>
-        {/* 独立承接页 */}
-        <Route path="/" element={<LandingPage />} />
+        {/* 独立承接页（未初始化时自动跳转初始化向导） */}
+        <Route path="/" element={<FirstRunGate><LandingPage /></FirstRunGate>} />
 
         {/* 登录 / 注册（独立全屏，不走前台壳） */}
         <Route path="/login" element={<AuthPage />} />
         <Route path="/register" element={<AuthPage />} />
+
+        {/* 首次部署初始化向导（独立全屏，不走前台壳） */}
+        <Route path="/setup" element={<SetupWizardPage />} />
 
         {/* 前台工作台壳（原有素材/角色/模型功能） */}
         <Route element={<Layout />}>
