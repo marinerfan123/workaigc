@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useNavigate } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import LandingPage from '@/pages/LandingPage/LandingPage';
