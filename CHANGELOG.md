@@ -18,6 +18,9 @@
 
 ## 版本明细（新 → 旧）
 
+### 2026-08-07（启动白屏修复）
+- `9dbc0b7` **fix(app)**：`FirstRunGate` 缺少 `useNavigate` import，导致运行时 `ReferenceError: useNavigate is not defined`，页面直接白屏崩溃。补 `import { Routes, Route, useNavigate } from 'react-router-dom'`；typecheck/build 通过。
+
 ### 2026-08-06（premium 玻璃套件）
 - `f31479b` **feat(premium)**：新增 `src/components/premium/` 可复用高级效果套件——`LiquidGlass`（液体玻璃容器，subtle/strong 双变体，mask-composite 渐变描边）、`BlurText`（IntersectionObserver 逐词 blur 入场）、`FadingVideo`（rAF 驱动交叉淡入、手动 loop）、`FadeIn`/`fadeIn`（Framer Motion blur+y 错峰入场封装）；`src/styles/premium.css` 落地精确液体玻璃 CSS。
 - `f31479b` **feat(theme)**：`index.html` 引入 Instrument Serif + Barlow 字体；`tailwind-theme.css` 加 `--font-display` / `--font-barlow` 令牌（`font-display` 默认斜体）；全站可用 `font-display` / `font-barlow` 工具类。
