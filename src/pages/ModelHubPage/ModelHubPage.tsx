@@ -43,7 +43,7 @@ import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { modelListClient } from '@/services/genericClient';
 import { MOCK_MEDIA_LIST } from '@/data/media';
-import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, apiDeleteModel, stripBlobItems, apiGetProviderStates, apiSetProviderCooldown } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, apiDeleteModel, stripBlobItems } from '@/services/api';
 import EndpointsTab from './EndpointsTab';
 import PairingTab from './PairingTab';
 import AsyncAddDialog from './AsyncAddDialog';
@@ -75,89 +75,6 @@ const PROVIDER_TYPE_ICONS: Record<ProviderType, typeof Server> = {
   relay: Server,
   custom: Puzzle,
 };
-
-// ─── 调度状态面板：账号冷热 / 实时共享桶，每 3s 轮询 + 管理员手动强切 ───
-function ProviderSchedulerStatus({ providers }: { providers: any[] }) {
-  const [states, setStates] = useState<Record<string, any>>({});
-  const [busy, setBusy] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      const s = await apiGetProviderStates();
-      if (alive) setStates(s || {});
-    };
-    load();
-    const t = setInterval(load, 3000);
-    return () => { alive = false; clearInterval(t); };
-  }, []);
-
-  const toggle = async (id: string, state: string | null) => {
-    const key = id + (state ?? 'auto');
-    setBusy(key);
-    await apiSetProviderCooldown(id, state);
-    setStates(await apiGetProviderStates() || {});
-    setBusy(null);
-  };
-
-  return (
-    <div className="rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-bold text-white">调度状态 · 账号冷热</h3>
-        <span className="text-[10px] text-zinc-500">每 3s 刷新</span>
-      </div>
-      {providers.length === 0 ? (
-        <p className="text-xs text-zinc-500">暂无服务商。</p>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {providers.map((p) => {
-            const st = states[p.id];
-            const cold = !!st?.cold;
-            const manual = st?.manualState;
-            const isUnlimited = st?.capacityModel === 'unlimited' || p.capacityModel === 'unlimited';
-            return (
-              <div key={p.id} className="rounded-2xl border border-zinc-800 bg-zinc-800/30 p-3">
-                <div className="flex items-center justify-between">
-                  <span className="truncate text-xs font-semibold text-white">{p.name}</span>
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${cold ? 'bg-red-500/15 text-red-400' : 'bg-emerald-500/15 text-emerald-400'}`}>
-                    {cold ? '冷' : '热'}
-                  </span>
-                </div>
-                <div className="mt-2 text-[10px] text-zinc-500">
-                  {isUnlimited
-                    ? '方向B · 无限速'
-                    : `B=${st?.bucketUnitsPerMin ?? '?'} 余 ${st?.tokens ?? '?'} · 并发 ${st?.conc ?? 0}`}
-                  {manual ? ` · 手动:${manual}` : ''}
-                </div>
-                <div className="mt-2 flex gap-1.5">
-                  {(['cold', 'hot', null] as const).map((s) => {
-                    const key = p.id + (s ?? 'auto');
-                    const label = s === 'cold' ? '强制冷' : s === 'hot' ? '强制热' : '自动';
-                    const cls = s === 'cold'
-                      ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
-                      : s === 'hot'
-                        ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
-                        : 'bg-zinc-700/40 text-zinc-300 hover:bg-zinc-700';
-                    return (
-                      <button
-                        key={key}
-                        onClick={() => toggle(p.id, s)}
-                        disabled={busy === key}
-                        className={`flex-1 rounded-lg py-1 text-[10px] transition-colors disabled:opacity-50 ${cls}`}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default function ModelHubPage() {
   const { providers, models, setProviders, setModels, deleteProvider, deleteModel, cleanupOrphanModels, getProviderName } = useModelHub();
@@ -1065,9 +982,6 @@ export default function ModelHubPage() {
                 </button>
               </div>
             </div>
-
-          {/* 调度状态：账号冷热 / 实时共享桶（每 3s 刷新 + 手动强切） */}
-          <ProviderSchedulerStatus providers={providers} />
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {providers.map((provider) => {
