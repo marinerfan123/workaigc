@@ -551,6 +551,8 @@ function applySecurityHeaders(res) {
 }
 
 function sendJSON(res, code, data) {
+  // 防御：避免「headers 已发送」异常导致整个进程崩溃（如某 handler 已响应但未 return 时走到末尾 404）
+  if (res.headersSent) return;
   applySecurityHeaders(res);
   res.writeHead(code, {
     'Content-Type': 'application/json',
