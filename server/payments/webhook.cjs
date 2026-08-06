@@ -72,6 +72,11 @@ function createWebhook(ctx) {
     }
     if (!verified || !verified.ok) return sendJSON(res, 400, { error: '验签未通过' });
 
+    // 非成功状态的异步通知（如 WAIT_BUYER_PAY）：仅确认收到，绝不入账
+    if (verified.skipCredit) {
+      return sendJSON(res, 200, { ok: true, ignored: true, status: verified.status || 'non-success' });
+    }
+
     const { outTradeNo, channelTradeNo, amount } = verified;
 
     const client = await pg.connect();

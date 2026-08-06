@@ -3,8 +3,9 @@
 // 安全：pid/pkey/webhook_secret 入参已是解密后的明文（由调用方经 crypto.cjs 解密后传入）。
 //
 // 注意：不同易支付二开平台的 sign 算法细节略有差异（主要是参与签名字段与拼接顺序）。
-//       本实现给出最常见的一种（md5(md5(key) + 排序串 + key)）。联调时若平台校验失败，
-//       仅需调整 _sign 内的字段集合，verifyWebhook 的 fails-closed 行为不变。
+//       本实现采用主流标准：md5(排序 k=v&... + KEY)，排除 sign/sign_type/空值。
+//       联调时若平台校验失败，仅需调整 _sign 内的字段集合，verifyWebhook 的 fails-closed 行为不变。
+//       参考：Wei-Shaw/sub2api、touwaeriol/sub2apipay 的 EasyPay 实现均为同一算法。
 const crypto = require('crypto');
 const { ServiceProvider } = require('../provider.cjs');
 
@@ -45,12 +46,6 @@ class EasyPayProvider extends ServiceProvider {
     params.sign = sign;
     params.sign_type = 'MD5';
 
-    // 调试用：参数值不暴露密钥，但可核对拼接顺序；上线稳定后可删除。
-    // 调试：输出真实签名原串（含密钥）。本地调通后建议删除本行，避免日志留存密钥。
-    const debugKeys = Object.keys(params).filter((k) => k !== 'sign' && k !== 'sign_type').sort();
-    const debugRaw = debugKeys.map((k) => `${k}=${params[k]}`).join('&') + key;
-    console.log('[easypay][DEBUG] sign raw:', debugRaw, '=> sign:', sign);
-
     const qs = new URLSearchParams(params).toString();
     const payUrl = `${String(this.cfg.api_base || '').replace(/\/$/, '')}/submit.php?${qs}`;
     return { payUrl, qrCode: null, payParams: params, outTradeNo: order.outTradeNo };
@@ -64,6 +59,14 @@ class EasyPayProvider extends ServiceProvider {
     if (!sign) throw new Error('缺少签名');
     const calc = this._sign(data, this.cfg.pkey);
     if (calc !== sign) throw new Error('签名校验失败');
+
+    // trade_status 防御：仅当状态为成功（或平台未回传该字段）才允许入账；
+    // 非成功状态（如 WAIT_BUYER_PAY / TRADE_CLOSED）仅回 200 确认、绝不入账。
+    const ts = data.trade_status || data.tradeStatus;
+    if (ts && ts !== 'TRADE_SUCCESS' && ts !== 'SUCCESS') {
+      return { ok: true, skipCredit: true, status: ts, outTradeNo: data.out_trade_no, raw: data };
+    }
+
     const money = parseFloat(data.money);
     if (!Number.isFinite(money) || money <= 0) throw new Error('回调金额非法');
     const amountFen = Math.round(money * 100);

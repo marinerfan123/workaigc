@@ -59,14 +59,20 @@ const payments = {
       let payUrl = '';
       try {
         const method = channel === 'alipay' ? 'alipay' : 'wxpay';
-        const proto = (req.headers && (req.headers['x-forwarded-proto'] || 'http'));
-        const host = (req.headers && req.headers.host) || process.env.PUBLIC_HOST || 'localhost:3001';
-        const notifyUrl = `${proto}://${host}/api/credits/webhook/${providerEntry.type}`;
+        // 公网回调地址：优先用 PUBLIC_BASE_URL（隧道/生产域名），否则回退到请求 Host（本地联调）。
+        // 这是「真实充值端到端跑通」的命门——localhost 下平台公网回调打不进来，必须用公网可达地址。
+        const publicBase = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+        const notifyUrl = publicBase
+          ? `${publicBase}/api/credits/webhook/${providerEntry.type}`
+          : `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host || 'localhost:3001'}/api/credits/webhook/${providerEntry.type}`;
+        const returnUrl = publicBase
+          ? `${publicBase}/account/credits`
+          : `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host || 'localhost:3001'}/account/credits`;
         const r = await providerEntry.provider.createOrder({
           order: { outTradeNo: payOrderNo, amount },
           method,
           notifyUrl,
-          returnUrl: `${proto}://${host}/account/credits`,
+          returnUrl,
         });
         payUrl = r && r.payUrl ? r.payUrl : '';
       } catch (e) {
