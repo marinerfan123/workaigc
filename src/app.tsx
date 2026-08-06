@@ -28,6 +28,7 @@ import EcommerceAdminPage from '@/pages/Admin/EcommerceAdminPage';
 import MonitorPage from '@/pages/Admin/MonitorPage';
 import LogsPage from '@/pages/Admin/LogsPage';
 import FinancePage from '@/pages/Admin/FinancePage';
+import PaymentSettingsPage from '@/pages/Admin/PaymentSettingsPage';
 
 // 创作工作室（M5 流水线）
 import { StudioLayout } from '@/components/layouts/StudioLayout';
@@ -101,6 +102,7 @@ export default function App() {
           <Route path="ecommerce" element={<EcommerceAdminPage />} />
           <Route path="monitor" element={<MonitorPage />} />
           <Route path="finance" element={<FinancePage />} />
+          <Route path="payment-settings" element={<PaymentSettingsPage />} />
           <Route path="logs" element={<LogsPage />} />
         </Route>
 

@@ -128,7 +128,12 @@ const payments = {
       return false;
     }
 
-    return { createOrder, listOrders, getOrder, handleWebhook, handlePayments };
+    return {
+      createOrder, listOrders, getOrder, handleWebhook, handlePayments,
+      // 供后台支付设置页在增删改服务商后立即刷新 loader 缓存（60s TTL 失效），
+      // 保证下一次充值/回调使用最新配置；失败静默不影响主流程。
+      invalidateProviderCache: () => { try { loader.invalidate(); } catch (e) {} },
+    };
   },
 };
 

@@ -702,6 +702,62 @@ export async function apiAdminFinanceDeletePackage(id: string): Promise<{ ok: bo
   catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
 }
 
+// ─── 支付全局设置 + 服务商管理（后台 PaymentSettingsPage）───
+export interface PaymentSettings {
+  id: number;
+  enabled: boolean;
+  defaultExpiresMin: number;
+  minAmount: number;
+  maxAmount: number;
+  dailyLimit: number;
+  maxOpenOrders: number;
+  allowTest: boolean;
+  updatedAt: string;
+}
+export interface PaymentProvider {
+  id: string;
+  name: string;
+  type: string;
+  enabled: boolean;
+  weight: number;
+  sortOrder: number;
+  apiBase: string;
+  productNamePrefix: string;
+  allowRefund: boolean;
+  remark: string;
+  hasPid: boolean;
+  hasPkey: boolean;
+  hasWebhook: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+export async function apiAdminPaymentSettings(): Promise<PaymentSettings | null> {
+  try { return await apiFetch('/api/admin/finance/payment-settings'); } catch { return null; }
+}
+export async function apiUpdatePaymentSettings(body: Partial<PaymentSettings>): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch('/api/admin/finance/payment-settings', { method: 'PUT', body: JSON.stringify(body) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiAdminProviders(): Promise<{ items: PaymentProvider[] }> {
+  try { return await apiFetch('/api/admin/finance/providers'); } catch { return { items: [] }; }
+}
+export async function apiCreateProvider(p: Partial<PaymentProvider> & { pid?: string; pkey?: string; webhookSecret?: string }): Promise<{ ok: boolean; id?: string; error?: string }> {
+  try { return await apiFetch('/api/admin/finance/providers', { method: 'POST', body: JSON.stringify(p) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiUpdateProvider(id: string, p: Partial<PaymentProvider> & { pid?: string; pkey?: string; webhookSecret?: string }): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch(`/api/admin/finance/providers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(p) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiAdminDeleteProvider(id: string): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch(`/api/admin/finance/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+export async function apiToggleProvider(id: string, enabled: boolean): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch(`/api/admin/finance/providers/${encodeURIComponent(id)}/toggle`, { method: 'POST', body: JSON.stringify({ enabled }) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+}
+
 // ─── 用户 / 电商相关 API 历史原因内聚在 UsersPage.tsx，这里统一再导出，
 // 保持 "@/services/api" 为唯一 API 入口（避免其它页面 import 缺失）───
 export {

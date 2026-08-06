@@ -13,10 +13,12 @@
 //   对账引擎据此混合重建，对任何漏记/重复记账都能暴露漂移。
 
 function createFinance(ctx) {
-  const { getPg, session, sendJSON, fromSnake, parseBody } = ctx;
+  const { getPg, session, sendJSON, fromSnake, parseBody, invalidateProviders } = ctx;
   const pg = () => getPg();
   const hasPg = () => !!getPg();
   const crypto = require('crypto');
+  // 支付密钥加密（AES-256-GCM）：pid/pkey/webhook_secret 入库前必须加密；API 永不返回明文
+  const { encrypt } = require('./payments/crypto.cjs');
 
   // 管理员闸门：与 admin.cjs 一致
   function requireAdmin(req) {
@@ -237,11 +239,139 @@ function createFinance(ctx) {
     return { ok: true };
   }
 
+  // ───────────────────────── 支付全局设置 + 服务商管理 ─────────────────────────
+  // 设计铁律：pid/pkey/webhook_secret 入库即加密；对外 API 只暴露「是否已配置」布尔，绝不返回明文。
+  async function auditPayment(eventType, actor, detail) {
+    try {
+      await pg().query(
+        `INSERT INTO payment_audit (event_type, actor, detail, created_at) VALUES ($1,$2,$3,NOW())`,
+        [eventType, actor || '', detail || {}],
+      );
+    } catch (e) { console.warn('[finance][audit] 写入失败:', e.message); }
+  }
+
+  // 全局支付参数（单行 id=1）
+  async function getPaymentSettings() {
+    const r = await pg().query(
+      `SELECT id, enabled, default_expires_min, min_amount, max_amount, daily_limit, max_open_orders, allow_test, updated_at
+       FROM payment_settings WHERE id=1`);
+    if (!r.rows.length) return null;
+    const x = r.rows[0];
+    return {
+      id: x.id,
+      enabled: x.enabled,
+      defaultExpiresMin: Number(x.default_expires_min),
+      minAmount: Number(x.min_amount),
+      maxAmount: Number(x.max_amount),
+      dailyLimit: Number(x.daily_limit),
+      maxOpenOrders: Number(x.max_open_orders),
+      allowTest: x.allow_test,
+      updatedAt: x.updated_at,
+    };
+  }
+  async function updatePaymentSettings(body, actor) {
+    const fields = []; const vals = []; let i = 1;
+    const set = (c, v) => { fields.push(`${c}=$${i}`); vals.push(v); i++; };
+    if (body.enabled !== undefined) set('enabled', !!body.enabled);
+    if (body.defaultExpiresMin !== undefined) set('default_expires_min', Math.max(1, Math.floor(Number(body.defaultExpiresMin) || 15)));
+    if (body.minAmount !== undefined) set('min_amount', Math.max(1, Math.floor(Number(body.minAmount) || 1)));
+    if (body.maxAmount !== undefined) set('max_amount', Math.max(1, Math.floor(Number(body.maxAmount) || 1)));
+    if (body.dailyLimit !== undefined) set('daily_limit', Math.max(1, Math.floor(Number(body.dailyLimit) || 1)));
+    if (body.maxOpenOrders !== undefined) set('max_open_orders', Math.max(1, Math.floor(Number(body.maxOpenOrders) || 1)));
+    if (body.allowTest !== undefined) set('allow_test', !!body.allowTest);
+    if (!fields.length) return { ok: true, noop: true };
+    set('updated_at', new Date());
+    await pg().query(`UPDATE payment_settings SET ${fields.join(',')} WHERE id=1`, vals);
+    await auditPayment('settings_change', actor, { changed: fields.map((f) => f.split('=')[0]) });
+    return { ok: true };
+  }
+
+  // 支付服务商列表（脱敏：只暴露是否已配置密钥，不返回明文）
+  async function listProviders() {
+    const r = await pg().query(
+      `SELECT id,name,type,enabled,weight,sort_order,api_base,product_name_prefix,allow_refund,remark,
+              pid_enc IS NOT NULL AS has_pid, pkey_enc IS NOT NULL AS has_pkey, webhook_secret_enc IS NOT NULL AS has_webhook,
+              created_at, updated_at
+       FROM payment_providers ORDER BY sort_order ASC, weight DESC, created_at ASC`);
+    return {
+      items: r.rows.map((x) => ({
+        id: x.id, name: x.name, type: x.type, enabled: x.enabled,
+        weight: Number(x.weight), sortOrder: Number(x.sort_order), apiBase: x.api_base,
+        productNamePrefix: x.product_name_prefix, allowRefund: x.allow_refund, remark: x.remark || '',
+        hasPid: x.has_pid, hasPkey: x.has_pkey, hasWebhook: x.has_webhook,
+        createdAt: x.created_at, updatedAt: x.updated_at,
+      })),
+    };
+  }
+  async function createProvider(body, actor) {
+    const name = (body.name || '').toString().trim();
+    const type = (body.type || 'easypay').toString().trim();
+    if (!name) throw new Error('名称不能为空');
+    if (!['easypay', 'alipay', 'wxpay', 'stripe', 'mock'].includes(type)) throw new Error('不支持的支付类型');
+    const id = 'pp-' + crypto.randomUUID();
+    await pg().query(
+      `INSERT INTO payment_providers
+        (id,name,type,enabled,weight,sort_order,api_base,pid_enc,pkey_enc,webhook_secret_enc,product_name_prefix,allow_refund,remark,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())`,
+      [
+        id, name, type,
+        body.enabled !== false,
+        Math.max(1, Math.floor(Number(body.weight) || 1)),
+        Math.floor(Number(body.sortOrder) || 0),
+        body.apiBase || '',
+        encrypt(body.pid), encrypt(body.pkey), encrypt(body.webhookSecret),
+        body.productNamePrefix || '充值',
+        body.allowRefund === true,
+        body.remark || '',
+      ],
+    );
+    await auditPayment('provider_change', actor, { action: 'create', id, name, type });
+    if (invalidateProviders) try { invalidateProviders(); } catch (e) {}
+    return { ok: true, id };
+  }
+  async function updateProvider(id, body, actor) {
+    const fields = []; const vals = []; let i = 1;
+    const set = (c, v) => { fields.push(`${c}=$${i}`); vals.push(v); i++; };
+    if (body.name !== undefined) set('name', body.name);
+    if (body.type !== undefined) set('type', body.type);
+    if (body.enabled !== undefined) set('enabled', !!body.enabled);
+    if (body.weight !== undefined) set('weight', Math.max(1, Math.floor(Number(body.weight) || 1)));
+    if (body.sortOrder !== undefined) set('sort_order', Math.floor(Number(body.sortOrder) || 0));
+    if (body.apiBase !== undefined) set('api_base', body.apiBase);
+    if (body.productNamePrefix !== undefined) set('product_name_prefix', body.productNamePrefix);
+    if (body.allowRefund !== undefined) set('allow_refund', !!body.allowRefund);
+    if (body.remark !== undefined) set('remark', body.remark);
+    // 密钥仅在提供非空值时更新；留空则保留原值
+    if (body.pid) set('pid_enc', encrypt(body.pid));
+    if (body.pkey) set('pkey_enc', encrypt(body.pkey));
+    if (body.webhookSecret) set('webhook_secret_enc', encrypt(body.webhookSecret));
+    if (!fields.length) return { ok: true, noop: true };
+    set('updated_at', new Date());
+    vals.push(id);
+    await pg().query(`UPDATE payment_providers SET ${fields.join(',')} WHERE id=$${i}`, vals);
+    await auditPayment('provider_change', actor, { action: 'update', id });
+    if (invalidateProviders) try { invalidateProviders(); } catch (e) {}
+    return { ok: true };
+  }
+  async function deleteProvider(id, actor) {
+    await pg().query('DELETE FROM payment_providers WHERE id=$1', [id]);
+    await auditPayment('provider_change', actor, { action: 'delete', id });
+    if (invalidateProviders) try { invalidateProviders(); } catch (e) {}
+    return { ok: true };
+  }
+  async function toggleProvider(id, enabled, actor) {
+    await pg().query('UPDATE payment_providers SET enabled=$1, updated_at=NOW() WHERE id=$2', [!!enabled, id]);
+    await auditPayment('provider_change', actor, { action: 'toggle', id, enabled });
+    if (invalidateProviders) try { invalidateProviders(); } catch (e) {}
+    return { ok: true };
+  }
+
   // ───────────────────────── 路由分发 ─────────────────────────
   let m; // 复用的正则捕获变量（函数作用域）
   async function handleFinance(req, res, url, method) {
     if (!hasPg()) return sendJSON(res, 503, { error: '数据库不可用' });
     if (!requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    const actorId = req.user ? req.user.id : null;
     const q = req.query || {};
 
     if (url === '/api/admin/finance/overview' && method === 'GET') {
@@ -274,6 +404,40 @@ function createFinance(ctx) {
     }
     if (m && method === 'DELETE') {
       try { return sendJSON(res, 200, await deletePackage(decodeURIComponent(m[1]))); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+
+    // ───────────────── 支付全局设置 + 服务商管理 ─────────────────
+    if (url === '/api/admin/finance/payment-settings' && method === 'GET') {
+      return sendJSON(res, 200, await getPaymentSettings());
+    }
+    if (url === '/api/admin/finance/payment-settings' && method === 'PUT') {
+      const body = await parseBody(req).catch(() => ({}));
+      try { return sendJSON(res, 200, await updatePaymentSettings(body, actorId)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (url === '/api/admin/finance/providers' && method === 'GET') {
+      return sendJSON(res, 200, await listProviders());
+    }
+    if (url === '/api/admin/finance/providers' && method === 'POST') {
+      const body = await parseBody(req).catch(() => ({}));
+      try { return sendJSON(res, 200, await createProvider(body, actorId)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    m = url.match(/^\/api\/admin\/finance\/providers\/([^/]+)\/toggle$/);
+    if (m && method === 'POST') {
+      const body = await parseBody(req).catch(() => ({}));
+      try { return sendJSON(res, 200, await toggleProvider(decodeURIComponent(m[1]), !!body.enabled, actorId)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    m = url.match(/^\/api\/admin\/finance\/providers\/([^/]+)$/);
+    if (m && method === 'PUT') {
+      const body = await parseBody(req).catch(() => ({}));
+      try { return sendJSON(res, 200, await updateProvider(decodeURIComponent(m[1]), body, actorId)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    if (m && method === 'DELETE') {
+      try { return sendJSON(res, 200, await deleteProvider(decodeURIComponent(m[1]), actorId)); }
       catch (e) { return sendJSON(res, 400, { error: e.message }); }
     }
     return sendJSON(res, 404, { error: 'Not Found' });

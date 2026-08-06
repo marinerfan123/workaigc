@@ -678,6 +678,8 @@ const finance = financeMod.createFinance({
   sendJSON,
   fromSnake,
   parseBody,
+  // 支付服务商变更后让 loader 缓存立即失效（payments 在下方定义，闭包延迟取值）
+  invalidateProviders: () => { try { if (payments && payments.invalidateProviderCache) payments.invalidateProviderCache(); } catch (e) {} },
 });
 const me = meMod.createMe({
   getPg: () => pgPool,
