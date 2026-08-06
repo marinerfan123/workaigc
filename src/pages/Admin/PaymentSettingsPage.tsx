@@ -292,6 +292,23 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
     </label>
   );
 }
+function NumField({ label, value, onChange }: { label: string; value?: number | null; onChange: (v: number | undefined) => void }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[11px] text-zinc-500">{label}</span>
+      <input
+        type="number"
+        min={0}
+        value={value ?? ''}
+        onChange={(e) => {
+          const raw = e.target.value;
+          onChange(raw === '' ? undefined : Math.max(0, Math.floor(Number(raw) || 0)));
+        }}
+        className="h-9 w-full rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 text-sm text-white outline-none focus:border-emerald-500/50"
+      />
+    </label>
+  );
+}
 function ToggleField({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) {
   return (
     <label className="block">
