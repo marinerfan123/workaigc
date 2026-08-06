@@ -38,12 +38,12 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
 
   const moreItems = [
     { icon: Download, label: '下载项目' },
-    { icon: ExternalLink, label: '产品帮助' },
-    { icon: HelpCircle, label: 'Flow 帮助中心' },
+    { icon: ExternalLink, label: '帮助中心' },
+    { icon: HelpCircle, label: '使用文档' },
     { icon: List, label: '查看所有更新日志' },
-    { icon: MonitorPlay, label: 'Google Flow TV' },
-    { icon: Info, label: '关于 Flow' },
-    { icon: Play, label: '了解 Flow' },
+    { icon: MonitorPlay, label: '视频教程' },
+    { icon: Info, label: '关于我们' },
+    { icon: Play, label: '新手指南' },
     { icon: MessageSquareWarning, label: '发送应用反馈' },
     { icon: Flag, label: '举报法律问题' },
     { icon: ShieldCheck, label: '隐私声明' },

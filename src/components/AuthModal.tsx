@@ -63,7 +63,7 @@ export default function AuthModal() {
       <DialogContent className="max-w-sm bg-zinc-900 border-zinc-800">
         <DialogHeader>
           <DialogTitle className="text-white">
-            {tab === 'login' ? '登录 Flow' : '注册 Flow'}
+            {tab === 'login' ? '登录' : '注册'}
           </DialogTitle>
           <DialogDescription className="text-zinc-500">
             登录后生成将计入你的积分账户；新用户注册赠送 50 积分。
