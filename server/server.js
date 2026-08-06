@@ -2085,7 +2085,9 @@ async function handleAPI(req, res) {
       return sendJSON(res, 200, { success: false, message: 'active 配置不完整（缺 AccessKey 或 Bucket）' });
     }
     // 锁前缀：images/{userId}/，防止越权写他人目录
-    const userId = req.user?.id || '__anon__';
+    // 防御：appGateway 已全局鉴权（line 983），此处再显式拦截，杜绝落入共享命名空间
+    const userId = req.user?.id;
+    if (!userId) return sendJSON(res, 401, { success: false, message: '请先登录后再上传' });
     const p = (activeCfg.pathPrefix || 'images/').replace(/^\/+|\/+$/g, '');
     const rawName = (body?.fileName || 'file').includes('/') ? body.fileName.split('/').pop() : body.fileName;
     const safeName = String(rawName || 'file').replace(/[^A-Za-z0-9._-]/g, '_');
