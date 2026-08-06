@@ -19,6 +19,7 @@ import {
   LogOut,
   RefreshCw,
   Wallet,
+  ChevronDown,
 } from 'lucide-react';
 import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authStore';
 import RechargeModal from '@/components/RechargeModal';
@@ -48,150 +49,152 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
     { icon: ShieldCheck, label: '隐私声明' },
   ];
 
+  const toolButton =
+    'flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 hover:bg-white/10 hover:text-white transition-colors';
+
   return (
     <header className="flex h-14 items-center justify-between px-4 border-b border-zinc-800 bg-black/80 backdrop-blur-md z-20 sticky top-0">
       <div className="flex-1" />
-      <div className="flex items-center gap-1">
-        <button
-          onClick={onMediaPickerOpen}
-          className="flex h-9 w-9 items-center justify-center rounded-2xl text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
-          title="新建"
-        >
-          <Plus className="size-4" />
-        </button>
-        <button
-          className="flex h-9 w-9 items-center justify-center rounded-2xl text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
-          title="帮助"
-        >
-          <HelpCircle className="size-4" />
-        </button>
-        <button
-          onClick={onSettingsOpen}
-          className="flex h-9 w-9 items-center justify-center rounded-2xl text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
-          title="设置"
-        >
-          <Settings className="size-4" />
-        </button>
-        <div className="relative">
-          <button
-            onClick={() => setMoreOpen(!moreOpen)}
-            className="flex h-9 w-9 items-center justify-center rounded-2xl text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
-            title="更多"
-          >
-            <MoreVertical className="size-4" />
+
+      <div className="flex items-center gap-3">
+        {/* 工具图标组 */}
+        <div className="flex items-center gap-0.5 rounded-full border border-white/5 bg-white/[0.03] p-1">
+          <button onClick={onMediaPickerOpen} className={toolButton} title="新建">
+            <Plus className="size-4" />
           </button>
-          {moreOpen && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setMoreOpen(false)} />
-              <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-[1.5rem] bg-zinc-900 p-2 border border-zinc-800">
-                {moreItems.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      key={item.label}
-                      onClick={() => setMoreOpen(false)}
-                      className="flex w-full items-center gap-3 rounded-2xl px-3 py-2 text-sm text-white hover:bg-zinc-800/70 transition-colors"
-                    >
-                      <Icon className="size-4 text-zinc-500" />
-                      <span>{item.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
-        {user ? (
-          <div className="relative ml-2">
-            <button
-              onClick={() => setRechargeOpen(true)}
-              className="mr-1.5 flex h-9 items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-colors"
-              title="充值积分"
-            >
-              <Wallet className="size-3.5" /> 充值
+          <button className={toolButton} title="帮助">
+            <HelpCircle className="size-4" />
+          </button>
+          <button onClick={onSettingsOpen} className={toolButton} title="设置">
+            <Settings className="size-4" />
+          </button>
+          <div className="relative">
+            <button onClick={() => setMoreOpen(!moreOpen)} className={toolButton} title="更多">
+              <MoreVertical className="size-4" />
             </button>
-            <button
-              onClick={() => setMenuOpen(!menuOpen)}
-              className="group flex items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1 pl-1 pr-3 backdrop-blur-xl transition-all hover:border-white/20 hover:bg-white/10 hover:shadow-[0_8px_30px_-8px_rgba(0,0,0,0.7)]"
-              title="账户"
-            >
-              <span className="relative flex size-8 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 via-cyan-400 to-violet-400 text-sm font-bold text-black shadow-inner">
-                {(user.displayName || user.email || 'U')[0]?.toUpperCase() || 'U'}
-                <span className="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full bg-emerald-400 ring-2 ring-black" />
-              </span>
-              <span className="hidden items-center gap-1.5 sm:flex">
-                <span className="rounded-full bg-amber-400/15 px-1.5 text-[10px] font-semibold text-amber-300">
-                  {user.credits} 积分
-                </span>
-              </span>
-            </button>
-            {menuOpen && (
+            {moreOpen && (
               <>
-                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 top-full z-50 mt-2 w-64 overflow-hidden rounded-3xl border border-white/10 bg-zinc-900/80 p-0 shadow-2xl backdrop-blur-2xl">
-                  <div className="relative px-5 pb-4 pt-5">
-                    <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/15 via-cyan-500/10 to-violet-500/15" />
-                    <div className="relative flex items-center gap-3">
-                      <span className="flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400 via-cyan-400 to-violet-400 text-lg font-bold text-black shadow-lg">
-                        {(user.displayName || user.email || 'U')[0]?.toUpperCase() || 'U'}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-white">{user.displayName || '未命名用户'}</div>
-                        <div className="truncate text-xs text-zinc-400">{user.email}</div>
-                      </div>
-                    </div>
-                    <div className="relative mt-4 flex items-end justify-between">
-                      <div>
-                        <div className="text-[11px] text-zinc-500">积分余额</div>
-                        <div className="text-2xl font-bold tabular-nums text-white">{user.credits}</div>
-                      </div>
+                <div className="fixed inset-0 z-40" onClick={() => setMoreOpen(false)} />
+                <div className="absolute right-0 top-full z-50 mt-1.5 w-56 rounded-[1.25rem] bg-zinc-900 p-2 border border-zinc-800 shadow-2xl">
+                  {moreItems.map((item) => {
+                    const Icon = item.icon;
+                    return (
                       <button
-                        onClick={() => { setMenuOpen(false); setRechargeOpen(true); }}
-                        className="flex items-center gap-1.5 rounded-full bg-emerald-400 px-3 py-1.5 text-xs font-semibold text-black transition-colors hover:bg-emerald-300"
+                        key={item.label}
+                        onClick={() => setMoreOpen(false)}
+                        className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm text-white hover:bg-zinc-800/70 transition-colors"
                       >
-                        <Wallet className="size-3.5" /> 充值
+                        <Icon className="size-4 text-zinc-500" />
+                        <span>{item.label}</span>
                       </button>
-                    </div>
-                  </div>
-                  <div className="space-y-0.5 border-t border-white/5 p-2">
-                    <button
-                      onClick={async () => { await refreshUser().catch(() => {}); }}
-                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 transition-colors hover:bg-white/10"
-                    >
-                      <RefreshCw className="size-4 text-zinc-500" /> 刷新积分
-                    </button>
-                    <button
-                      onClick={() => { setMenuOpen(false); navigate('/account'); }}
-                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 transition-colors hover:bg-white/10"
-                    >
-                      <Settings className="size-4 text-zinc-500" /> 账户设置
-                    </button>
-                    <button
-                      onClick={() => { setMenuOpen(false); navigate(`/user/${user.id}`); }}
-                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 transition-colors hover:bg-white/10"
-                    >
-                      <User className="size-4 text-zinc-500" /> 我的主页
-                    </button>
-                    <button
-                      onClick={async () => { await logout(); setMenuOpen(false); }}
-                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-red-400 transition-colors hover:bg-red-500/10"
-                    >
-                      <LogOut className="size-4" /> 退出登录
-                    </button>
-                  </div>
+                    );
+                  })}
                 </div>
               </>
             )}
           </div>
+        </div>
+
+        <div className="hidden sm:block h-6 w-px bg-white/10" />
+
+        {user ? (
+          <div className="flex items-center gap-2">
+            {/* 积分 / 充值 */}
+            <button
+              onClick={() => setRechargeOpen(true)}
+              className="flex h-8 items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 transition-colors"
+              title="充值积分"
+            >
+              <Wallet className="size-3.5" />
+              <span className="tabular-nums">{user.credits}</span>
+              <span className="hidden sm:inline">积分</span>
+            </button>
+
+            {/* 头像菜单 */}
+            <div className="relative">
+              <button
+                onClick={() => setMenuOpen(!menuOpen)}
+                className="group flex h-8 items-center gap-1.5 rounded-full border border-white/10 bg-white/5 py-1 pl-1 pr-2 hover:border-white/20 hover:bg-white/10 transition-all"
+                title="账户"
+              >
+                <span className="relative flex size-6 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 via-cyan-400 to-violet-400 text-[11px] font-bold text-black shadow-inner">
+                  {(user.displayName || user.email || 'U')[0]?.toUpperCase() || 'U'}
+                  <span className="absolute -bottom-0.5 -right-0.5 size-2 rounded-full bg-emerald-400 ring-2 ring-black" />
+                </span>
+                <ChevronDown
+                  className={`size-3.5 text-zinc-500 transition-transform duration-200 group-hover:text-zinc-300 ${menuOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+
+              {menuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+                  <div className="absolute right-0 top-full z-50 mt-2 w-64 overflow-hidden rounded-3xl border border-white/10 bg-zinc-900/80 p-0 shadow-2xl backdrop-blur-2xl">
+                    <div className="relative px-5 pb-4 pt-5">
+                      <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/15 via-cyan-500/10 to-violet-500/15" />
+                      <div className="relative flex items-center gap-3">
+                        <span className="flex size-12 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400 via-cyan-400 to-violet-400 text-lg font-bold text-black shadow-lg">
+                          {(user.displayName || user.email || 'U')[0]?.toUpperCase() || 'U'}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-white">{user.displayName || '未命名用户'}</div>
+                          <div className="truncate text-xs text-zinc-400">{user.email}</div>
+                        </div>
+                      </div>
+                      <div className="relative mt-4 flex items-end justify-between">
+                        <div>
+                          <div className="text-[11px] text-zinc-500">积分余额</div>
+                          <div className="text-2xl font-bold tabular-nums text-white">{user.credits}</div>
+                        </div>
+                        <button
+                          onClick={() => { setMenuOpen(false); setRechargeOpen(true); }}
+                          className="flex items-center gap-1.5 rounded-full bg-emerald-400 px-3 py-1.5 text-xs font-semibold text-black transition-colors hover:bg-emerald-300"
+                        >
+                          <Wallet className="size-3.5" /> 充值
+                        </button>
+                      </div>
+                    </div>
+                    <div className="space-y-0.5 border-t border-white/5 p-2">
+                      <button
+                        onClick={async () => { await refreshUser().catch(() => {}); }}
+                        className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 transition-colors hover:bg-white/10"
+                      >
+                        <RefreshCw className="size-4 text-zinc-500" /> 刷新积分
+                      </button>
+                      <button
+                        onClick={() => { setMenuOpen(false); navigate('/account'); }}
+                        className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 transition-colors hover:bg-white/10"
+                      >
+                        <Settings className="size-4 text-zinc-500" /> 账户设置
+                      </button>
+                      <button
+                        onClick={() => { setMenuOpen(false); navigate(`/user/${user.id}`); }}
+                        className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 transition-colors hover:bg-white/10"
+                      >
+                        <User className="size-4 text-zinc-500" /> 我的主页
+                      </button>
+                      <button
+                        onClick={async () => { await logout(); setMenuOpen(false); }}
+                        className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-red-400 transition-colors hover:bg-red-500/10"
+                      >
+                        <LogOut className="size-4" /> 退出登录
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
         ) : (
           <button
             onClick={() => setAuthModalOpen(true)}
-            className="ml-2 flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-colors"
+            className="flex h-8 items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/20 transition-colors"
           >
             <LogIn className="size-3.5" /> 登录
           </button>
         )}
       </div>
+
       <RechargeModal open={rechargeOpen} onClose={() => setRechargeOpen(false)} />
     </header>
   );

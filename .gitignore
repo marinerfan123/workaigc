@@ -118,3 +118,8 @@ tmp_clean.txt
 
 # ===== 数据库备份（含用户数据，绝不入库） =====
 backups/
+
+# ===== 本地参考/实验目录（不入主仓库） =====
+refs/
+space-landing/
+check_cols.cjs
