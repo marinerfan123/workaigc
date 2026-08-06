@@ -19,10 +19,10 @@
 ## 版本明细（新 → 旧）
 
 ### 2026-08-06（初始化向导版）
-- `<<NEW>>` **feat(setup)**：新增首次部署初始化向导 `/setup`（前端多步 premium 暗色页面，未初始化访问站点根路径自动跳转）+ 后端 `GET /api/setup/status`、`POST /api/setup/init`（fails-closed：首个管理员建好后返回 409 锁定，无法重复初始化）。
-- `<<NEW>>` **security**：管理员账号不再硬编码弱口令，改为 opt-in（仅当显式设置 `ADMIN_SEED_PASSWORD` 才自动建）；否则由 `/setup` 向导接管，消除公开仓库硬编码弱口令风险。
-- `<<NEW>>` **feat(seed)**：新增 `server/seed-defaults.cjs` 首次部署兜底种子（占位服务商 + 常用图像模型 DALL·E 3 / SDXL / FLUX，enabled=false，需填 Key 启用；`ON CONFLICT DO NOTHING` 幂等），在 `initDB` 中 providers 表为空时自动写入。
-- `<<NEW>>` **docs**：README 部署章节补充本地（compose 内置 PG/Redis）与远程（RDS 经 `.env` 的 PG_HOST/REDIS_HOST）双路径 + `/setup` 向导使用说明。
+- `0e94bea` **feat(setup)**：新增首次部署初始化向导 `/setup`（前端多步 premium 暗色页面，未初始化访问站点根路径自动跳转）+ 后端 `GET /api/setup/status`、`POST /api/setup/init`（fails-closed：首个管理员建好后返回 409 锁定，无法重复初始化）。
+- `0e94bea` **security**：管理员账号不再硬编码弱口令，改为 opt-in（仅当显式设置 `ADMIN_SEED_PASSWORD` 才自动建）；否则由 `/setup` 向导接管，消除公开仓库硬编码弱口令风险。
+- `0e94bea` **feat(seed)**：新增 `server/seed-defaults.cjs` 首次部署兜底种子（占位服务商 + 常用图像模型 DALL·E 3 / SDXL / FLUX，enabled=false，需填 Key 启用；`ON CONFLICT DO NOTHING` 幂等），在 `initDB` 中 providers 表为空时自动写入。
+- `0e94bea` **docs**：README 部署章节补充本地（compose 内置 PG/Redis）与远程（RDS 经 `.env` 的 PG_HOST/REDIS_HOST）双路径 + `/setup` 向导使用说明。
 
 ### 2026-08-06
 - `8f41c2b` **fix(generation-bar)**：三个抽屉（图像质量/清晰度/比例、模型选择、智能体菜单）全部 `createPortal` 渲染到 `document.body`，遮罩 `z-[9998]`、面板 `z-[9999]`，基于触发按钮 `getBoundingClientRect()` 定位，scroll/resize 自动关闭 → 抽屉永远在最外层，不再被卡片遮挡。
