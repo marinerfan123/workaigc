@@ -344,6 +344,22 @@ async function initDB() {
       CREATE INDEX IF NOT EXISTS ix_ro_ctrade  ON recharge_orders(channel_trade_no);
       CREATE INDEX IF NOT EXISTS ix_ro_status  ON recharge_orders(status, created_at DESC);
 
+      -- 角色全局库（characters）：建表 + 兼容补列，使 /api/characters 与前端 ICharacter 形状一致
+      CREATE TABLE IF NOT EXISTS characters (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        avatar_url TEXT DEFAULT '',
+        gender TEXT DEFAULT '',
+        age INTEGER DEFAULT 0,
+        tags TEXT[] DEFAULT '{}',
+        style JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      ALTER TABLE characters ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
+      ALTER TABLE characters ADD COLUMN IF NOT EXISTS reference_images TEXT[] DEFAULT '{}';
+      ALTER TABLE characters ADD COLUMN IF NOT EXISTS base_model TEXT DEFAULT '';
+      ALTER TABLE characters ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'user';
+
       -- Webhook 幂等表（L2 双保险）：同 (provider_id, channel_trade_no, event_type) 唯一
       CREATE TABLE IF NOT EXISTS webhook_events (
         id              BIGSERIAL PRIMARY KEY,
