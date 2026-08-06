@@ -2245,15 +2245,48 @@ server.listen(PORT, '0.0.0.0', () => {
 });
 
 // ─── 优雅关闭（SIGTERM/SIGINT）──
-// PM2/容器会发 SIGTERM；先停后台 worker，再让进程自然退出（pg 连接池关闭见 #360）。
+// PM2/容器发 SIGTERM：停 worker → 关闭 HTTP（不再接新连接，等在途完成）→ 关 Redis/PG → 退出。
+// 部署基线（#360）：ecosystem.config.cjs 已是单实例 fork（dispatcher RPM 令牌桶为进程内态，
+// 多实例会重复计数导致厂商 429 风暴）；此处负责进程内资源的有序释放。
 let shuttingDown = false;
 function gracefulShutdown(sig) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`\n[shutdown] 收到 ${sig}，停止后台 worker...`);
+  console.log(`\n[shutdown] 收到 ${sig}，开始优雅关闭...`);
   orderExpiry.stop();
-  // 给在途请求一点时间；后续 #360 会接 pgPool.end() + server.close()
-  setTimeout(() => process.exit(0), 200).unref();
+
+  // 兜底：10s 内未自然退出则强制退出，避免 PM2 kill_timeout 前残留
+  const forceExit = setTimeout(() => {
+    console.error('[shutdown] 等待超时，强制退出');
+    process.exit(1);
+  }, 10000);
+  if (forceExit.unref) forceExit.unref();
+
+  const done = (label) => {
+    console.log(`[shutdown] ${label}`);
+    clearTimeout(forceExit);
+    process.exit(0);
+  };
+
+  // 1) 停止接受新连接，等待在途请求自然完成
+  server.close((err) => {
+    if (err) console.error('[shutdown] server.close 错误:', err.message);
+    // 2) 关闭 Redis（ioredis quit）
+    const r = redisStore.getRedis && redisStore.getRedis();
+    const afterRedis = () => {
+      // 3) 关闭 PG 连接池
+      if (pgPool && typeof pgPool.end === 'function') {
+        pgPool.end(() => done('PG 连接池已关闭，进程退出')).catch(() => done('PG 关闭异常，进程退出'));
+      } else {
+        done('进程退出');
+      }
+    };
+    if (r && typeof r.quit === 'function') {
+      r.quit().then(afterRedis).catch(afterRedis);
+    } else {
+      afterRedis();
+    }
+  });
 }
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
