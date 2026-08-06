@@ -41,6 +41,12 @@ export interface UseImageProbeOptions {
   timeoutMs?: number;
   /** 探测失败时回调（父级用于汇总 id 写后端） */
   onProbeFailed?: (info: { error: string; checkedAt: number }) => void;
+  /**
+   * 懒加载开关：未进入视口前为 false，不发起任何探测请求（避免离屏图一次性全部下载）。
+   * 由 MediaCard 配合 useInView 传入，进入视口后才翻 true 触发探测。
+   * 默认 true（保持旧行为兼容）。
+   */
+  enabled?: boolean;
 }
 
 export interface UseImageProbeResult {
@@ -54,12 +60,14 @@ export interface UseImageProbeResult {
  * 媒体卡挂载时探测图片 URL 可用性
  */
 export function useImageProbe(url: string, options?: UseImageProbeOptions): UseImageProbeResult {
-  const { timeoutMs = 4000, onProbeFailed } = options || {};
+  const { timeoutMs = 4000, onProbeFailed, enabled = true } = options || {};
   const [result, setResult] = useState<UseImageProbeResult>(() => {
     // 命中缓存 → 直接用
     // 空 url 或本地资源 → 不探测（MediaCard 会用 item.status 自行决定渲染分支）
+    // enabled=false（离屏）→ 保持 pending，渲染骨架占位，等进入视口再探测
     if (!url) return { status: 'ok' };
     if (shouldSkipProbe(url)) return { status: 'ok' };
+    if (!enabled) return { status: 'pending' };
     const cached = probeCache.get(url);
     if (cached) {
       return cached.ok
@@ -70,11 +78,15 @@ export function useImageProbe(url: string, options?: UseImageProbeOptions): UseI
   });
 
   useEffect(() => {
-    // 跳过：未传 / 本地资源
-    if (!url || shouldSkipProbe(url)) return;
-    // 命中缓存：不再探测
-    if (probeCache.has(url)) return;
-    // 已探测过（结果已 setState）
+    // 跳过：未启用 / 未传 / 本地资源
+    if (!enabled || !url || shouldSkipProbe(url)) return;
+    // 命中缓存：直接同步结果（含 enabled 刚翻 true 的场景）
+    if (probeCache.has(url)) {
+      const cached = probeCache.get(url)!;
+      setResult(cached.ok ? { status: 'ok' } : { status: 'failed', error: cached.error });
+      return;
+    }
+    // 已探测过（结果已 setState）→ 不再探测
     if (result.status !== 'pending') return;
 
     let cancelled = false;
@@ -95,8 +107,9 @@ export function useImageProbe(url: string, options?: UseImageProbeOptions): UseI
       cancelled = true;
     };
     // 故意忽略 onProbeFailed 依赖：避免父级重渲染导致重复探测
+    // enabled 作为依赖：进入视口翻 true 时立刻触发探测
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, timeoutMs]);
+  }, [url, timeoutMs, enabled]);
 
   return result;
 }

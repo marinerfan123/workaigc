@@ -26,6 +26,7 @@ import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
 import { useImageProbe } from '@/hooks/useImageProbe';
 import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
+import { useInView } from '@/hooks/useInView';
 
 interface MediaCardProps {
   item: IMediaItem;
@@ -60,6 +61,9 @@ export default function MediaCard({
   const [hovered, setHovered] = useState(false);
   const navigate = useNavigate();
 
+  // ── 视口懒加载：离屏卡片不探测、不下载，进入视口前 300px 才激活 ──
+  const { ref: inViewRef, inView } = useInView<HTMLDivElement>({ rootMargin: '300px' });
+
   // ── 探测图片可用性 ──
   // item.status === 'failed' → 直接渲染占位，不探测
   // item.status === 'success' 或 undefined → 探测实际链接可用性
@@ -71,6 +75,8 @@ export default function MediaCard({
   const probe = useImageProbe(
     mediaUrl.reason === 'oss' ? '' : mediaUrl.url,
     item.status === 'pending' || item.status === 'failed' ? undefined : {
+      // 严格懒加载：仅当卡片进入视口后才发起探测请求，避免离屏图一次性全部下载
+      enabled: inView,
       onProbeFailed: (info) => onProbeFailed?.(item, info.error),
     },
   );
@@ -117,6 +123,7 @@ export default function MediaCard({
 
   return (
     <div
+      ref={inViewRef}
       className={`group relative overflow-hidden rounded-2xl border bg-zinc-900/50 transition-all duration-300 will-change-transform ${
         selected
           ? `border-emerald-500/60 shadow-[0_0_28px_-6px_rgba(16,185,129,0.45)] ${!isPending ? 'scale-[1.015]' : ''} z-10`

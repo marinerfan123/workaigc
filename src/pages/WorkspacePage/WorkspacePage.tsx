@@ -436,7 +436,7 @@ export default function WorkspacePage() {
             />
           </div>
 
-          <div className="relative">
+          <div className="relative z-40 px-5 pb-6">
             {/* 顶部渐隐：让悬浮生成栏在视觉上「锚定」于作品区，而非漂浮 */}
             <div className="pointer-events-none absolute -top-12 left-0 right-0 h-12 bg-gradient-to-t from-black via-black/70 to-transparent" />
             <GenerationBar
