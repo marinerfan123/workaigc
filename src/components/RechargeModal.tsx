@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react';
-import { Wallet, Check, Loader2, X, AlertCircle, CreditCard, Smartphone } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Wallet, Check, Loader2, X, AlertCircle, CreditCard, Smartphone, ExternalLink, Copy } from 'lucide-react';
 import { useAuth, refreshUser, setAuthModalOpen } from '@/services/authStore';
 import {
   apiCreateRechargeOrder,
-  apiRechargeCallback,
+  apiGetRechargeOrderStatus,
   apiPublicTopupPackages,
   type RechargeOrder,
   type TopupPackage,
@@ -22,11 +22,28 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [packages, setPackages] = useState<TopupPackage[]>([]);
+  const [copied, setCopied] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 充值套餐后管可配置：优先拉后端套餐，未配置时回退内置预设
   useEffect(() => {
     apiPublicTopupPackages().then((r) => setPackages(r.items)).catch(() => {});
   }, []);
+
+  // paying 态：每 2s 轮询订单状态，支付平台异步通知入账后跳成功态
+  useEffect(() => {
+    if (step !== 'paying' || !order) return;
+    pollRef.current = setInterval(async () => {
+      const r = await apiGetRechargeOrderStatus(order.payOrderNo);
+      if (r.order && r.order.status === 'paid') {
+        await refreshUser().catch(() => {});
+        setStep('success');
+        setTimeout(() => close(), 1600);
+      }
+    }, 2000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, order]);
 
   if (!open) return null;
 
@@ -38,6 +55,7 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
     setOrder(null);
     setMsg('');
     setCustom('');
+    setCopied(false);
   }
   function close() {
     onClose();
@@ -67,21 +85,6 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
     }
   }
 
-  async function pay() {
-    if (!order) return;
-    setBusy(true);
-    const r = await apiRechargeCallback({ channel: order.channel, payOrderNo: order.payOrderNo });
-    setBusy(false);
-    if (r.ok) {
-      await refreshUser().catch(() => {});
-      setStep('success');
-      setTimeout(() => close(), 1600);
-    } else {
-      setStep('error');
-      setMsg(r.error || '支付失败');
-    }
-  }
-
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={close} />
@@ -102,7 +105,7 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
             <X className="size-4" />
           </button>
         </div>
-        <p className="relative mt-1 text-xs text-zinc-500">1 元 = 1 积分 · 当前为 DEV 模拟支付</p>
+        <p className="relative mt-1 text-xs text-zinc-500">1 元 = 1 积分 · 真实支付通道（扫码或打开链接完成付款）</p>
 
         <div className="relative mt-5">
           {step === 'form' && (
@@ -190,14 +193,37 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
                 <div className="text-3xl font-extrabold text-white">¥{order.amount}</div>
                 <div className="mt-1 text-xs text-zinc-500">订单号 {order.payOrderNo}</div>
               </div>
-              <button
-                onClick={pay}
-                disabled={busy}
-                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 py-3 text-sm font-bold text-zinc-900 transition-transform hover:scale-[1.01] disabled:opacity-50"
-              >
-                {busy ? <Loader2 className="size-4 animate-spin" /> : <Check className="size-4" />}
-                模拟支付成功
-              </button>
+
+              {order.payUrl ? (
+                <div className="space-y-2">
+                  <a
+                    href={order.payUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 py-3 text-sm font-bold text-zinc-900 transition-transform hover:scale-[1.01]"
+                  >
+                    <ExternalLink className="size-4" />
+                    打开支付链接
+                  </a>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(order.payUrl || '');
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 1500);
+                      } catch { /* 忽略 */ }
+                    }}
+                    className="flex w-full items-center justify-center gap-2 rounded-2xl border border-zinc-700 py-2.5 text-xs text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  >
+                    <Copy className="size-3.5" />
+                    {copied ? '已复制链接' : '复制链接'}
+                  </button>
+                  <p className="text-[11px] text-zinc-500">完成付款后本弹窗会自动刷新到账状态…</p>
+                </div>
+              ) : (
+                <p className="text-sm text-red-400">支付通道未就绪，暂时无法充值。请稍后再试或联系客服。</p>
+              )}
+
               <button onClick={close} className="text-xs text-zinc-500 hover:text-zinc-300">
                 取消
               </button>

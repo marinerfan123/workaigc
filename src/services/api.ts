@@ -499,18 +499,18 @@ export async function apiGetUserMedia(id: string): Promise<{ items: any[] }> {
   return apiFetch(`/api/users/${encodeURIComponent(id)}/media`);
 }
 
-// ─── 充值订单（M2 账务 / DEV 支付适配器）───
+// ─── 充值订单（M2 账务 / 真实支付通道）───
 export interface RechargeOrder {
   id: string;
   payOrderNo: string;
   amount: number;
-  channel: 'wechat' | 'alipay';
+  channel: string;
   status: 'pending' | 'paid' | 'failed';
   createdAt: string;
   paidAt?: string | null;
 }
-/** 创建充值订单（DEV：返回模拟支付入口） */
-export async function apiCreateRechargeOrder(params: { amount: number; channel: 'wechat' | 'alipay' }): Promise<{ ok: boolean; devMode?: boolean; order?: RechargeOrder; error?: string }> {
+/** 创建充值订单（真实支付通道；无通道由后端返回 503，无模拟回退） */
+export async function apiCreateRechargeOrder(params: { amount: number; channel: string }): Promise<{ ok: boolean; order?: RechargeOrder; error?: string }> {
   try {
     return await apiFetch('/api/credits/orders', { method: 'POST', body: JSON.stringify(params) });
   } catch (e) {
@@ -521,12 +521,12 @@ export async function apiCreateRechargeOrder(params: { amount: number; channel: 
 export async function apiListRechargeOrders(): Promise<{ items: RechargeOrder[] }> {
   try { return await apiFetch('/api/credits/orders'); } catch { return { items: [] }; }
 }
-/** 支付成功回调（DEV：前端/模拟页触发；生产由支付平台异步通知） */
-export async function apiRechargeCallback(params: { channel: 'wechat' | 'alipay'; payOrderNo: string }): Promise<{ ok: boolean; alreadyPaid?: boolean; credits?: number; error?: string }> {
+/** 轮询单个充值订单状态（支付成功后前端据此跳到成功态） */
+export async function apiGetRechargeOrderStatus(payOrderNo: string): Promise<{ order?: RechargeOrder; error?: string }> {
   try {
-    return await apiFetch(`/api/credits/orders/callback/${params.channel}`, { method: 'POST', body: JSON.stringify({ payOrderNo: params.payOrderNo }) });
+    return await apiFetch(`/api/credits/orders/${encodeURIComponent(payOrderNo)}`);
   } catch (e) {
-    return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+    return { error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
   }
 }
 

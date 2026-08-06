@@ -43,7 +43,7 @@ const { initRedis, isRedisUp } = redisStore;
 const { clientIp, rateLimit } = rateLimitMod;
 import adminMod from './admin.cjs'; // Phase 2 运营总控台(M3) + 全局智能体层(M4) 后台接口
 import shopMod from './shop.cjs';   // Phase 5 电商模块（AI 市集）：商品/购物车/订单
-import paymentsMod from './payments.cjs'; // Phase 2 收尾：充值订单 + DEV 支付适配器(M2 账务)
+import paymentsMod from './payments.cjs'; // 充值订单 + 真实支付通道适配器(M2 账务)；绝无 DEV 模拟入账
 import monitorMod from './monitor.cjs'; // 后台「实时监控 · API 活动流」(全路径环形缓冲 + SSE 广播)
 import ossLoggerMod from './oss-logger.cjs'; // OssConfigPanel 专用实时日志（仅 /api/oss/*，含脱敏）
 import logbusMod from './logbus.cjs';   // 后台「实时日志 · 数据库/Redis/控制台」(统一日志总线 + SSE 广播)
@@ -668,7 +668,8 @@ const me = meMod.createMe({
   parseBody,
 });
 
-// ─── Phase 2 收尾：充值订单 + DEV 支付适配器（注入依赖；pgPool 经 getter 取最新值）──
+// ─── 充值订单 + 真实支付通道适配器（注入依赖；pgPool 经 getter 取最新值）──
+// 安全：DEV 模拟支付已彻底移除；真实入账只走公开 webhook（鉴权网关前），fails closed。
 const payments = paymentsMod.createPayments({
   getPg: () => pgPool,
   session,
@@ -813,6 +814,12 @@ async function handleAPI(req, res) {
     } catch {
       return sendJSON(res, 200, { waitingAreaSize: 0, allResourcesDown: false, threshold: 10, triggered: false });
     }
+  }
+
+  // 公开：支付异步通知（真实入账，fails closed）——必须在鉴权网关前放行，供支付平台回调
+  {
+    const wh = url.match(/^\/api\/credits\/webhook\/([a-z]+)$/);
+    if (wh && method === 'POST') return payments.handleWebhook(req, res, wh[1]);
   }
 
   // 应用网关：API_TOKEN 或 用户会话 cookie 任一通过
