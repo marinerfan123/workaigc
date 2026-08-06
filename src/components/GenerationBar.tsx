@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useImperativeHandle, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { probeImageLoad } from '@/utils/imageProbe';
 import {
@@ -147,6 +148,27 @@ function GenerationBar({
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
   // 尺寸设置弹窗（质量/清晰度/比例 —— 向上弹窗，一次选择）
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // ── 三个抽屉全部 Portal 到 body，确保永远在最外层，不被卡片 hover/选中盖住 ──
+  const settingsBtnRef = useRef<HTMLButtonElement>(null);
+  const modelBtnRef = useRef<HTMLButtonElement>(null);
+  const agentBtnRef = useRef<HTMLButtonElement>(null);
+  const [settingsPos, setSettingsPos] = useState<{ top: number; left: number } | null>(null);
+  const [modelPos, setModelPos] = useState<{ top: number; left: number } | null>(null);
+  const [agentPos, setAgentPos] = useState<{ top: number; left: number } | null>(null);
+
+  // 滚动/缩放时自动关闭抽屉，避免触发按钮位置变了，portal 的固定坐标还在原处
+  useEffect(() => {
+    if (!settingsOpen && !modelMenuOpen && !agentOpen) return;
+    const onScrollOrResize = () => { setSettingsOpen(false); setModelMenuOpen(false); setAgentOpen(false); };
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
+    return () => {
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
+    };
+  }, [settingsOpen, modelMenuOpen, agentOpen]);
+
   const { providers, models, getProviderName, getDefaultModel } = useModelHub();
   const { config: ossConfig, uploadFile: uploadToOss, buildOssUrl } = useOssConfig();
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -931,7 +953,12 @@ function GenerationBar({
             {/* 尺寸设置（质量 / 清晰度 / 比例 —— 向上弹窗，一次选择） */}
             <div className="relative">
               <button
-                onClick={() => setSettingsOpen(!settingsOpen)}
+                ref={settingsBtnRef}
+                onClick={() => {
+                  const rect = settingsBtnRef.current?.getBoundingClientRect();
+                  if (rect) setSettingsPos({ top: rect.top, left: rect.left + rect.width / 2 });
+                  setSettingsOpen((v) => !v);
+                }}
                 className="flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-zinc-800/50 pl-2.5 pr-2 text-xs text-white hover:bg-zinc-800 transition-colors"
                 title="图像质量 / 清晰度 / 比例"
               >
@@ -945,14 +972,20 @@ function GenerationBar({
                   className={`size-3 text-zinc-500 transition-transform duration-200 ${settingsOpen ? 'rotate-180' : ''}`}
                 />
               </button>
-              {settingsOpen && (
+              {settingsOpen && settingsPos && createPortal(
                 <>
                   <div
-                    className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
+                    className="fixed inset-0 z-[9998] bg-black/40 backdrop-blur-sm"
                     onClick={() => setSettingsOpen(false)}
                   />
-                  {/* 向上弹窗：bottom-full + mb-2，水平居中对齐触发按钮 */}
-                  <div className="absolute left-1/2 bottom-full z-40 mb-2 w-80 -translate-x-1/2 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl shadow-black/60">
+                  <div
+                    className="fixed z-[9999] w-80 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl shadow-black/60"
+                    style={{
+                      bottom: `${window.innerHeight - settingsPos.top + 8}px`,
+                      left: settingsPos.left,
+                      transform: 'translateX(-50%)',
+                    }}
+                  >
                     {/* 图像质量 */}
                     <div className="p-3">
                       <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
@@ -1023,14 +1056,20 @@ function GenerationBar({
                       </div>
                     </div>
                   </div>
-                </>
+                </>,
+                document.body,
               )}
             </div>
 
             {/* 模型 */}
             <div className="relative">
               <button
-                onClick={() => setModelMenuOpen(!modelMenuOpen)}
+                ref={modelBtnRef}
+                onClick={() => {
+                  const rect = modelBtnRef.current?.getBoundingClientRect();
+                  if (rect) setModelPos({ top: rect.top, left: rect.left + rect.width / 2 });
+                  setModelMenuOpen((v) => !v);
+                }}
                 className="flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full bg-zinc-800/50 pl-2.5 pr-2 text-xs text-white hover:bg-zinc-800 transition-colors"
               >
                 <Settings2 className="size-3.5 text-zinc-500" />
@@ -1099,14 +1138,20 @@ function GenerationBar({
                   升级会员免排队
                 </button>
               )}
-              {modelMenuOpen && (
+              {modelMenuOpen && modelPos && createPortal(
                 <>
                   <div
-                    className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
+                    className="fixed inset-0 z-[9998] bg-black/40 backdrop-blur-sm"
                     onClick={() => { setModelMenuOpen(false); setModelSearch(''); }}
                   />
-                  {/* 下拉弹出：相对触发按钮水平居中 (left-1/2 + -translate-x-1/2) + bottom-full = 按钮正上方居中 */}
-                  <div className="absolute left-1/2 bottom-full z-40 mb-1 w-72 -translate-x-1/2 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl">
+                  <div
+                    className="fixed z-[9999] w-72 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl"
+                    style={{
+                      bottom: `${window.innerHeight - modelPos.top + 8}px`,
+                      left: modelPos.left,
+                      transform: 'translateX(-50%)',
+                    }}
+                  >
                     {/* 搜索框 */}
                     <div className="border-b border-zinc-800 p-2">
                       <div className="relative">
@@ -1166,7 +1211,8 @@ function GenerationBar({
                       )}
                     </div>
                   </div>
-                </>
+                </>,
+                document.body,
               )}
             </div>
 
@@ -1229,20 +1275,31 @@ function GenerationBar({
           {/* 智能体按钮 */}
           <div className="relative">
             <button
+              ref={agentBtnRef}
               type="button"
-              onClick={() => setAgentOpen(!agentOpen)}
+              onClick={() => {
+                const rect = agentBtnRef.current?.getBoundingClientRect();
+                if (rect) setAgentPos({ top: rect.top, left: rect.left });
+                setAgentOpen((v) => !v);
+              }}
               className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-zinc-800/50 text-zinc-400 hover:bg-zinc-800 hover:text-white pointer-events-auto transition-colors"
               title="智能体"
             >
               <Sparkles className="size-4" />
             </button>
-            {agentOpen && (
+            {agentOpen && agentPos && createPortal(
               <>
                 <div
-                  className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
+                  className="fixed inset-0 z-[9998] bg-black/40 backdrop-blur-sm"
                   onClick={() => setAgentOpen(false)}
                 />
-                <div className="absolute bottom-full left-0 z-[999] mb-2 w-72 overflow-hidden rounded-[1.5rem] bg-zinc-950 border border-zinc-800 p-2 shadow-2xl shadow-black/60">
+                <div
+                  className="fixed z-[9999] w-72 overflow-hidden rounded-[1.5rem] bg-zinc-950 border border-zinc-800 p-2 shadow-2xl shadow-black/60"
+                  style={{
+                    bottom: `${window.innerHeight - agentPos.top + 8}px`,
+                    left: agentPos.left,
+                  }}
+                >
                   {agents.map((a) => {
                     const Icon = a.icon;
                     return (
@@ -1266,7 +1323,8 @@ function GenerationBar({
                     );
                   })}
                 </div>
-              </>
+              </>,
+              document.body,
             )}
           </div>
 
