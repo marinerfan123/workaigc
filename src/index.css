@@ -3,6 +3,7 @@
 @import "./tailwind-theme.css";
 @import "./typography.css";
 @import "./styles/premium.css";
+@import "./styles/fonts.css";
 
 /* Shimmer 流光动画：用于"检测链接中..."等临时加载状态 */
 @keyframes shimmer {
