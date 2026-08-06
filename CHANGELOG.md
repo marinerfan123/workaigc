@@ -18,6 +18,12 @@
 
 ## 版本明细（新 → 旧）
 
+### 2026-08-06（premium 玻璃套件）
+- `<<NEW>>` **feat(premium)**：新增 `src/components/premium/` 可复用高级效果套件——`LiquidGlass`（液体玻璃容器，subtle/strong 双变体，mask-composite 渐变描边）、`BlurText`（IntersectionObserver 逐词 blur 入场）、`FadingVideo`（rAF 驱动交叉淡入、手动 loop）、`FadeIn`/`fadeIn`（Framer Motion blur+y 错峰入场封装）；`src/styles/premium.css` 落地精确液体玻璃 CSS。
+- `<<NEW>>` **feat(theme)**：`index.html` 引入 Instrument Serif + Barlow 字体；`tailwind-theme.css` 加 `--font-display` / `--font-barlow` 令牌（`font-display` 默认斜体）；全站可用 `font-display` / `font-barlow` 工具类。
+- `<<NEW>>` **feat(setup-demo)**：`SetupWizardPage` 主面板与「已完成」面板改用 `LiquidGlass`，欢迎标题用 `BlurText`，整卡用 `FadeIn` 错峰淡入，作为套件在应用内的示范（功能与 emerald/zinc 结构不变）。
+- 依赖：framer-motion 12 已在项目内，无需新增；`tsc` 未引入新错误，`vite build` 成功。
+
 ### 2026-08-06（初始化向导版）
 - `0e94bea` **feat(setup)**：新增首次部署初始化向导 `/setup`（前端多步 premium 暗色页面，未初始化访问站点根路径自动跳转）+ 后端 `GET /api/setup/status`、`POST /api/setup/init`（fails-closed：首个管理员建好后返回 409 锁定，无法重复初始化）。
 - `0e94bea` **security**：管理员账号不再硬编码弱口令，改为 opt-in（仅当显式设置 `ADMIN_SEED_PASSWORD` 才自动建）；否则由 `/setup` 向导接管，消除公开仓库硬编码弱口令风险。

@@ -8,6 +8,7 @@ import {
   ChevronRight, ChevronLeft, Loader2, AlertTriangle, ArrowRight,
 } from 'lucide-react';
 import { getSetupStatus, postSetupInit, type ISetupModelPreset } from '@/services/api';
+import { LiquidGlass, BlurText, FadeIn } from '@/components/premium';
 
 type Step = 'loading' | 'intro' | 'admin' | 'provider' | 'done' | 'already';
 
@@ -102,7 +103,7 @@ export default function SetupWizardPage() {
   if (step === 'already') {
     return (
       <Shell>
-        <div className="rounded-3xl border border-zinc-800 bg-zinc-900/60 p-8 text-center backdrop-blur-sm">
+        <LiquidGlass strong className="rounded-3xl p-8 text-center">
           <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-2xl bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/20">
             <Check className="size-6" />
           </div>
@@ -116,7 +117,7 @@ export default function SetupWizardPage() {
           >
             前往登录 <ArrowRight className="size-4" />
           </button>
-        </div>
+        </LiquidGlass>
       </Shell>
     );
   }
@@ -128,7 +129,8 @@ export default function SetupWizardPage() {
         <Stepper current={stepIndex} />
       )}
 
-      <div className="rounded-3xl border border-zinc-800 bg-zinc-900/60 p-7 backdrop-blur-sm">
+      <FadeIn delay={0.1}>
+        <LiquidGlass strong className="rounded-3xl p-7">
         {step === 'intro' && (
           <IntroStep
             onNext={() => setStep('admin')}
@@ -242,7 +244,8 @@ export default function SetupWizardPage() {
             </button>
           </div>
         )}
-      </div>
+        </LiquidGlass>
+      </FadeIn>
     </Shell>
   );
 }
@@ -294,7 +297,7 @@ function IntroStep({ onNext }: { onNext: () => void }) {
           <Sparkles className="size-5" />
         </div>
         <div>
-          <h1 className="text-lg font-semibold text-white">欢迎初始化平台</h1>
+          <BlurText as="h1" text="欢迎初始化平台" className="text-lg font-semibold text-white" style={{ justifyContent: 'flex-start', textAlign: 'left' }} />
           <p className="mt-0.5 text-xs text-zinc-500">首次部署引导 · 约 1 分钟</p>
         </div>
       </div>
