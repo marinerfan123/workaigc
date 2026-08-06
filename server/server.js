@@ -44,6 +44,7 @@ const { clientIp, rateLimit } = rateLimitMod;
 import adminMod from './admin.cjs'; // Phase 2 运营总控台(M3) + 全局智能体层(M4) 后台接口
 import shopMod from './shop.cjs';   // Phase 5 电商模块（AI 市集）：商品/购物车/订单
 import paymentsMod from './payments.cjs'; // 充值订单 + 真实支付通道适配器(M2 账务)；绝无 DEV 模拟入账
+import { createOrderExpiryWorker } from './payments/order-expiry.cjs'; // 订单超时调度器(Node 内存 worker)
 import monitorMod from './monitor.cjs'; // 后台「实时监控 · API 活动流」(全路径环形缓冲 + SSE 广播)
 import ossLoggerMod from './oss-logger.cjs'; // OssConfigPanel 专用实时日志（仅 /api/oss/*，含脱敏）
 import logbusMod from './logbus.cjs';   // 后台「实时日志 · 数据库/Redis/控制台」(统一日志总线 + SSE 广播)
@@ -693,6 +694,11 @@ const payments = paymentsMod.createPayments({
   sendJSON,
   parseBody,
 });
+
+// ─── 订单超时调度器（Node 内存 worker）──
+// 周期性把超时 pending 订单置 expired + 审计；下单不预留积分，故不触碰余额。
+// 进程退出时 stop() 清定时器。
+const orderExpiry = createOrderExpiryWorker({ getPg: () => pgPool, intervalMs: 60000 });
 
 // ─── 应用网关（Phase A 改造）─────────────────────
 // 保留全局 API_TOKEN（后续阶段去 fallback，评审稿 ⑦）；同时接受用户会话 cookie。
@@ -2233,4 +2239,19 @@ if (isProduction) {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 服务: http://localhost:${PORT} | 📁 ${DATA_DIR} | 🐘 PG:${pgPool ? 'connected' : 'json-fallback'} | 🔴 Redis:${isRedisUp() ? 'up' : 'memory-fallback'}`);
+  orderExpiry.start(); // 启动订单超时调度器（启动即扫一次）
 });
+
+// ─── 优雅关闭（SIGTERM/SIGINT）──
+// PM2/容器会发 SIGTERM；先停后台 worker，再让进程自然退出（pg 连接池关闭见 #360）。
+let shuttingDown = false;
+function gracefulShutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n[shutdown] 收到 ${sig}，停止后台 worker...`);
+  orderExpiry.stop();
+  // 给在途请求一点时间；后续 #360 会接 pgPool.end() + server.close()
+  setTimeout(() => process.exit(0), 200).unref();
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
