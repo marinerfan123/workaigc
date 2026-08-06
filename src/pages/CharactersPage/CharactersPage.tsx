@@ -112,7 +112,7 @@ export default function CharactersPage() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="truncate text-sm font-medium text-white">{char.name}</div>
-                  <div className="truncate text-xs text-zinc-500">{char.baseModel}</div>
+                  <div className="truncate text-xs text-zinc-500">{char.baseModel || '未设置'}</div>
                 </div>
               </button>
             ))}
@@ -139,9 +139,9 @@ export default function CharactersPage() {
                   </div>
                   <div>
                     <h1 className="text-2xl font-black tracking-tight text-white">{selected.name}</h1>
-                    <p className="mt-1 text-sm text-zinc-500">基础模型：{selected.baseModel}</p>
+                    <p className="mt-1 text-sm text-zinc-500">基础模型：{selected.baseModel || '未设置'}</p>
                     <p className="text-xs text-zinc-600">
-                      创建于 {new Date(selected.createdAt).toLocaleDateString('zh-CN')}
+                      创建于 {selected.createdAt ? new Date(selected.createdAt).toLocaleDateString('zh-CN') : '—'}
                     </p>
                   </div>
                 </div>
@@ -168,7 +168,7 @@ export default function CharactersPage() {
               <div className="mb-8 rounded-[2rem] bg-zinc-900 border border-zinc-800 p-6 relative overflow-hidden">
                 <div className="pointer-events-none absolute -top-10 right-0 h-32 w-32 bg-emerald-500/10 blur-[60px] rounded-full" />
                 <h3 className="mb-3 text-sm font-bold text-white">角色描述</h3>
-                <p className="text-sm leading-relaxed text-zinc-300">{selected.description}</p>
+                <p className="text-sm leading-relaxed text-zinc-300">{selected.description || '暂无角色描述'}</p>
               </div>
 
               {/* 参考图 */}
@@ -181,7 +181,7 @@ export default function CharactersPage() {
                   </button>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  {selected.referenceImages.map((img, i) => (
+                  {(selected.referenceImages || []).map((img, i) => (
                     <div
                       key={i}
                       className="group relative aspect-[3/4] overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900 transition-all duration-300 hover:border-zinc-700"

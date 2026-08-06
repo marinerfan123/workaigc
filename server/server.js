@@ -441,6 +441,7 @@ function writeJSON(name, data) {
 // ─── snake_case → camelCase ─────────────────────
 const SNAKE_MAP = {
   full_url:'fullUrl', oss_url:'ossUrl', oss_object_key:'ossObjectKey', oss_uploaded:'ossUploaded',
+  avatar_url:'avatar', reference_images:'referenceImages', base_model:'baseModel',
   is_favorite:'isFavorite', is_deleted:'isDeleted', created_at:'createdAt', base_url:'baseUrl',
   api_key:'apiKey', supported_types:'supportedTypes', default_endpoint:'defaultEndpoint',
   display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent', rate_limits:'rateLimits', mapping_name:'mappingName', credit_cost:'creditCost', estimated_seconds:'estimatedSeconds', commercial_use:'commercialUse', capacity_model:'capacityModel', bucket_max:'bucketMax', cooldown_ms:'cooldownMs',
@@ -1258,7 +1259,9 @@ async function handleAPI(req, res) {
   if (url === '/api/characters' && method === 'GET') {
     if (!realUser) return sendJSON(res, 401, { error: '未登录' });
     if (pgPool) {
-      const r = await pgPool.query('SELECT * FROM characters ORDER BY created_at DESC');
+      const r = await pgPool.query(
+        `SELECT id, name, avatar_url, gender, age, tags, style, description, reference_images, base_model, source, created_at
+         FROM characters ORDER BY created_at DESC`);
       return sendJSON(res, 200, r.rows.map(fromSnake));
     }
     return sendJSON(res, 200, readJSON('characters') || []);
@@ -1272,10 +1275,13 @@ async function handleAPI(req, res) {
         const id = it.id || ('ch-' + crypto.randomUUID());
         const s = toSnake(it);
         await pgPool.query(
-          `INSERT INTO characters (id, name, avatar_url, gender, age, tags, style, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
-           ON CONFLICT (id) DO UPDATE SET name=$2, avatar_url=$3, gender=$4, age=$5, tags=$6, style=$7`,
-          [id, s.name || '', s.avatar_url || '', s.gender || '', s.age || 0, s.tags || [], s.style || {}],
+          `INSERT INTO characters (id, name, avatar_url, gender, age, tags, style, description, reference_images, base_model, source, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+           ON CONFLICT (id) DO UPDATE SET
+             name=$2, avatar_url=$3, gender=$4, age=$5, tags=$6, style=$7,
+             description=$8, reference_images=$9, base_model=$10, source=$11`,
+          [id, s.name || '', s.avatar_url || '', s.gender || '', s.age || 0, s.tags || [], s.style || {},
+           s.description || '', s.reference_images || [], s.base_model || '', s.source || 'user'],
         );
       }
       return sendJSON(res, 200, { ok: true, count: arr.length });

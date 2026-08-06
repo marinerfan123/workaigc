@@ -24,22 +24,50 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
   const [msg, setMsg] = useState('');
   const [packages, setPackages] = useState<TopupPackage[]>([]);
   const [copied, setCopied] = useState(false);
+  const [remaining, setRemaining] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 倒计时格式化（毫秒 → mm:ss）
+  function fmtCountdown(ms: number | null) {
+    if (ms === null) return '--:--';
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const m = Math.floor(s / 60);
+    return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+  }
 
   // 充值套餐后管可配置：优先拉后端套餐，未配置时回退内置预设
   useEffect(() => {
     apiPublicTopupPackages().then((r) => setPackages(r.items)).catch(() => {});
   }, []);
 
-  // paying 态：每 2s 轮询订单状态，支付平台异步通知入账后跳成功态
+  // paying 态：每秒刷新支付链接剩余有效时间（倒计时）
+  useEffect(() => {
+    if (step !== 'paying' || !order || !order.expiresAt) { setRemaining(null); return; }
+    const deadline = new Date(order.expiresAt).getTime();
+    const tick = () => setRemaining(Math.max(0, deadline - Date.now()));
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, order]);
+
+  // paying 态：每 2s 轮询订单状态，支付平台异步通知入账后跳成功态；
+  // 同时检测 expired / failed，避免"长期待付挂着"
   useEffect(() => {
     if (step !== 'paying' || !order) return;
     pollRef.current = setInterval(async () => {
       const r = await apiGetRechargeOrderStatus(order.payOrderNo);
-      if (r.order && r.order.status === 'paid') {
+      if (!r.order) return;
+      if (r.order.status === 'paid') {
         await refreshUser().catch(() => {});
         setStep('success');
         setTimeout(() => close(), 1600);
+      } else if (r.order.status === 'expired' || r.order.status === 'failed') {
+        if (pollRef.current) clearInterval(pollRef.current);
+        setMsg(r.order.status === 'expired'
+          ? '订单已超时未支付，请重新下单'
+          : `支付失败：${r.order.failReason || '请稍后重试'}`);
+        setStep('error');
       }
     }, 2000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
@@ -210,6 +238,15 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
                 <div className="mt-1 text-xs text-zinc-500">订单号 {order.payOrderNo}</div>
               </div>
 
+              {order.expiresAt && (
+                <div className="mx-auto flex w-fit items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-800/40 px-3 py-1 text-xs">
+                  <span className="text-zinc-500">支付链接有效期</span>
+                  <span className={remaining !== null && remaining <= 0 ? 'font-semibold text-red-400' : 'font-semibold text-emerald-300'}>
+                    {fmtCountdown(remaining)}
+                  </span>
+                </div>
+              )}
+
               {order.payUrl ? (
                 <div className="space-y-2">
                   <a
@@ -234,7 +271,7 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
                     <Copy className="size-3.5" />
                     {copied ? '已复制链接' : '复制链接'}
                   </button>
-                  <p className="text-[11px] text-zinc-500">完成付款后本弹窗会自动刷新到账状态…</p>
+                  <p className="text-[11px] text-zinc-500">完成付款后本弹窗会自动刷新到账状态（链接超时将自动作废）</p>
                 </div>
               ) : (
                 <p className="text-sm text-red-400">支付通道未就绪，暂时无法充值。请稍后再试或联系客服。</p>

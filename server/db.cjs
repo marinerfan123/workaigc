@@ -146,6 +146,12 @@ async function initDB() {
     await client.query(`
       ALTER TABLE models ADD COLUMN IF NOT EXISTS max_concurrent INT;
     `);
+    // 兼容已部署库：补 characters 的扩展字段（参考图 / 描述 / 基础模型 / 来源），
+    // 使 /api/characters 前后端 ICharacter 形状一致，避免前端 referenceImages 为 undefined 崩溃
+    await client.query(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';`);
+    await client.query(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS reference_images TEXT[] DEFAULT '{}';`);
+    await client.query(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS base_model TEXT DEFAULT '';`);
+    await client.query(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'user';`);
 
     console.log('[PG] 数据库表初始化完成');
   } finally {

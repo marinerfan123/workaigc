@@ -31,6 +31,28 @@ const payments = {
     }
 
     // POST /api/credits/orders — 创建充值订单（真实支付通道；无通道一律 503，无模拟回退）
+    async function loadPaymentSettings() {
+      const pg = getPg();
+      const def = { enabled: true, defaultExpiresMin: 15, minAmount: 1, maxAmount: 10000000, dailyLimit: 10000000, maxOpenOrders: 5 };
+      if (!pg) return def;
+      try {
+        const r = await pg.query(
+          'SELECT enabled, default_expires_min, min_amount, max_amount, daily_limit, max_open_orders FROM payment_settings WHERE id=1');
+        if (!r.rows.length) return def;
+        const x = r.rows[0];
+        return {
+          enabled: x.enabled !== false,
+          defaultExpiresMin: Number(x.default_expires_min) || 15,
+          minAmount: Number(x.min_amount) || 1,
+          maxAmount: Number(x.max_amount) || 10000000,
+          dailyLimit: Number(x.daily_limit) || 10000000,
+          maxOpenOrders: Number(x.max_open_orders) || 5,
+        };
+      } catch (e) {
+        return def;
+      }
+    }
+
     async function createOrder(req, res) {
       const u = await requireUser(req, res);
       if (!u) return;
@@ -46,9 +68,44 @@ const payments = {
       const providerEntry = await loader.getDefault().catch(() => null);
       if (!providerEntry) return sendJSON(res, 503, { error: '支付通道暂未配置，无法充值' });
 
+      // ── 支付全局设置校验（防滥用：总开关 / 金额区间 / 单用户日限额 / 最大待付数）──
+      const settings = await loadPaymentSettings();
+      if (!settings.enabled) return sendJSON(res, 503, { error: '支付功能已关闭' });
+      if (amount < settings.minAmount) {
+        return sendJSON(res, 400, { error: `单笔充值不得低于 ¥${(settings.minAmount / 100).toFixed(0)}` });
+      }
+      if (amount > settings.maxAmount) {
+        return sendJSON(res, 400, { error: `单笔充值不得超过 ¥${(settings.maxAmount / 100).toFixed(0)}` });
+      }
+      // 单用户当日已用额度（paid + pending 合计）
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const dayRes = await pg.query(
+        "SELECT COALESCE(SUM(amount),0) AS s FROM recharge_orders WHERE user_id=$1 AND status IN ('paid','pending') AND created_at >= $2",
+        [u.id, todayStart],
+      );
+      const usedToday = Number(dayRes.rows[0] && dayRes.rows[0].s) || 0;
+      if (usedToday + amount > settings.dailyLimit) {
+        const leftYuan = Math.max(0, Math.floor((settings.dailyLimit - usedToday) / 100));
+        return sendJSON(res, 429, { error: `今日充值额度已用尽（剩余 ¥${leftYuan}）` });
+      }
+      // 单用户最大待支付数（超上限直接拒绝，杜绝"长期待付挂着"）
+      const openRes = await pg.query(
+        "SELECT COUNT(*) AS c FROM recharge_orders WHERE user_id=$1 AND status='pending'",
+        [u.id],
+      );
+      const openCount = Number(openRes.rows[0] && openRes.rows[0].c) || 0;
+      if (openCount >= settings.maxOpenOrders) {
+        return sendJSON(res, 429, {
+          error: `您有 ${openCount} 笔待支付订单，请先完成付款或等待过期（上限 ${settings.maxOpenOrders} 笔）`,
+        });
+      }
+
       const id = 'ro-' + crypto.randomUUID();
       const payOrderNo = 'P' + Date.now().toString(36) + crypto.randomBytes(4).toString('hex');
       const sign = hmac(SIGN_SECRET, `${payOrderNo}:${amount}:${channel}`);
+      // 计算绝对过期时间（前端倒计时用），与 order-expiry worker 阈值保持一致
+      const expiresAt = new Date(Date.now() + settings.defaultExpiresMin * 60000).toISOString();
       await pg.query(
         `INSERT INTO recharge_orders (id, user_id, channel, amount, status, pay_order_no, sign)
          VALUES ($1,$2,$3,$4,'pending',$5,$6)`,
@@ -82,7 +139,7 @@ const payments = {
 
       return sendJSON(res, 200, {
         ok: true,
-        order: { id, payOrderNo, amount, channel, status: 'pending', payUrl },
+        order: { id, payOrderNo, amount, channel, status: 'pending', payUrl, expiresAt },
       });
     }
 
@@ -113,15 +170,20 @@ const payments = {
       const pg = getPg();
       if (!pg) return sendJSON(res, 503, { error: '数据库不可用' });
       const r = await pg.query(
-        'SELECT id, pay_order_no, amount, channel, status, created_at, paid_at FROM recharge_orders WHERE pay_order_no=$1 AND user_id=$2',
+        'SELECT id, pay_order_no, amount, channel, status, created_at, paid_at, fail_reason FROM recharge_orders WHERE pay_order_no=$1 AND user_id=$2',
         [payOrderNo, u.id],
       );
       if (!r.rows.length) return sendJSON(res, 404, { error: '订单不存在' });
       const o = r.rows[0];
+      // 由 created_at + 全局过期分钟推导绝对过期时间（与 worker 阈值一致）
+      const settings = await loadPaymentSettings();
+      const createdMs = o.created_at ? new Date(o.created_at).getTime() : Date.now();
+      const expiresAt = new Date(createdMs + settings.defaultExpiresMin * 60000).toISOString();
       return sendJSON(res, 200, {
         order: {
           id: o.id, payOrderNo: o.pay_order_no, amount: Number(o.amount),
           channel: o.channel, status: o.status, createdAt: o.created_at, paidAt: o.paid_at,
+          expiresAt, failReason: o.fail_reason || null,
         },
       });
     }

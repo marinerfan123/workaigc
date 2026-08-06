@@ -505,9 +505,11 @@ export interface RechargeOrder {
   payOrderNo: string;
   amount: number;
   channel: string;
-  status: 'pending' | 'paid' | 'failed';
+  status: 'pending' | 'paid' | 'failed' | 'expired';
   createdAt: string;
   paidAt?: string | null;
+  expiresAt?: string | null;
+  failReason?: string | null;
 }
 /** 创建充值订单（真实支付通道；无通道由后端返回 503，无模拟回退） */
 export async function apiCreateRechargeOrder(params: { amount: number; channel: string }): Promise<{ ok: boolean; order?: RechargeOrder; error?: string }> {
