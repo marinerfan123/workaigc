@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Wallet, Check, Loader2, X, AlertCircle, CreditCard, Smartphone, ExternalLink, Copy } from 'lucide-react';
 import { useAuth, refreshUser, setAuthModalOpen } from '@/services/authStore';
 import {
@@ -45,6 +46,21 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, order]);
 
+  // 打开时禁止底层滚动；ESC 关闭
+  useEffect(() => {
+    if (!open) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
   if (!open) return null;
 
   const finalAmount = custom ? Math.floor(Number(custom)) : amount;
@@ -85,10 +101,10 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={close} />
-      <div className="relative w-full max-w-md overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900/95 p-6 shadow-2xl">
+  const content = (
+    <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto p-4 sm:items-center">
+      <div className="fixed inset-0 bg-black/70 backdrop-blur-sm" onClick={close} />
+      <div className="relative my-auto w-full max-w-md overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900/95 p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
         <div className="pointer-events-none absolute -top-24 left-1/2 h-48 w-48 -translate-x-1/2 rounded-full bg-emerald-500/15 blur-3xl" />
         {/* header */}
         <div className="relative flex items-center justify-between">
@@ -260,4 +276,6 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
       <style>{`@keyframes pop{0%{transform:scale(0)}60%{transform:scale(1.15)}100%{transform:scale(1)}}`}</style>
     </div>
   );
+
+  return createPortal(content, document.body);
 }
