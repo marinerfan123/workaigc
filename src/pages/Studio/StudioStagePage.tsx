@@ -1,6 +1,7 @@
-// 创作工作台 · 五阶段（骨架，M5 / Phase 4 / §F）
+// 创作工作台 · 五阶段（真实项目版，M5 / Phase 4 / §F）
 // 点子孵化 / 小说转剧本 / 无限画布分镜 / 视频生成 / 剧集编排
 // 每个节点：校验积分 → 调 skill_registry adapter → Agent Layer 执行 → 写产物 → 落 credit_transactions。
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Lightbulb,
@@ -8,13 +9,15 @@ import {
   LayoutGrid,
   Film,
   Clapperboard,
+  Loader2,
+  ChevronLeft,
 } from 'lucide-react';
 import { PageHeader, SectionCard, Placeholder, TabBar, PhaseBadge } from '@/components/skeleton';
-import { useState, type ReactNode } from 'react';
+import { apiGetStudioProject, apiUpdateStudioProject } from '@/services/api';
+import { type IStudioProject, STAGE_LABEL, STATUS_LABEL, type StudioProjectStage } from '@/data/studio';
+import { toast } from 'sonner';
 
-type StageKey = 'idea' | 'script' | 'storyboard' | 'video' | 'episode';
-
-const STAGES: Array<{ key: StageKey; label: string; icon: ReactNode; node: string; skill: string; cost: string; ready: boolean }> = [
+const STAGES: Array<{ key: StudioProjectStage; label: string; icon: React.ReactNode; node: string; skill: string; cost: string; ready: boolean }> = [
   { key: 'idea', label: '点子孵化', icon: <Lightbulb className="size-4" />, node: '/api/nodes/idea', skill: 'brainstorm', cost: '1', ready: false },
   { key: 'script', label: '剧本', icon: <ScrollText className="size-4" />, node: '/api/nodes/script', skill: 'screenwriter', cost: '3', ready: false },
   { key: 'storyboard', label: '无限画布分镜', icon: <LayoutGrid className="size-4" />, node: '/api/nodes/storyboard', skill: 'comic_layout', cost: '1/张', ready: true },
@@ -25,22 +28,61 @@ const STAGES: Array<{ key: StageKey; label: string; icon: ReactNode; node: strin
 export default function StudioStagePage() {
   const { projectId } = useParams();
   const navigate = useNavigate();
-  const [stage, setStage] = useState<StageKey>('storyboard');
+  const [project, setProject] = useState<IStudioProject | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [stage, setStage] = useState<StudioProjectStage>('storyboard');
+  const [savingStage, setSavingStage] = useState(false);
+
+  useEffect(() => {
+    if (!projectId || projectId === 'new') return;
+    setLoading(true);
+    apiGetStudioProject(projectId).then((p) => {
+      if (p) {
+        setProject(p);
+        setStage(p.currentStage);
+      }
+      setLoading(false);
+    });
+  }, [projectId]);
+
+  const handleStageChange = async (next: StudioProjectStage) => {
+    setStage(next);
+    if (!project || next === project.currentStage) return;
+    setSavingStage(true);
+    const r = await apiUpdateStudioProject(project.id, { currentStage: next });
+    setSavingStage(false);
+    if (r.ok && r.project) {
+      setProject(r.project);
+      toast.success(`当前阶段已保存为「${STAGE_LABEL[next]}」`);
+    } else {
+      toast.error('阶段保存失败');
+    }
+  };
 
   const current = STAGES.find((s) => s.key === stage)!;
+
+  if (loading) {
+    return (
+      <div className="mx-auto flex max-w-6xl flex-col items-center justify-center gap-3 p-20 text-zinc-400">
+        <Loader2 className="size-6 animate-spin text-emerald-400" />
+        <p className="text-sm">加载项目中…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-6xl space-y-5 p-6">
       {/* 项目头 */}
       <PageHeader
-        title={`项目 #${projectId ?? 'new'}`}
-        subtitle="M5 流水线 · 五阶段可回退迭代，每节点挂 skill / agent"
+        title={project ? project.title : `项目 #${projectId ?? 'new'}`}
+        subtitle={project ? `M5 流水线 · 当前阶段：${STAGE_LABEL[project.currentStage]} · ${STATUS_LABEL[project.status]}` : 'M5 流水线 · 五阶段可回退迭代，每节点挂 skill / agent'}
         icon={<LayoutGrid className="size-5" />}
         actions={
           <button
             onClick={() => navigate('/studio')}
-            className="rounded-2xl border border-zinc-800 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800/50 transition-colors"
+            className="flex items-center gap-1.5 rounded-2xl border border-zinc-800 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800/50 transition-colors"
           >
+            <ChevronLeft className="size-4" />
             项目列表
           </button>
         }
@@ -50,7 +92,7 @@ export default function StudioStagePage() {
       <TabBar
         tabs={STAGES.map((s) => ({ key: s.key, label: s.label, icon: s.icon }))}
         active={stage}
-        onChange={setStage}
+        onChange={handleStageChange}
       />
 
       {/* 当前阶段详情 */}
@@ -58,6 +100,7 @@ export default function StudioStagePage() {
         <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-lg font-semibold text-white">{current.label}</h2>
           <PhaseBadge status={current.ready ? 'ready' : 'planning'} />
+          {savingStage && <Loader2 className="size-4 animate-spin text-emerald-400" />}
           <span className="text-xs text-zinc-500">
             节点 {current.node} · skill={current.skill} · 计费 {current.cost}
           </span>

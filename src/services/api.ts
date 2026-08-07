@@ -272,6 +272,37 @@ export async function apiGetCharacterStats(id: string): Promise<{ totalGeneratio
   catch { return { totalGenerations: 0, favorites: 0 }; }
 }
 
+// ─── 创作工作室（M5 流水线）────────────────────────────────
+import type { IStudioProject } from '@/data/studio';
+
+export async function apiGetStudioProjects(): Promise<IStudioProject[]> {
+  try { return await apiFetch<IStudioProject[]>('/api/studio/projects'); } catch { return []; }
+}
+export async function apiGetStudioProject(id: string): Promise<IStudioProject | null> {
+  try { const r = await apiFetch<{ project: IStudioProject }>(`/api/studio/projects/${encodeURIComponent(id)}`); return r?.project || null; }
+  catch { return null; }
+}
+export async function apiCreateStudioProject(payload: Partial<IStudioProject>): Promise<{ ok: boolean; project?: IStudioProject; error?: string }> {
+  try {
+    const r = await apiFetch<{ ok: boolean; project: IStudioProject }>('/api/studio/projects', { method: 'POST', body: JSON.stringify(payload) });
+    return { ok: true, project: r.project };
+  } catch (e) {
+    return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 120) };
+  }
+}
+export async function apiUpdateStudioProject(id: string, payload: Partial<IStudioProject>): Promise<{ ok: boolean; project?: IStudioProject; error?: string }> {
+  try {
+    const r = await apiFetch<{ ok: boolean; project: IStudioProject }>(`/api/studio/projects/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+    return { ok: true, project: r.project };
+  } catch (e) {
+    return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 120) };
+  }
+}
+export async function apiDeleteStudioProject(id: string): Promise<{ ok: boolean }> {
+  try { await apiFetch(`/api/studio/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }); return { ok: true }; }
+  catch { return { ok: false }; }
+}
+
 // ─── 后台示例库（运营维护，一键推送给顾客） ───
 export async function apiGetSamples(): Promise<any[]> {
   try { const r = await apiFetch<{ samples: any[] }>('/api/admin/samples'); return r?.samples ?? []; } catch { return []; }

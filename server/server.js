@@ -633,6 +633,24 @@ async function initDB() {
     // 公共默认资产种子（幂等：已存在则跳过）
     await seedDefaultAssets();
 
+    // === Phase 4/5：创作工作室项目表 ===
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS studio_projects (
+        id            TEXT PRIMARY KEY DEFAULT 'proj-' || gen_random_uuid()::text,
+        owner_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title         TEXT NOT NULL DEFAULT '',
+        type          TEXT NOT NULL DEFAULT 'story',
+        status        TEXT NOT NULL DEFAULT 'planning',
+        current_stage TEXT NOT NULL DEFAULT 'idea',
+        description   TEXT DEFAULT '',
+        cover_url     TEXT DEFAULT '',
+        meta          JSONB DEFAULT '{}'::jsonb,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_studio_owner_updated ON studio_projects(owner_id, updated_at DESC);
+    `);
+
     return true;
   } catch (e) {
     console.error('[DB] ❌ 数据库初始化失败（schema/seed）。依据「数据必须入正式数据库」铁律，拒绝以本地 JSON 文件兜底 —— 进程退出。错误：', e.message);
@@ -666,6 +684,8 @@ const SNAKE_MAP = {
   error_message:'errorMessage', failed_at:'failedAt',
   file_size:'fileSize', character_id:'characterId',
   is_default:'isDefault', default_key:'defaultKey', tags:'tags',
+  owner_id:'ownerId', current_stage:'currentStage', cover_url:'coverUrl',
+  updated_at:'updatedAt',
   reward_credits:'rewardCredits', recharge_credits:'rechargeCredits',
   target_url:'targetUrl',
   supports_reward_balance:'supportsRewardBalance', reward_credits_required:'rewardCreditsRequired',
@@ -1697,6 +1717,98 @@ async function handleAPI(req, res) {
       return sendJSON(res, 200, { totalGenerations: Number(row.total) || 0, favorites: Number(row.fav) || 0 });
     }
     return sendJSON(res, 200, { totalGenerations: 0, favorites: 0 });
+  }
+
+  // ── 创作工作室项目（M5 流水线 · Phase 4/5）──
+  // GET /api/studio/projects  按 owner_id + updated_at 降序列出当前用户项目
+  if (url === '/api/studio/projects' && method === 'GET') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    if (pgPool) {
+      const r = await pgPool.query(
+        `SELECT * FROM studio_projects WHERE owner_id=$1 ORDER BY updated_at DESC`,
+        [realUser.id],
+      );
+      return sendJSON(res, 200, r.rows.map(fromSnake));
+    }
+    return sendJSON(res, 200, []);
+  }
+  // POST /api/studio/projects  创建项目
+  if (url === '/api/studio/projects' && method === 'POST') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    const body = await parseBody(req);
+    const s = toSnake(body);
+    const id = 'proj-' + crypto.randomUUID();
+    const title = String(s.title || '').trim().slice(0, 120) || '未命名项目';
+    const type = ['story', 'commerce', 'custom'].includes(s.type) ? s.type : 'story';
+    const status = ['planning', 'building', 'ready', 'live'].includes(s.status) ? s.status : 'planning';
+    const currentStage = ['idea', 'script', 'storyboard', 'video', 'episode'].includes(s.current_stage) ? s.current_stage : 'idea';
+    const description = String(s.description || '').slice(0, 2000);
+    const coverUrl = String(s.cover_url || '').slice(0, 1000);
+    const meta = typeof s.meta === 'object' && s.meta ? s.meta : {};
+    if (pgPool) {
+      await pgPool.query(
+        `INSERT INTO studio_projects (id, owner_id, title, type, status, current_stage, description, cover_url, meta, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())`,
+        [id, realUser.id, title, type, status, currentStage, description, coverUrl, JSON.stringify(meta)],
+      );
+      const r = await pgPool.query('SELECT * FROM studio_projects WHERE id=$1', [id]);
+      return sendJSON(res, 200, { ok: true, project: fromSnake(r.rows[0]) });
+    }
+    return sendJSON(res, 200, { ok: true, project: { id, title, type, status, currentStage, description, coverUrl, meta, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } });
+  }
+  // GET /api/studio/projects/:id  单项目详情（仅所有者）
+  if (url.match(/^\/api\/studio\/projects\/[^/]+$/) && method === 'GET') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    const id = decodeURIComponent(url.split('/api/studio/projects/')[1]);
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM studio_projects WHERE id=$1 AND owner_id=$2', [id, realUser.id]);
+      if (!r.rows[0]) return sendJSON(res, 404, { error: '项目不存在或无权限' });
+      return sendJSON(res, 200, { project: fromSnake(r.rows[0]) });
+    }
+    return sendJSON(res, 404, { error: '项目不存在' });
+  }
+  // PATCH /api/studio/projects/:id  部分更新（仅所有者）
+  if (url.match(/^\/api\/studio\/projects\/[^/]+$/) && method === 'PATCH') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    const id = decodeURIComponent(url.split('/api/studio/projects/')[1]);
+    const body = await parseBody(req);
+    const s = toSnake(body);
+    const allowed = { title: true, type: true, status: true, current_stage: true, description: true, cover_url: true, meta: true };
+    const updates = {};
+    for (const k of Object.keys(allowed)) {
+      if (s[k] === undefined) continue;
+      if (k === 'title') updates[k] = String(s[k] || '').trim().slice(0, 120) || '未命名项目';
+      else if (k === 'description') updates[k] = String(s[k] || '').slice(0, 2000);
+      else if (k === 'cover_url') updates[k] = String(s[k] || '').slice(0, 1000);
+      else if (k === 'meta') updates[k] = JSON.stringify(s[k] || {});
+      else if (k === 'type') updates[k] = ['story', 'commerce', 'custom'].includes(s[k]) ? s[k] : 'story';
+      else if (k === 'status') updates[k] = ['planning', 'building', 'ready', 'live'].includes(s[k]) ? s[k] : 'planning';
+      else if (k === 'current_stage') updates[k] = ['idea', 'script', 'storyboard', 'video', 'episode'].includes(s[k]) ? s[k] : 'idea';
+    }
+    const keys = Object.keys(updates);
+    if (keys.length === 0) return sendJSON(res, 200, { ok: true, noop: true });
+    const setFields = keys.map((k, idx) => `${k}=$${idx + 1}`);
+    setFields.push('updated_at=NOW()');
+    const idParam = keys.length + 1;
+    const ownerParam = keys.length + 2;
+    if (pgPool) {
+      const r = await pgPool.query(
+        `UPDATE studio_projects SET ${setFields.join(',')} WHERE id=$${idParam} AND owner_id=$${ownerParam} RETURNING *`,
+        [...Object.values(updates), id, realUser.id],
+      );
+      if (!r.rows[0]) return sendJSON(res, 404, { error: '项目不存在或无权限' });
+      return sendJSON(res, 200, { ok: true, project: fromSnake(r.rows[0]) });
+    }
+    return sendJSON(res, 200, { ok: true });
+  }
+  // DELETE /api/studio/projects/:id  删除项目（仅所有者，幂等）
+  if (url.match(/^\/api\/studio\/projects\/[^/]+$/) && method === 'DELETE') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    const id = decodeURIComponent(url.split('/api/studio/projects/')[1]);
+    if (pgPool) {
+      await pgPool.query('DELETE FROM studio_projects WHERE id=$1 AND owner_id=$2', [id, realUser.id]);
+    }
+    return sendJSON(res, 200, { ok: true });
   }
 
   // ── Providers ──
