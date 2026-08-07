@@ -407,6 +407,9 @@ async function initDB() {
       INSERT INTO agents (key, name, enabled, daily_budget, config)
       VALUES ('ops_bot','运营智能体 ops_bot', TRUE, 1000, '{"desc":"自动封禁IP / 错误率告警 / 咨询应答草稿"}')
       ON CONFLICT (key) DO NOTHING;
+      INSERT INTO agents (key, name, enabled, config)
+      VALUES ('prompt_optimizer','提示词优化智能体', TRUE, '{"desc":"将用户原始提示词改写为适合图像/视频生成的结构化英文提示词","endpoint":"/api/agent/optimize-prompt"}')
+      ON CONFLICT (key) DO NOTHING;
       INSERT INTO agent_rules (id, name, trigger, condition, action, enabled) VALUES
         ('rule-ban-ip','登录失败封禁','login_fail','{"threshold":20,"window":"ip"}','{"type":"ban_ip"}', TRUE),
         ('rule-error-rate','5xx 错误率告警','error_rate','{"threshold":0.02,"metric":"5xx"}','{"type":"alert"}', TRUE),
@@ -1604,24 +1607,56 @@ async function handleAPI(req, res) {
     if (!userPrompt) return sendJSON(res, 200, { success: false, error: '提示词为空' });
       let model = null;
       try {
-        // 选一个启用的 text 类型模型（按 .com 域名降序排最后、creditCost 升序、id 字典序取第一个）
-        // 备注：当前 Node 22 原生 fetch 在国内网络下对 agnes-ai.com 域名握手异常，优先用 .cn
-        const m = await pgPool.query(
-          "SELECT m.id AS m_id, m.model_id, m.display_name, m.credit_cost, " +
-          "p.id AS p_id, p.base_url, p.api_key, p.protocol " +
-          "FROM models m JOIN providers p ON p.id = m.provider_id " +
-          "WHERE m.type='text' AND m.enabled=true AND p.enabled=true " +
-          "AND p.api_key IS NOT NULL AND LENGTH(p.api_key) >= 6 " +
-          "ORDER BY (p.base_url LIKE '%agnes-ai.com%') ASC, m.credit_cost ASC, m.id ASC LIMIT 1"
-        );
-        if (m.rows.length === 0) {
-          return sendJSON(res, 200, {
-            success: false,
-            code: 'NO_REASONING_MODEL',
-            error: '未配置启用的文本推理模型，请到「模型 Hub」添加 type=text 的模型',
-          });
+        // 三层优先级选模型：
+        //  1) 后台显式指定 settings.app.promptOptimizeModel（模型 Hub 下拉设置）
+        //  2) 智能体专属 agent_providers(agent_key='prompt_optimizer') 启用模型（按 priority/weight）
+        //  3) 回退：自动选最便宜的 type=text 模型
+        let appPromptModel = '';
+        try {
+          const sr = await pgPool.query("SELECT value FROM settings WHERE key='app'");
+          const sv = (sr.rows[0] && sr.rows[0].value) || {};
+          appPromptModel = sv && sv.promptOptimizeModel ? String(sv.promptOptimizeModel) : '';
+        } catch (_) { /* ignore */ }
+
+        const COLS = "m.id AS m_id, m.model_id, m.display_name, m.credit_cost, " +
+          "p.id AS p_id, p.base_url, p.api_key, p.protocol ";
+        const GUARD = "m.enabled=true AND p.enabled=true AND p.api_key IS NOT NULL AND LENGTH(p.api_key) >= 6 ";
+
+        // 1) 后台显式指定
+        if (appPromptModel) {
+          const r = await pgPool.query(
+            "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
+            "WHERE m.id=$1 AND " + GUARD,
+            [appPromptModel]
+          );
+          if (r.rows.length) model = r.rows[0];
         }
-        model = m.rows[0];
+        // 2) 智能体专属 agent_providers
+        if (!model) {
+          const r = await pgPool.query(
+            "SELECT " + COLS + "FROM agent_providers ap JOIN models m ON m.id = ap.model " +
+            "JOIN providers p ON p.id = m.provider_id " +
+            "WHERE ap.agent_key='prompt_optimizer' AND ap.enabled=true AND " + GUARD +
+            "ORDER BY ap.priority ASC, ap.weight DESC, m.credit_cost ASC LIMIT 1"
+          );
+          if (r.rows.length) model = r.rows[0];
+        }
+        // 3) 回退：自动选最便宜的 type=text 模型
+        if (!model) {
+          const r = await pgPool.query(
+            "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
+            "WHERE m.type='text' AND " + GUARD +
+            "ORDER BY (p.base_url LIKE '%agnes-ai.com%') ASC, m.credit_cost ASC, m.id ASC LIMIT 1"
+          );
+          if (r.rows.length === 0) {
+            return sendJSON(res, 200, {
+              success: false,
+              code: 'NO_REASONING_MODEL',
+              error: '未配置启用的文本推理模型，请到「模型 Hub」添加 type=text 的模型',
+            });
+          }
+          model = r.rows[0];
+        }
         const base = (model.base_url || '').trim().replace(/\/+$/, '');
         if (!base) return sendJSON(res, 200, { success: false, error: '推理服务商 base_url 未配置' });
 
