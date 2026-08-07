@@ -197,6 +197,23 @@ export default function ImageViewer({
     };
   }, []);
 
+  // 从 Performance Resource Timing 读取浏览器实际下载大小（最准，不额外发请求）
+  const readSizeFromTiming = useCallback((url: string) => {
+    try {
+      if (typeof performance === 'undefined') return null;
+      const entries = performance.getEntriesByName(url, 'resource');
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const e = entries[i] as PerformanceResourceTiming;
+        // transferSize 包含响应体大小；decodedBodySize/encodedBodySize 也可兜底
+        if (e.transferSize && e.transferSize > 0) return e.transferSize;
+        if (e.encodedBodySize && e.encodedBodySize > 0) return e.encodedBodySize;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }, []);
+
   // 切换图片时：重置像素/大小 + 异步 HEAD 拉文件大小
   useEffect(() => {
     if (!current || lastSrcRef.current === viewUrl) return;
@@ -211,9 +228,14 @@ export default function ImageViewer({
       if (m) setBytes(Math.round((m[1].length * 3) / 4));
       return;
     }
-    // 远程 URL：尝试 HEAD
+    // 远程 URL：优先读 Performance Timing（已下载大小），再试 HEAD
     let cancelled = false;
     (async () => {
+      const fromTiming = readSizeFromTiming(url);
+      if (fromTiming) {
+        if (!cancelled) setBytes(fromTiming);
+        return;
+      }
       try {
         const r = await fetch(url, { method: 'HEAD' });
         if (cancelled) return;
@@ -229,7 +251,7 @@ export default function ImageViewer({
     return () => {
       cancelled = true;
     };
-  }, [viewUrl]);
+  }, [viewUrl, readSizeFromTiming]);
 
   if (!current) return null;
 
@@ -352,6 +374,9 @@ export default function ImageViewer({
             if (el.naturalWidth && el.naturalHeight) {
               setDims({ w: el.naturalWidth, h: el.naturalHeight });
             }
+            // 图片已下载，从 Performance Timing 取准确大小（HEAD 被 CORS 拦截时的兜底）
+            const actual = readSizeFromTiming(el.currentSrc || viewUrl);
+            if (actual && actual > 0) setBytes(actual);
           }}
         />
       </div>
@@ -386,7 +411,17 @@ export default function ImageViewer({
           </span>
           <span className="text-zinc-700">·</span>
           <span className="text-sm text-zinc-400">
-            {new Date(current.createdAt).toLocaleDateString('zh-CN')}
+            {current.createdAt
+              ? new Date(current.createdAt).toLocaleString('zh-CN', {
+                  year: 'numeric',
+                  month: 'numeric',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit',
+                  hour12: false,
+                })
+              : '—'}
           </span>
         </div>
       </div>
