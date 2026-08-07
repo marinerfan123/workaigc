@@ -85,6 +85,7 @@ async function initDB() {
         oss_object_key TEXT DEFAULT '',
         oss_uploaded BOOLEAN DEFAULT FALSE,
         category TEXT DEFAULT 'generated',
+        file_size BIGINT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 

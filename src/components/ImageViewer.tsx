@@ -220,6 +220,8 @@ export default function ImageViewer({
     lastSrcRef.current = viewUrl;
     setDims(null);
     setBytes(null);
+    // 后端已记录真实大小：无需再向浏览器 Timing/HEAD 探测
+    if (current.fileSize && current.fileSize > 0) return;
 
     const url = viewUrl;
     // dataURL 直接转 base64 长度（KB/MB）
@@ -404,10 +406,20 @@ export default function ImageViewer({
           <span className="text-zinc-700">·</span>
           <span
             className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-0.5 text-sm font-semibold text-amber-300 border border-amber-500/20"
-            title="文件大小"
+            title={(() => {
+              const accurate = current.fileSize && current.fileSize > 0;
+              const known = accurate || (bytes && bytes > 0);
+              return known ? '文件大小（后端记录的准确值）' : '文件大小（按像素估算，后端未记录）';
+            })()}
           >
             <HardDrive className="size-3.5" />
-            {formatBytes(bytes) || estimateBytes(dims?.w, dims?.h) || '— KB'}
+            {(() => {
+              const accurate = current.fileSize && current.fileSize > 0 ? current.fileSize : null;
+              const known = accurate || (bytes && bytes > 0 ? bytes : null);
+              if (known) return formatBytes(known);
+              // 后端未记录 + 浏览器也没探到：按像素估算，并标注（估）
+              return (estimateBytes(dims?.w, dims?.h) || '— KB') + (dims ? '（估）' : '');
+            })()}
           </span>
           <span className="text-zinc-700">·</span>
           <span className="text-sm text-zinc-400">

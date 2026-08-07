@@ -75,12 +75,13 @@ async function initDB() {
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT DEFAULT 'official', base_url TEXT DEFAULT '', api_key TEXT DEFAULT '', supported_types TEXT[] DEFAULT '{}', enabled BOOLEAN DEFAULT TRUE, protocol TEXT DEFAULT 'openai-compatible', remark TEXT DEFAULT '', default_endpoint JSONB DEFAULT '{}', capacity_model TEXT DEFAULT 'limited', bucket_max INT, cooldown_ms INT DEFAULT 60000, created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, mapping_name TEXT DEFAULT '', type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', credit_cost INT DEFAULT 0, max_concurrent INT, created_at TIMESTAMPTZ DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, title TEXT DEFAULT '', type TEXT DEFAULT 'image', thumbnail TEXT DEFAULT '', full_url TEXT DEFAULT '', prompt TEXT DEFAULT '', model TEXT DEFAULT '', ratio TEXT DEFAULT '1:1', source TEXT DEFAULT 'user', is_favorite BOOLEAN DEFAULT FALSE, is_deleted BOOLEAN DEFAULT FALSE, oss_url TEXT DEFAULT '', oss_object_key TEXT DEFAULT '', oss_uploaded BOOLEAN DEFAULT FALSE, category TEXT DEFAULT 'generated', status TEXT DEFAULT 'success', error_message TEXT DEFAULT '', failed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, title TEXT DEFAULT '', type TEXT DEFAULT 'image', thumbnail TEXT DEFAULT '', full_url TEXT DEFAULT '', prompt TEXT DEFAULT '', model TEXT DEFAULT '', ratio TEXT DEFAULT '1:1', source TEXT DEFAULT 'user', is_favorite BOOLEAN DEFAULT FALSE, is_deleted BOOLEAN DEFAULT FALSE, oss_url TEXT DEFAULT '', oss_object_key TEXT DEFAULT '', oss_uploaded BOOLEAN DEFAULT FALSE, category TEXT DEFAULT 'generated', status TEXT DEFAULT 'success', error_message TEXT DEFAULT '', failed_at TIMESTAMPTZ, file_size BIGINT, created_at TIMESTAMPTZ DEFAULT NOW());
       -- 兼容旧库：缺失列自动补齐
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='status') THEN ALTER TABLE media ADD COLUMN status TEXT DEFAULT 'success'; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='error_message') THEN ALTER TABLE media ADD COLUMN error_message TEXT DEFAULT ''; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='failed_at') THEN ALTER TABLE media ADD COLUMN failed_at TIMESTAMPTZ; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='file_size') THEN ALTER TABLE media ADD COLUMN file_size BIGINT; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='mapping_name') THEN ALTER TABLE models ADD COLUMN mapping_name TEXT DEFAULT ''; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='credit_cost') THEN ALTER TABLE models ADD COLUMN credit_cost INT DEFAULT 0; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='estimated_seconds') THEN ALTER TABLE models ADD COLUMN estimated_seconds INT; END IF;
@@ -466,6 +467,7 @@ const SNAKE_MAP = {
   access_key_id:'accessKeyId', access_key_secret:'accessKeySecret',
   path_prefix:'pathPrefix', custom_domain:'customDomain', region_label:'regionLabel',
   error_message:'errorMessage', failed_at:'failedAt',
+  file_size:'fileSize',
   // ── 多 OSS 槽位扩展 ──
   provider_type:'providerType', display_name:'displayName',
   app_id:'appId', active_id:'activeId',
@@ -578,6 +580,40 @@ function sendJSON(res, code, data) {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
   });
   res.end(JSON.stringify(data));
+}
+
+// 服务端回探图片真实字节数（不受浏览器缓存/CORS 限制），写入 media.file_size。
+// 优先 HEAD content-length；失败再用 Range 部分 GET 读 content-range 的总大小；再失败静默忽略。
+async function enrichMediaFileSize(pg, id, url) {
+  if (!pg || !id || !url) return;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 9000);
+    let size = null;
+    try {
+      const r = await fetch(url, { method: 'HEAD', signal: controller.signal });
+      const cl = r.headers.get('content-length');
+      if (cl) { const n = parseInt(cl, 10); if (Number.isFinite(n) && n > 0) size = n; }
+      if (!size) {
+        const r2 = await fetch(url, { headers: { Range: 'bytes=0-0' }, signal: controller.signal });
+        const cr = r2.headers.get('content-range');
+        if (cr && cr.includes('/')) {
+          const total = parseInt(cr.split('/')[1], 10);
+          if (Number.isFinite(total) && total > 0) size = total;
+        } else {
+          const cl2 = r2.headers.get('content-length');
+          if (cl2) { const n = parseInt(cl2, 10); if (Number.isFinite(n) && n > 0) size = n; }
+        }
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    if (size) {
+      await pg.query('UPDATE media SET file_size=$1 WHERE id=$2 AND (file_size IS NULL OR file_size<>$1)', [size, id]);
+    }
+  } catch {
+    // 不可达/超时/非 HTTP：静默忽略，前端退化为估算兜底
+  }
 }
 
 // ─── MIME ────────────────────────────────────────
@@ -1196,10 +1232,19 @@ async function handleAPI(req, res) {
       for (const it of arr) {
         const s = toSnake(it);
         const ownerId = realUser ? realUser.id : null; // G2 owner 归属：登录用户写入自己的素材
+        // 真实文件大小：前端已带则直接用；否则落库后由服务端异步回探（不受浏览器缓存/CORS 影响）
+        const fileSize = (typeof it.fileSize === 'number' && it.fileSize > 0) ? it.fileSize : null;
         await pgPool.query(
-          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,created_at,user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,full_url=EXCLUDED.full_url,thumbnail=EXCLUDED.thumbnail,oss_url=EXCLUDED.oss_url,oss_object_key=EXCLUDED.oss_object_key,oss_uploaded=EXCLUDED.oss_uploaded,is_deleted=EXCLUDED.is_deleted,status=EXCLUDED.status,error_message=EXCLUDED.error_message,failed_at=EXCLUDED.failed_at,user_id=EXCLUDED.user_id`,
-          [s.id, s.title, s.type, s.thumbnail, s.full_url, s.prompt, s.model, s.ratio, s.source, s.is_favorite || false, s.is_deleted || false, s.oss_url, s.oss_object_key, s.oss_uploaded || false, s.category || 'generated', s.status || 'success', s.error_message || '', s.failed_at || null, s.created_at || new Date().toISOString(), ownerId]
+          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,file_size,created_at,user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,full_url=EXCLUDED.full_url,thumbnail=EXCLUDED.thumbnail,oss_url=EXCLUDED.oss_url,oss_object_key=EXCLUDED.oss_object_key,oss_uploaded=EXCLUDED.oss_uploaded,is_deleted=EXCLUDED.is_deleted,status=EXCLUDED.status,error_message=EXCLUDED.error_message,failed_at=EXCLUDED.failed_at,file_size=COALESCE(EXCLUDED.file_size, media.file_size),user_id=EXCLUDED.user_id`,
+          [s.id, s.title, s.type, s.thumbnail, s.full_url, s.prompt, s.model, s.ratio, s.source, s.is_favorite || false, s.is_deleted || false, s.oss_url, s.oss_object_key, s.oss_uploaded || false, s.category || 'generated', s.status || 'success', s.error_message || '', s.failed_at || null, fileSize, s.created_at || new Date().toISOString(), ownerId]
         );
+        // 异步回探真实字节数（仅当本次没有显式 fileSize 时）
+        if (!fileSize) {
+          const probeUrl = it.ossUrl || it.fullUrl || s.oss_url || s.full_url;
+          if (probeUrl && !probeUrl.startsWith('/') && !probeUrl.startsWith('data:')) {
+            enrichMediaFileSize(pgPool, s.id, probeUrl).catch(() => {});
+          }
+        }
       }
       return sendJSON(res, 200, { ok: true, count: arr.length });
     }
