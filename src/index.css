@@ -72,3 +72,12 @@ button[disabled],
 [data-loading="true"] {
   cursor: wait;
 }
+
+/* 导航台/抽屉等滚动区域隐藏滚动条，保持精致 */
+.scrollbar-hidden {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}

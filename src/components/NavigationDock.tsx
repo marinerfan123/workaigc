@@ -438,8 +438,8 @@ function DockBody({
         </div>
       )}
 
-      {/* 导航分组 */}
-      <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-2 min-h-0">
+      {/* 导航分组：滚动时隐藏滚动条，保持精致 */}
+      <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-2 min-h-0 scrollbar-hidden">
         {visibleSections.map((section, idx) => (
           <div key={section.title || `sec-${idx}`}>
             {!collapsed && section.title && (
