@@ -10,7 +10,8 @@
 //   - 自动捕获 console.warn/error（保留原行为，仅多一份推送）
 //   - 跳过 /api/admin/logs/* 自身端点（与 monitor 一致：防反馈）
 //   - 启动/连接事件 → INFO；降级/重连 → WARN；连接失败/查询错误 → ERROR
-//   - 不持久化（看错在当下，重启即清空是合理选择；如需历史可后续写 audit_logs）
+//   - ERROR 经 persistError 回调统一落库 system_error_logs（零死角、零重复），
+//     环形缓冲仍保留近 1000 条供实时 SSE 流；持久化历史交由 /api/admin/errors 查询
 
 const LEVELS = { INFO: 0, WARN: 1, ERROR: 2 };
 
@@ -20,7 +21,7 @@ function stringify(arg) {
   try { return JSON.stringify(arg); } catch { return String(arg); }
 }
 
-function createLogBus({ maxBuffer = 1000, skipPath = (u) => u.startsWith('/api/admin/logs') } = {}) {
+function createLogBus({ maxBuffer = 1000, skipPath = (u) => u.startsWith('/api/admin/logs'), persistError = null } = {}) {
   const lines = [];
   let idCounter = 0;
   const sseClients = new Set();
@@ -42,6 +43,12 @@ function createLogBus({ maxBuffer = 1000, skipPath = (u) => u.startsWith('/api/a
     stats.total++;
     stats.byLevel[level]++;
     broadcast({ type: 'log', data: line });
+    // ── 核心错误统一落库（诉求：每一次核心错误都要能记录）──
+    // 所有 ERROR（含 console.error 自动捕获 + 业务显式 emit）在 emit 层统一调用 persistError，
+    // 零死角、零重复；fire-and-forget，绝不阻塞主链路。
+    if (level === 'ERROR' && typeof persistError === 'function') {
+      try { persistError(level, line.source, line.message, line.meta); } catch {}
+    }
   }
 
   // ─── 初始快照 ───

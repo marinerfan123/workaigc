@@ -49,6 +49,7 @@ import { createOrderExpiryWorker } from './payments/order-expiry.cjs'; // 订单
 import monitorMod from './monitor.cjs'; // 后台「实时监控 · API 活动流」(全路径环形缓冲 + SSE 广播)
 import ossLoggerMod from './oss-logger.cjs'; // OssConfigPanel 专用实时日志（仅 /api/oss/*，含脱敏）
 import logbusMod from './logbus.cjs';   // 后台「实时日志 · 数据库/Redis/控制台」(统一日志总线 + SSE 广播)
+import syslogMod from './syslog.cjs';    // 核心错误持久化 + 进程级异常兜底(system_error_logs)
 import financeMod from './finance.cjs';  // Phase 4 后台账务系统（底层：总览/对账/账本/套餐）
 import meMod from './me.cjs';            // 用户侧账务（积分流水 / 充值订单 / 概览）
 import seedDefaultsMod from './seed-defaults.cjs'; // 首次部署兜底种子（占位服务商 + 常用模型）
@@ -58,7 +59,11 @@ const setupAttempts = new Map();
 
 // ─── 日志总线：先 installConsoleHook，再做后续 init，
 //    这样后续 console.warn/error 自动落入 logbus（同时保留原 console 行为）───
-const logbus = logbusMod.createLogBus();
+const logbus = logbusMod.createLogBus({
+  // 所有 ERROR（console.error 自动捕获 + 业务显式 emit）统一落库 system_error_logs
+  persistError: (level, source, message, meta) =>
+    syslogMod.insertError(source, source, message, meta, null),
+});
 logbus.installConsoleHook();
 logbus.startStatsTimer();
 
@@ -575,6 +580,21 @@ async function initDB() {
         contact     TEXT DEFAULT '',
         created_at  TIMESTAMPTZ DEFAULT NOW()
       );
+
+      -- === 系统监控日志强化：核心错误持久化（#449/#450）===
+      -- 每一次核心错误(console.error / PG / Redis / 业务显式 ERROR / 进程级未捕获异常)
+      -- 经 logbus.persistError 统一落库到此表，重启不丢；前端 /api/admin/errors 历史查询。
+      CREATE TABLE IF NOT EXISTS system_error_logs (
+        id          BIGSERIAL PRIMARY KEY,
+        category    TEXT DEFAULT 'app',        -- 归类：pg | redis | console | billing | uncaughtException ...
+        source      TEXT DEFAULT 'app',        -- 来源子系统（与 category 一致，便于筛选）
+        message     TEXT NOT NULL,
+        meta        JSONB DEFAULT '{}',
+        stack       TEXT,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_sel_created ON system_error_logs(created_at DESC);
+      CREATE INDEX IF NOT EXISTS ix_sel_category ON system_error_logs(category);
     `);
 
     // 种子：运营智能体 ops_bot + 三条自动化规则（§H.3）
@@ -936,6 +956,7 @@ const admin = adminMod.createAdmin({
   traffic: { onlineUsers: () => traffic.onlineUsers(), currentQps: () => traffic.currentQps() },
   monitor,                                    // 注入 monitor：admin 实时监控页用(/api/admin/monitor/{snapshot,stream,clear})
   logbus,                                     // 注入 logbus：admin 实时日志页用(/api/admin/logs/{snapshot,stream,clear})
+  syslog: syslogMod,                          // 注入 syslog：核心错误历史查询/清理用(/api/admin/errors)
 });
 
 // ── Phase 5 电商模块（AI 市集）── 注入依赖；pgPool 经 getter 取最新值；内部自行鉴权
@@ -2798,6 +2819,12 @@ const server = http.createServer(async (req, res) => {
 
 await initDB();
 await initRedis();
+
+// ─── 核心错误持久化 + 进程级异常兜底（#449/#450）───
+// 注入连接池（供 insertError 落库）；注册 uncaughtException/unhandledRejection 兜底，
+// 确保「任何未捕获的致命错误」也进入 system_error_logs 并被记录。
+if (pgPool) syslogMod.initSyslog(pgPool);
+syslogMod.installGlobalHandlers();
 
 // ─── 日志总线事件源 ───
 //   PG：连接/错误；Redis：ready/error/reconnecting/end；

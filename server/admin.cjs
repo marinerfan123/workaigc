@@ -9,6 +9,7 @@ function createAdmin(ctx) {
   const traffic = ctx.traffic || { onlineUsers: () => 0, currentQps: () => 0 };
   const monitor = ctx.monitor || null;     // 实时监控模块(可选注入)；用于 /api/admin/monitor/{snapshot,stream,clear}
   const logbus = ctx.logbus || null;       // 日志总线(可选注入)；用于 /api/admin/logs/{snapshot,stream,clear}
+  const syslog = ctx.syslog || null;       // 核心错误持久化(可选注入)；用于 /api/admin/errors（历史查询/清理）
 
   const hasPg = () => !!getPg();
   const pg = () => getPg();
@@ -524,6 +525,18 @@ function createAdmin(ctx) {
     if (m && method === 'DELETE') {
       try { return sendJSON(res, 200, await deleteSample(decodeURIComponent(m[1]))); }
       catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+
+    // ───────────────── 核心错误历史（#449/#450 持久化查询） ─────────────────
+    // 依赖 syslog 模块（由 server.js 注入 ctx）。syslog 为 null 时 → 503。
+    if (!syslog) return sendJSON(res, 503, { error: '错误日志模块未启用' });
+    if (url === '/api/admin/errors' && method === 'GET') {
+      try { return sendJSON(res, 200, await syslog.queryErrors(query)); }
+      catch (e) { return sendJSON(res, 500, { error: e.message }); }
+    }
+    if (url === '/api/admin/errors' && method === 'DELETE') {
+      try { return sendJSON(res, 200, await syslog.clearErrors((query.category || '').trim())); }
+      catch (e) { return sendJSON(res, 500, { error: e.message }); }
     }
 
     // ───────────────── 实时监控 · API 活动流 ─────────────────

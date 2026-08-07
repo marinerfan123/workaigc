@@ -23,6 +23,7 @@ import {
   Store,
   Activity,
   ScrollText,
+  XCircle,
   Library,
   Wallet,
   CreditCard,
@@ -142,6 +143,7 @@ export function adminDockConfig(userRole?: string): NavigationDockProps {
           { key: 'admin-console', label: '运营总控台', icon: LayoutDashboard, path: '/admin', end: true },
           { key: 'admin-monitor', label: 'API 活动流', icon: Activity, path: '/admin/monitor' },
           { key: 'admin-logs', label: '实时日志', icon: ScrollText, path: '/admin/logs' },
+          { key: 'admin-errors', label: '核心错误', icon: XCircle, path: '/admin/errors' },
         ],
       },
       {

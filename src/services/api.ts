@@ -942,6 +942,51 @@ export async function apiExportMyMedia(): Promise<{ ok: boolean; url?: string; f
   catch (e) { return { ok: false, error: (e as Error).message.slice(0, 200) }; }
 }
 
+// ─── 后台「核心错误历史」持久化日志（#449–#453：每一次核心错误落库展示）───
+export interface SystemErrorItem {
+  id: number;
+  category: string;
+  source: string;
+  message: string;
+  meta: any;
+  stack: string | null;
+  createdAt: string; // ISO
+}
+export interface SystemErrorStats {
+  total: number;
+  today: number;
+  last24h: number;
+  byCategory: { category: string; count: number }[];
+}
+export interface SystemErrorsResponse {
+  items: SystemErrorItem[];
+  total: number;
+  stats: SystemErrorStats;
+}
+/**
+ * 拉取历史核心错误（持久化落库 system_error_logs）。
+ * 支持 server 端按 category / keyword 检索；limit 用于分页（LOAD MORE）。
+ */
+export async function apiGetErrors(params: { category?: string; keyword?: string; limit?: number } = {}): Promise<SystemErrorsResponse> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+  try {
+    return await apiFetch<SystemErrorsResponse>(`/api/admin/errors?${qs.toString()}`);
+  } catch {
+    return { items: [], total: 0, stats: { total: 0, today: 0, last24h: 0, byCategory: [] } };
+  }
+}
+/** 清空历史错误（可仅清某 category） */
+export async function apiClearErrors(category?: string): Promise<{ ok: boolean }> {
+  const qs = new URLSearchParams();
+  if (category) qs.set('category', category);
+  try {
+    return await apiFetch<{ ok: boolean }>(`/api/admin/errors?${qs.toString()}`, { method: 'DELETE' });
+  } catch {
+    return { ok: false };
+  }
+}
+
 // ─── 首次部署初始化向导（公开接口，无需 token）───
 export interface ISetupModelPreset {
   id: string;

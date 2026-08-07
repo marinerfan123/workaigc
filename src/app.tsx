@@ -27,6 +27,7 @@ import SkillsPage from '@/pages/Admin/SkillsPage';
 import EcommerceAdminPage from '@/pages/Admin/EcommerceAdminPage';
 import MonitorPage from '@/pages/Admin/MonitorPage';
 import LogsPage from '@/pages/Admin/LogsPage';
+import ErrorLogsPage from '@/pages/Admin/ErrorLogsPage';
 import FinancePage from '@/pages/Admin/FinancePage';
 import PaymentSettingsPage from '@/pages/Admin/PaymentSettingsPage';
 
@@ -123,6 +124,7 @@ export default function App() {
           <Route path="finance" element={<FinancePage />} />
           <Route path="payment-settings" element={<PaymentSettingsPage />} />
           <Route path="logs" element={<LogsPage />} />
+          <Route path="errors" element={<ErrorLogsPage />} />
         </Route>
 
         {/* 创作工作室壳（需登录） */}
