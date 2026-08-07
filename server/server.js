@@ -1346,19 +1346,27 @@ async function handleAPI(req, res) {
   }
 
   async function probeBatchAndMarkFailed(mediaList, pgPoolRef) {
+    // 探测「实际用于展示的 URL」(ossUrl > fullUrl > thumbnail)，避免 thumbnail 为空但 fullUrl 有图时被误杀
+    const pickUrl = (m) => m.ossUrl || m.fullUrl || m.thumbnail;
     const needsProbe = mediaList
-      .filter((m) => m.status !== 'failed' && m.thumbnail && m.source !== 'default')
+      .filter((m) => m.status !== 'failed' && m.source !== 'default' && pickUrl(m))
       .slice(0, PROBE_BATCH);
     if (needsProbe.length === 0) return 0;
     const startedAt = Date.now();
     const probeResults = await pMapLimit(needsProbe, PROBE_CONCURRENCY, async (m) => ({
       id: m.id,
-      ...(await probeOneUrl(m.thumbnail)),
+      url: pickUrl(m),
+      ...(await probeOneUrl(pickUrl(m))),
     }));
     const failedIds = [];
     for (const pr of probeResults) {
       if (!pr || pr.skipWrite) continue;
       if (!pr.ok) {
+        // 外部 http(s) 链接（OSS / 服务商原始链接）由浏览器侧 useImageProbe 判定显示，
+        // 服务端探测极易误杀（HEAD 被 CDN 拦、出网受限、签名/Referer 校验、3s 超时等）；
+        // 仅对「本地/平台专有死路径」等确定不可达的链接永久标失败。
+        const isExternal = /^https?:\/\//i.test(pr.url || '');
+        if (isExternal) continue;
         failedIds.push({ id: pr.id, error: pr.error });
         // 内存中直接修改，前端立即看到 failed 占位
         const target = mediaList.find((m) => m.id === pr.id);
