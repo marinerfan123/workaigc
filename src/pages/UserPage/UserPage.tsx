@@ -115,7 +115,7 @@ export default function UserPage() {
               <button
                 key={m.id}
                 type="button"
-                onClick={() => {
+                onDoubleClick={() => {
                   setViewerIndex(index);
                   setViewerOpen(true);
                 }}
