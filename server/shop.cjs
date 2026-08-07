@@ -14,6 +14,7 @@
 // 计费：复用 billing.reserveCredits / commitCredits / releaseCredits（与生成流同源，幂等安全）
 
 const crypto = require('crypto');
+const accounting = require('./accounting.cjs'); // 全局双边账务：skill/run 真实消耗走账
 
 function createShop(ctx) {
   const { getPg, session, sendJSON, parseBody, billing } = ctx;
@@ -105,7 +106,9 @@ function createShop(ctx) {
     let data; try { data = JSON.parse(raw); } catch { return { error: '推理模型返回非 JSON：' + raw.slice(0, 200) }; }
     const content = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').toString().trim();
     if (!content) return { error: '推理模型返回为空' };
-    return { content, modelUsed: model.display_name, providerId: model.p_id };
+    // 捕获真实 token 用量（精确算量的基础；OpenAI 兼容接口返回 data.usage）
+    const usage = (data && data.usage) || null;
+    return { content, modelUsed: model.display_name, providerId: model.p_id, modelId: model.model_id, usage };
   }
 
   // ───────────── 技能执行（adapter 分发 + 三段式计费）─────────────
@@ -159,6 +162,17 @@ function createShop(ctx) {
         return { error: result.error, status: 502 };
       }
       await billing.commitCredits(pg(), user.id, cost, ref);
+      // 双边记账：无论 LLM 是否返回 usage，都记录后台量 vs 客户量（系统用量算量基础）
+      try {
+        const u = result.usage || null;
+        await accounting.recordConsumption(pg(), {
+          scope: 'user', actorId: user.id, purpose: `skill:${skillKey}`,
+          providerId: result.providerId || '', modelId: result.modelId || model.model_id || '', modelType: 'text',
+          inputUnits: u && u.prompt_tokens ? u.prompt_tokens : 0,
+          outputUnits: u && u.completion_tokens ? u.completion_tokens : 0,
+          customerChargeCredits: cost, idempotencyKey: ref, taskRef: ref,
+        });
+      } catch (e) { console.warn('[accounting skill-run]', e.message); }
       return { ok: true, skillKey, adapter: skill.adapter, content: result.content, modelUsed: result.modelUsed, costCredits: cost };
     } catch (e) {
       await billing.releaseCredits(pg(), user.id, cost, ref);

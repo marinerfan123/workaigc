@@ -2,6 +2,7 @@
 // 服务端生成分发器
 const crypto = require('crypto');
 const billing = require('./billing.cjs'); // Phase A 计费（reserve/commit/release）
+const accounting = require('./accounting.cjs'); // 全局双边账务：generate 真实消耗走账
 // 负责：按 model_id 找到所有已启用的「模型行 × 服务商」组合，
 // 在「全局最大并发 maxThreads」+「每家服务商 max_concurrent」约束下，
 // round-robin 把 N 个生成请求均衡分配到不同服务商。
@@ -318,7 +319,9 @@ async function attemptOnAccount(p, tier, input, contentType) {
     }
     a.consecutiveRejects = 0;                                  // 成功 → 重置拒单计数、释放并发槽
     a.conc -= 1; GLOBAL_ACTIVE -= 1;
-    return { ...res, providerId: p.provider.id };
+    // 精确归因：本次成功出自哪个 provider / model / 类型 / 产出资产数（供双边记账）
+    const units = res.images ? (res.images.length || 0) : (res.videoUrl ? 1 : 0);
+    return { ...res, providerId: p.provider.id, modelId: p.model.model_id, modelType: contentType, units };
   } catch (e) {
     if (a.capacityModel !== 'unlimited') a.bucket.tokens += cost;
     a.conc -= 1; GLOBAL_ACTIVE -= 1;
@@ -401,9 +404,13 @@ async function generate(pgPool, opts) {
   const images = [];
   const errors = [];
   const usedProviders = [];
+  const consumption = [];   // 双边记账聚合：每组 (providerId, modelId, modelType) 的产出资产数
   let throttled = false;
   for (const r of results) {
     if (r.providerId) usedProviders.push(r.providerId);
+    if (r.providerId && r.modelId && r.units) {
+      consumption.push({ providerId: r.providerId, modelId: r.modelId, modelType: r.modelType, units: r.units });
+    }
     if (r.status === 'throttled') { throttled = true; if (r.error) errors.push(r.error); continue; }
     if (r.images && r.images.length) {
       images.push(r.images[0]);
@@ -413,7 +420,7 @@ async function generate(pgPool, opts) {
   }
   const usedProvidersUniq = [...new Set(usedProviders)];
   if (images.length > 0) {
-    return { status: 'success', images, source: 'provider', errors: errors.length ? errors : undefined, usedProviders: usedProvidersUniq };
+    return { status: 'success', images, source: 'provider', errors: errors.length ? errors : undefined, usedProviders: usedProvidersUniq, consumption };
   }
   if (throttled) {
     return { status: 'throttled', retryAfter: DEFAULT_COOLDOWN_MS, error: errors[0] || '资源紧张，请稍候重试', images: [], usedProviders: usedProvidersUniq };
@@ -452,6 +459,20 @@ async function generateAsync(pgPool, opts) {
           // 注意：media 由前端负责写入（含 OSS 上传 + 探活 + 永久化），后端不重复写，
           // 避免双写重复行 + 原始服务商 URL 易过期（与 OSS 永久化目标冲突）。
           await billing.commitCredits(pgPool, user_id, cost, idempotencyKey);
+          // 双边记账：按 (provider, model) 组记录后台量 vs 客户量（图/视频按资产数；客户收费按产出比例分摊，整体 margin 精确）
+          try {
+            const groups = (result && result.consumption) || [];
+            const totalUnits = groups.reduce((s, g) => s + (g.units || 0), 0) || 1;
+            for (const g of groups) {
+              const alloc = Math.round((cost || 0) * (g.units || 0) / totalUnits);
+              await accounting.recordConsumption(pgPool, {
+                scope: 'user', actorId: user_id || '', purpose: 'generate',
+                providerId: g.providerId || '', modelId: g.modelId || '', modelType: g.modelType || 'image',
+                outputUnits: g.units || 0, customerChargeCredits: alloc,
+                idempotencyKey: `${idempotencyKey}:${g.providerId}:${g.modelId}`, taskRef: taskId,
+              });
+            }
+          } catch (e) { console.warn('[accounting generate-async]', e.message); }
           await pgPool.query(
             `UPDATE generation_tasks SET status=$2, result=$3, error=$4, completed_at=NOW(), user_id=$5
              WHERE task_id=$1`,

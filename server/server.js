@@ -37,6 +37,7 @@ let pgPool = null;
 import dispatcher from './dispatcher.cjs';
 import session from './auth.cjs';   // Phase A 用户会话（cookie JWT，零依赖）
 import billing from './billing.cjs'; // Phase A 积分计费
+import accounting from './accounting.cjs'; // Phase M6+ 全局双边账务（后台量 vs 客户量）
 import redisStore from './redis.cjs';       // Phase 0 优雅 Redis 层（自动内存兜底）
 import rateLimitMod from './ratelimit.cjs'; // Phase 0 固定窗口限流
 const { initRedis, isRedisUp } = redisStore;
@@ -462,6 +463,48 @@ async function initDB() {
         UNIQUE (user_id, skill_key)
       );
       CREATE INDEX IF NOT EXISTS ix_us_user ON user_skills(user_id);
+
+      -- === Phase M6+：全局双边账务（后台量 vs 客户量，无例外、精确算量）===
+      -- 上游成本价率卡：每个 (provider_id, model_id) 实际向上游付出的成本
+      CREATE TABLE IF NOT EXISTS model_cost_rates (
+        id                 TEXT PRIMARY KEY DEFAULT 'mcr-' || gen_random_uuid()::text,
+        provider_id        TEXT NOT NULL,
+        model_id           TEXT NOT NULL,
+        model_type         TEXT DEFAULT 'text',          -- text | image | video
+        input_cost_per_1k  NUMERIC DEFAULT 0,            -- 上游：每 1k 输入 token 成本（分）
+        output_cost_per_1k NUMERIC DEFAULT 0,            -- 上游：每 1k 输出 token 成本（分）
+        cost_per_unit      NUMERIC DEFAULT 0,            -- 上游：每生成 1 个资产（图/视频）成本（分）
+        currency           TEXT DEFAULT 'CNY',
+        source             TEXT DEFAULT 'manual',        -- manual | llm_inferred | default
+        updated_at         TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (provider_id, model_id)
+      );
+      CREATE INDEX IF NOT EXISTS ix_mcr_provider ON model_cost_rates(provider_id);
+
+      -- 统一消费台账（双边）：后台量(backend_cost_cents) vs 客户量(customer_charge_*)，margin = 客户 − 后台
+      CREATE TABLE IF NOT EXISTS consumption_ledger (
+        id                     BIGSERIAL PRIMARY KEY,
+        scope                  TEXT NOT NULL DEFAULT 'user',   -- user | system
+        actor_id               TEXT DEFAULT '',                -- user_id 或 'system'
+        purpose                TEXT NOT NULL,                  -- generate | skill:* | agent:* | provider_onboarding | ...
+        provider_id            TEXT DEFAULT '',
+        model_id               TEXT DEFAULT '',
+        model_type             TEXT DEFAULT '',
+        input_units            INT DEFAULT 0,                  -- 文本：输入 token；图/视频：0
+        output_units           INT DEFAULT 0,                  -- 文本：输出 token；图/视频：生成资产数
+        backend_cost_cents     NUMERIC DEFAULT 0,              -- 上游实际成本（分）
+        customer_charge_credits INT DEFAULT 0,                 -- 向客户收的积分（system 时为 0）
+        customer_charge_cents  NUMERIC DEFAULT 0,              -- 客户收费折算（分，按 settings.app.creditToCents）
+        margin_cents           NUMERIC DEFAULT 0,              -- = customer_charge_cents - backend_cost_cents（盈亏）
+        task_ref               TEXT DEFAULT '',
+        idempotency_key        TEXT DEFAULT '',
+        status                 TEXT DEFAULT 'ok',              -- ok | error | released
+        created_at             TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_cl_scope_time ON consumption_ledger(scope, created_at DESC);
+      CREATE INDEX IF NOT EXISTS ix_cl_actor ON consumption_ledger(actor_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS ix_cl_purpose ON consumption_ledger(purpose, created_at DESC);
+      CREATE INDEX IF NOT EXISTS ix_cl_idem ON consumption_ledger(idempotency_key) WHERE idempotency_key <> '';
 
       -- Node 内存 worker 游标持久化（超时扫描 / Webhook 重试调度）
       CREATE TABLE IF NOT EXISTS cron_marker (
@@ -1164,6 +1207,25 @@ async function handleAPI(req, res) {
   if (url.startsWith('/api/admin/skills') && method !== 'OPTIONS') {
     if (await shop.handleShop(req, res, url.split('?')[0], method)) return;
   }
+  // ── 全局双边账务看板（后台量 vs 客户量 = 盈亏）── admin 可见
+  if ((url === '/api/admin/ledger/summary' || url.startsWith('/api/admin/ledger')) && method === 'GET') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    try {
+      if (url === '/api/admin/ledger/summary') {
+        const rows = await accounting.summarize(pgPool, {});
+        let sumBackend = 0, sumCustomer = 0, sumMargin = 0;
+        for (const r of rows) {
+          sumBackend += Number(r.sum_backend) || 0;
+          sumCustomer += Number(r.sum_customer) || 0;
+          sumMargin += Number(r.sum_margin) || 0;
+        }
+        return sendJSON(res, 200, { ok: true, total: { backendCostCents: sumBackend, customerChargeCents: sumCustomer, marginCents: sumMargin }, byScopePurpose: rows });
+      }
+      const lim = Math.min(200, Number((url.split('limit=')[1] || '').split('&')[0]) || 50) || 50;
+      const r = await pgPool.query('SELECT * FROM consumption_ledger ORDER BY created_at DESC LIMIT $1', [lim]);
+      return sendJSON(res, 200, { ok: true, rows: r.rows });
+    } catch (e) { return sendJSON(res, 500, { error: e.message }); }
+  }
   if (url.startsWith('/api/admin/') && method !== 'OPTIONS') return admin.handleAdmin(req, res, url.split('?')[0], method);
 
   // ── 电商模块（AI 市集 / 技能注册表 / 试用台）── 命中即处理（内部自行鉴权：目录/商品公开，试用/获取/我的技能需登录）
@@ -1649,6 +1711,20 @@ async function handleAPI(req, res) {
         const result = await dispatcher.generate(pgPool, genOpts);
         if (result && result.status === 'success') {
           await billing.commitCredits(pgPool, realUser.id, cost, idemKey);
+          // 双边记账（sync 路径）：按 (provider, model) 组记录后台量 vs 客户量
+          try {
+            const groups = (result && result.consumption) || [];
+            const totalUnits = groups.reduce((s, g) => s + (g.units || 0), 0) || 1;
+            for (const g of groups) {
+              const alloc = Math.round((cost || 0) * (g.units || 0) / totalUnits);
+              await accounting.recordConsumption(pgPool, {
+                scope: 'user', actorId: realUser.id, purpose: 'generate',
+                providerId: g.providerId || '', modelId: g.modelId || '', modelType: g.modelType || 'image',
+                outputUnits: g.units || 0, customerChargeCredits: alloc,
+                idempotencyKey: `${idemKey}:${g.providerId}:${g.modelId}`, taskRef: idemKey,
+              });
+            }
+          } catch (e) { console.warn('[accounting generate-sync]', e.message); }
         } else {
           await billing.releaseCredits(pgPool, realUser.id, cost, idemKey).catch(() => {});
         }
@@ -1777,11 +1853,24 @@ async function handleAPI(req, res) {
         let data; try { data = JSON.parse(raw); } catch { return sendJSON(res, 200, { success: false, error: '推理模型返回非 JSON：' + raw.slice(0, 200) }); }
         const content = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').toString().trim();
         if (!content) return sendJSON(res, 200, { success: false, error: '推理模型返回为空' });
+        const usage = (data && data.usage) || null;
+        // 双边记账：optimize-prompt 当前对客户免费（customerChargeCredits=0），后台成本照实记录 → 如实显示为平台成本
+        try {
+          await accounting.recordConsumption(pgPool, {
+            scope: 'user', actorId: (realUser && realUser.id) || '', purpose: 'agent:optimize-prompt',
+            providerId: model.p_id || '', modelId: model.model_id || '', modelType: 'text',
+            inputUnits: usage && usage.prompt_tokens ? usage.prompt_tokens : 0,
+            outputUnits: usage && usage.completion_tokens ? usage.completion_tokens : 0,
+            customerChargeCredits: 0,
+            idempotencyKey: `opt-${realUser ? realUser.id : 'anon'}-${Date.now()}`,
+          });
+        } catch (e) { console.warn('[accounting optimize-prompt]', e.message); }
         return sendJSON(res, 200, {
           success: true,
           content,
           modelUsed: model.display_name,
           providerId: model.p_id,
+          usage,
         });
       } catch (e) {
         const cause = e && e.cause;
