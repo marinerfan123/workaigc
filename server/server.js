@@ -216,6 +216,7 @@ async function initDB() {
         tags JSONB DEFAULT '[]'::jsonb,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
+      ALTER TABLE default_assets ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb;
       ALTER TABLE media ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE;
       ALTER TABLE media ADD COLUMN IF NOT EXISTS default_key TEXT;
       ALTER TABLE media ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb;
