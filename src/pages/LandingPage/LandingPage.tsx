@@ -99,7 +99,7 @@ export default function LandingPage() {
             <span className="flex h-9 w-9 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-400 text-black shadow-lg shadow-emerald-500/20">
               <Sparkles className="size-5" />
             </span>
-            <span className="text-[15px] font-semibold tracking-tight">
+            <span className="text-base font-semibold tracking-tight">
               东方古典美人 · 创作工作台
             </span>
           </Link>
