@@ -62,16 +62,36 @@ logbus.installConsoleHook();
 logbus.startStatsTimer();
 
 async function initDB() {
+  // ── 「数据必须入正式数据库」铁律（2026-08-08 拍板，实时约束）──
+  // PostgreSQL 是唯一正式数据源。连接失败 → 重试若干次 → 仍失败则 **硬性退出进程**，
+  // 绝不允许静默降级到本地 JSON 文件（server/data/*.json）兜底，避免数据分裂/丢失。
+  const PG_MAX_RETRY = 5, PG_RETRY_DELAY_MS = 2000;
+  for (let attempt = 1; attempt <= PG_MAX_RETRY; attempt++) {
+    try {
+      pgPool = new Pool({
+        host: process.env.PG_HOST || 'localhost',
+        port: parseInt(process.env.PG_PORT || '5432', 10),
+        database: process.env.PG_DATABASE || 'huabu',
+        user: process.env.PG_USER || 'postgres',
+        password: process.env.PG_PASSWORD || '0.0.1abcd',
+        max: parseInt(process.env.PG_POOL_MAX || '10', 10),
+        connectionTimeoutMillis: 5000,
+      });
+      await pgPool.query('SELECT 1');
+      console.log(`[DB] PostgreSQL 连接成功（第 ${attempt} 次尝试）`);
+      break;
+    } catch (e) {
+      if (pgPool) { try { await pgPool.end(); } catch {} pgPool = null; }
+      if (attempt < PG_MAX_RETRY) {
+        console.warn(`[DB] PostgreSQL 连接失败（第 ${attempt}/${PG_MAX_RETRY} 次），${PG_RETRY_DELAY_MS}ms 后重试：`, e.message);
+        await new Promise(r => setTimeout(r, PG_RETRY_DELAY_MS));
+      } else {
+        console.error('[DB] ❌ PostgreSQL 连接失败且已达最大重试次数。依据「数据必须入正式数据库」铁律，拒绝以本地 JSON 文件兜底启动 —— 进程退出。最后错误：', e.message);
+        process.exit(1);
+      }
+    }
+  }
   try {
-    pgPool = new Pool({
-      host: process.env.PG_HOST || 'localhost',
-      port: parseInt(process.env.PG_PORT || '5432', 10),
-      database: process.env.PG_DATABASE || 'huabu',
-      user: process.env.PG_USER || 'postgres',
-      password: process.env.PG_PASSWORD || '0.0.1abcd',
-      max: parseInt(process.env.PG_POOL_MAX || '10', 10),
-    });
-    await pgPool.query('SELECT 1');
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT DEFAULT 'official', base_url TEXT DEFAULT '', api_key TEXT DEFAULT '', supported_types TEXT[] DEFAULT '{}', enabled BOOLEAN DEFAULT TRUE, protocol TEXT DEFAULT 'openai-compatible', remark TEXT DEFAULT '', default_endpoint JSONB DEFAULT '{}', capacity_model TEXT DEFAULT 'limited', bucket_max INT, cooldown_ms INT DEFAULT 60000, created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, mapping_name TEXT DEFAULT '', type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', credit_cost INT DEFAULT 0, max_concurrent INT, created_at TIMESTAMPTZ DEFAULT NOW());
@@ -446,13 +466,15 @@ async function initDB() {
 
     return true;
   } catch (e) {
-    console.warn('[DB] PostgreSQL 不可用，降级 JSON 存储:', e.message);
-    pgPool = null;
-    return false;
+    console.error('[DB] ❌ 数据库初始化失败（schema/seed）。依据「数据必须入正式数据库」铁律，拒绝以本地 JSON 文件兜底 —— 进程退出。错误：', e.message);
+    process.exit(1);
   }
 }
 
-// ─── JSON 降级 ──────────────────────────────────
+// ─── JSON 兜底（⚠️ 历史残留 · 禁止用于业务数据）───────────────────
+// 「数据必须入正式数据库」铁律（2026-08-08）：运行实例已强制 PG（initDB 连接失败即 exit(1)），
+// 故下方 readJSON/writeJSON 在正常运行中**不可达**（pgPool 恒非 null）。仅保留作未启用死代码，
+// 切勿在新增功能里新建「写本地文件」的分支 —— 所有业务数据必须落 PostgreSQL。
 function readJSON(name) {
   try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, `${name}.json`), 'utf-8')); }
   catch { return name === 'oss' || name === 'settings' ? {} : []; }
@@ -2378,7 +2400,7 @@ if (isProduction) {
 }
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 服务: http://localhost:${PORT} | 📁 ${DATA_DIR} | 🐘 PG:${pgPool ? 'connected' : 'json-fallback'} | 🔴 Redis:${isRedisUp() ? 'up' : 'memory-fallback'}`);
+  console.log(`🚀 服务: http://localhost:${PORT} | 📁 ${DATA_DIR} | 🐘 PG:connected(强制·唯一数据源) | 🔴 Redis:${isRedisUp() ? 'up' : 'memory-fallback(仅缓存)'}`);
   orderExpiry.start(); // 启动订单超时调度器（启动即扫一次）
 });
 
