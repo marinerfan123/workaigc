@@ -155,7 +155,7 @@ async function initDB() {
         email         TEXT UNIQUE NOT NULL,
         display_name  TEXT NOT NULL DEFAULT '',
         password_hash TEXT NOT NULL,
-        credits       INT  NOT NULL DEFAULT 50,
+        credits       INT  NOT NULL DEFAULT ${SIGNUP_BONUS_CREDITS},
         role          TEXT NOT NULL DEFAULT 'user',
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -779,6 +779,10 @@ function appGateway(req) {
 // API 路由（PG 优先，JSON 降级）
 // ══════════════════════════════════════════════════
 // ─── 认证路由处理 ────────────────────────────────
+// 注册赠送积分：可通过环境变量 SIGNUP_BONUS_CREDITS 覆盖（默认 50），
+// 集中管理，避免 credits 列默认 / INSERT / 流水 / 返回值 四处硬编码不一致
+const SIGNUP_BONUS_CREDITS = Number(process.env.SIGNUP_BONUS_CREDITS ?? 50);
+
 async function handleRegister(req, res) {
   // Phase 0 限流：同一 IP 60s 内最多 5 次注册
   const rlReg = await rateLimit({ key: 'rl:register:' + clientIp(req), limit: 5, windowSec: 60 });
@@ -798,18 +802,18 @@ async function handleRegister(req, res) {
   const id = 'u-' + crypto.randomUUID();
   await pgPool.query(
     `INSERT INTO users (id, email, display_name, password_hash, credits, role)
-     VALUES ($1, $2, $3, $4, 50, 'user')`,
+     VALUES ($1, $2, $3, $4, ${SIGNUP_BONUS_CREDITS}, 'user')`,
     [id, email, displayName, session.hashPassword(pw)],
   );
   await pgPool.query( // 注册赠送 50 credits（审计留痕）
-    `INSERT INTO credit_transactions (user_id, kind, amount, ref) VALUES ($1, 'grant', 50, 'signup-bonus')`,
+    `INSERT INTO credit_transactions (user_id, kind, amount, ref) VALUES ($1, 'grant', ${SIGNUP_BONUS_CREDITS}, 'signup-bonus')`,
     [id],
   );
   // 注册即拷贝公共默认资产到个人素材库（幂等）
   await ensureUserDefaults(id);
   const token = session.signSession({ id, role: 'user' });
   session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
-  return sendJSON(res, 200, { ok: true, user: { id, email, displayName, credits: 50, role: 'user' } });
+  return sendJSON(res, 200, { ok: true, user: { id, email, displayName, credits: SIGNUP_BONUS_CREDITS, role: 'user' } });
 }
 
 async function handleLogin(req, res) {
