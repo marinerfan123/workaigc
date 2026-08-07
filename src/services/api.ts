@@ -890,6 +890,20 @@ export type {
   ShopProductDetail,
 } from '@/pages/Admin/UsersPage';
 
+// ─── 反馈 / 举报 / 导出 ───────────────────────────
+export async function apiSubmitFeedback(payload: { type: string; title: string; content: string; contact?: string }): Promise<{ ok: boolean; id?: string; error?: string }> {
+  try { return await apiFetch('/api/feedback', { method: 'POST', body: JSON.stringify(payload) }); }
+  catch (e) { return { ok: false, error: (e as Error).message.slice(0, 200) }; }
+}
+export async function apiSubmitReport(payload: { type: string; targetUrl?: string; content: string; evidence?: string; contact?: string }): Promise<{ ok: boolean; id?: string; error?: string }> {
+  try { return await apiFetch('/api/report', { method: 'POST', body: JSON.stringify(payload) }); }
+  catch (e) { return { ok: false, error: (e as Error).message.slice(0, 200) }; }
+}
+export async function apiExportMyMedia(): Promise<{ ok: boolean; url?: string; filename?: string; count?: number; error?: string }> {
+  try { return await apiFetch('/api/export/my-media'); }
+  catch (e) { return { ok: false, error: (e as Error).message.slice(0, 200) }; }
+}
+
 // ─── 首次部署初始化向导（公开接口，无需 token）───
 export interface ISetupModelPreset {
   id: string;

@@ -20,9 +20,11 @@ import {
   RefreshCw,
   Wallet,
   ChevronDown,
+  Loader2,
 } from 'lucide-react';
 import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authStore';
 import RechargeModal from '@/components/RechargeModal';
+import { apiExportMyMedia } from '@/services/api';
 
 interface TopBarProps {
   onSettingsOpen: () => void;
@@ -33,20 +35,44 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
   const [moreOpen, setMoreOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [rechargeOpen, setRechargeOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const { user } = useAuth();
   const navigate = useNavigate();
 
+  async function handleDownloadProject() {
+    if (!user) return;
+    setDownloading(true);
+    try {
+      const r = await apiExportMyMedia();
+      if (r.ok && r.url) {
+        const a = document.createElement('a');
+        a.href = r.url;
+        a.download = r.filename || `manchuang-export-${Date.now()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } else {
+        alert(r.error || '导出失败');
+      }
+    } catch (e: any) {
+      alert(e?.message || '导出失败');
+    } finally {
+      setDownloading(false);
+      setMoreOpen(false);
+    }
+  }
+
   const moreItems = [
-    { icon: Download, label: '下载项目' },
-    { icon: ExternalLink, label: '帮助中心' },
-    { icon: HelpCircle, label: '使用文档' },
-    { icon: List, label: '查看所有更新日志' },
-    { icon: MonitorPlay, label: '视频教程' },
-    { icon: Info, label: '关于我们' },
-    { icon: Play, label: '新手指南' },
-    { icon: MessageSquareWarning, label: '发送应用反馈' },
-    { icon: Flag, label: '举报法律问题' },
-    { icon: ShieldCheck, label: '隐私声明' },
+    { icon: Download, label: '下载项目', onClick: handleDownloadProject, loading: downloading },
+    { icon: ExternalLink, label: '帮助中心', path: '/help' },
+    { icon: HelpCircle, label: '使用文档', path: '/docs' },
+    { icon: List, label: '查看所有更新日志', path: '/changelog' },
+    { icon: MonitorPlay, label: '视频教程', path: '/tutorials' },
+    { icon: Info, label: '关于我们', path: '/about' },
+    { icon: Play, label: '新手指南', path: '/guide' },
+    { icon: MessageSquareWarning, label: '发送应用反馈', path: '/feedback' },
+    { icon: Flag, label: '举报法律问题', path: '/report' },
+    { icon: ShieldCheck, label: '隐私声明', path: '/privacy' },
   ];
 
   const toolButton =
@@ -78,14 +104,25 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
                 <div className="absolute right-0 top-full z-50 mt-1.5 w-56 rounded-[1.25rem] bg-zinc-900 p-2 border border-zinc-800 shadow-2xl">
                   {moreItems.map((item) => {
                     const Icon = item.icon;
+                    const content = (
+                      <>
+                        {item.loading ? <Loader2 className="size-4 animate-spin text-zinc-500" /> : <Icon className="size-4 text-zinc-500" />}
+                        <span>{item.label}</span>
+                      </>
+                    );
+                    const className = "flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm text-white hover:bg-zinc-800/70 transition-colors disabled:opacity-50";
+                    const handleClick = () => {
+                      if (item.onClick) item.onClick();
+                      else if (item.path) { setMoreOpen(false); navigate(item.path); }
+                    };
                     return (
                       <button
                         key={item.label}
-                        onClick={() => setMoreOpen(false)}
-                        className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm text-white hover:bg-zinc-800/70 transition-colors"
+                        onClick={handleClick}
+                        disabled={item.loading}
+                        className={className}
                       >
-                        <Icon className="size-4 text-zinc-500" />
-                        <span>{item.label}</span>
+                        {content}
                       </button>
                     );
                   })}

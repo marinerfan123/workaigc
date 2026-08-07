@@ -553,6 +553,27 @@ async function initDB() {
         last_run  TIMESTAMPTZ,
         cursor    JSONB DEFAULT '{}'
       );
+      -- 用户反馈（前端「发送应用反馈」表单落库；user_id 可空以兼容匿名，但本应用强制登录故一般非空）
+      CREATE TABLE IF NOT EXISTS feedback (
+        id          TEXT PRIMARY KEY,
+        user_id     TEXT,
+        type        TEXT DEFAULT 'other',
+        title       TEXT DEFAULT '',
+        content     TEXT DEFAULT '',
+        contact     TEXT DEFAULT '',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      );
+      -- 用户举报（前端「举报法律问题」表单落库）
+      CREATE TABLE IF NOT EXISTS reports (
+        id          TEXT PRIMARY KEY,
+        user_id     TEXT,
+        type        TEXT DEFAULT 'other',
+        target_url  TEXT DEFAULT '',
+        content     TEXT DEFAULT '',
+        evidence    TEXT DEFAULT '',
+        contact     TEXT DEFAULT '',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+      );
     `);
 
     // 种子：运营智能体 ops_bot + 三条自动化规则（§H.3）
@@ -645,6 +666,7 @@ const SNAKE_MAP = {
   file_size:'fileSize',
   is_default:'isDefault', default_key:'defaultKey', tags:'tags',
   reward_credits:'rewardCredits', recharge_credits:'rechargeCredits',
+  target_url:'targetUrl',
   supports_reward_balance:'supportsRewardBalance', reward_credits_required:'rewardCreditsRequired',
   // ── 多 OSS 槽位扩展 ──
   provider_type:'providerType', display_name:'displayName',
@@ -1282,6 +1304,69 @@ async function handleAPI(req, res) {
   if (payments.handlePayments(req, res, url, method)) return;
 
   const realUser = session.getUserFromCookie(req); // 真实用户身份（用于计费/owner）
+
+  // ── 用户反馈（前端「发送应用反馈」表单落库）── 需登录（appGateway 已全局鉴权）
+  if (url === '/api/feedback' && method === 'POST') {
+    try {
+      if (!realUser) return sendJSON(res, 401, { ok: false, error: '需要登录' });
+      const body = await parseBody(req);
+      if (!body || !body.content || !String(body.content).trim()) {
+        return sendJSON(res, 400, { ok: false, error: '反馈内容不能为空' });
+      }
+      const id = 'fb-' + crypto.randomUUID();
+      await pgPool.query(
+        'INSERT INTO feedback (id, user_id, type, title, content, contact, created_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())',
+        [id, realUser.id, body.type || 'other', String(body.title || '').slice(0, 200), String(body.content || '').slice(0, 8000), String(body.contact || '').slice(0, 200)]
+      );
+      return sendJSON(res, 200, { ok: true, id });
+    } catch (e) { return sendJSON(res, 500, { ok: false, error: e.message }); }
+  }
+
+  // ── 用户举报（前端「举报法律问题」表单落库）── 需登录
+  if (url === '/api/report' && method === 'POST') {
+    try {
+      if (!realUser) return sendJSON(res, 401, { ok: false, error: '需要登录' });
+      const body = await parseBody(req);
+      if (!body || !body.content || !String(body.content).trim()) {
+        return sendJSON(res, 400, { ok: false, error: '举报描述不能为空' });
+      }
+      const id = 'rp-' + crypto.randomUUID();
+      await pgPool.query(
+        'INSERT INTO reports (id, user_id, type, target_url, content, evidence, contact, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())',
+        [id, realUser.id, body.type || 'other', String(body.targetUrl || '').slice(0, 1000), String(body.content || '').slice(0, 8000), String(body.evidence || '').slice(0, 8000), String(body.contact || '').slice(0, 200)]
+      );
+      return sendJSON(res, 200, { ok: true, id });
+    } catch (e) { return sendJSON(res, 500, { ok: false, error: e.message }); }
+  }
+
+  // ── 下载项目：导出当前用户全部素材为 JSON（仅元数据 + 外链，不含二进制文件）── 需登录
+  if (url === '/api/export/my-media' && method === 'GET') {
+    try {
+      if (!realUser) return sendJSON(res, 401, { ok: false, error: '需要登录' });
+      const r = await pgPool.query(
+        'SELECT id, title, type, prompt, model, ratio, source, category, thumbnail, full_url, oss_url, status, file_size, created_at FROM media WHERE user_id=$1 AND is_deleted=FALSE ORDER BY created_at DESC',
+        [realUser.id]
+      );
+      const items = r.rows.map(fromSnake);
+      const exportObj = {
+        app: 'manchuang',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        userId: realUser.id,
+        count: items.length,
+        items,
+      };
+      const json = JSON.stringify(exportObj, null, 2);
+      const b64 = Buffer.from(json, 'utf-8').toString('base64');
+      const filename = `manchuang-export-${realUser.id}-${Date.now()}.json`;
+      return sendJSON(res, 200, {
+        ok: true,
+        url: 'data:application/json;base64,' + b64,
+        filename,
+        count: items.length,
+      });
+    } catch (e) { return sendJSON(res, 500, { ok: false, error: e.message }); }
+  }
 
   // ── Media ──
   // 同步预扫：探测前 16 张未标 failed 的图，限并发 4 + 3s 超时

@@ -51,6 +51,12 @@ import AuthPage from '@/pages/Auth/AuthPage';
 import SetupWizardPage from '@/pages/Setup/SetupWizardPage';
 import { getSetupStatus } from '@/services/api';
 
+// 帮助 / 文档 / 反馈 / 法律 / 关于
+import {
+  HelpCenterPage, DocsPage, ChangelogPage, TutorialsPage,
+  AboutPage, GuidePage, FeedbackPage, ReportPage, PrivacyPage,
+} from '@/pages/Support';
+
 // 首次部署：未初始化时访问站点根路径自动跳到 /setup 向导（完成后恢复着陆页）
 function FirstRunGate({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
@@ -86,6 +92,19 @@ export default function App() {
           <Route path="account" element={<RequireAuth><AccountPage /></RequireAuth>} />
           {/* 创作者公开主页（无需登录，可分享） */}
           <Route path="user/:id" element={<UserPage />} />
+
+          {/* 帮助 / 文档 / 更新 / 教程 / 关于 / 指南 / 隐私（公开浏览） */}
+          <Route path="help" element={<HelpCenterPage />} />
+          <Route path="docs" element={<DocsPage />} />
+          <Route path="changelog" element={<ChangelogPage />} />
+          <Route path="tutorials" element={<TutorialsPage />} />
+          <Route path="about" element={<AboutPage />} />
+          <Route path="guide" element={<GuidePage />} />
+          <Route path="privacy" element={<PrivacyPage />} />
+
+          {/* 反馈 / 举报（需登录） */}
+          <Route path="feedback" element={<RequireAuth><FeedbackPage /></RequireAuth>} />
+          <Route path="report" element={<RequireAuth><ReportPage /></RequireAuth>} />
         </Route>
 
         {/* 管理后台壳（整区需管理员 — 登录检查放这里，角色检查交给 AdminLayout 提供更友好的"无权限"页）
