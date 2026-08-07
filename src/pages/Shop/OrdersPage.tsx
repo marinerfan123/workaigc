@@ -73,7 +73,7 @@ export default function OrdersPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-zinc-500">{o.orderNo}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] ${st.cls}`}>{st.label}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] ${st.cls}`}>{st.label}</span>
                     </div>
                     <div className="mt-1 text-sm text-zinc-400">{o.itemCount ?? 0} 件商品 · {fmt(o.createdAt)}</div>
                   </div>

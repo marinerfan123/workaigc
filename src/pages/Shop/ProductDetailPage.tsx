@@ -46,7 +46,7 @@ export default function ProductDetailPage() {
                 <span>销量 1.2k</span>
                 <span className="text-zinc-700">·</span>
                 <span className="flex items-center gap-0.5">
-                  <Star className="size-3 fill-amber-400 text-amber-400" /> 4.8
+                  <Star className="size-3.5 fill-amber-400 text-amber-400" /> 4.8
                 </span>
                 <span className="text-zinc-700">·</span>
                 <span>库存 99</span>
