@@ -86,7 +86,7 @@ export default function UserPage() {
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-semibold text-white">{profile.displayName}</h1>
               {isSelf && (
-                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-400">我</span>
+                <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-400">我</span>
               )}
             </div>
             <p className="text-xs text-zinc-500">

@@ -228,7 +228,7 @@ export default function AccountPage() {
                       <span className={`flex size-8 shrink-0 items-center justify-center rounded-lg text-xs font-semibold ${b.cls}`}>{b.short}</span>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-zinc-200">{b.label}</div>
-                        <div className="truncate text-[11px] text-zinc-500">
+                        <div className="truncate text-[10px] text-zinc-500">
                           {formatTime(t.createdAt)}{t.ref ? ` · ${t.ref}` : ''}
                         </div>
                       </div>
@@ -236,7 +236,7 @@ export default function AccountPage() {
                         <div className={`text-sm font-semibold tabular-nums ${negative ? 'text-red-400' : 'text-emerald-400'}`}>
                           {txSign(t)}{Math.abs(t.amount)}
                         </div>
-                        <div className="text-[11px] text-zinc-500">余 {t.balanceAfter ?? '—'}</div>
+                        <div className="text-[10px] text-zinc-500">余 {t.balanceAfter ?? '—'}</div>
                       </div>
                     </div>
                   );
@@ -269,9 +269,9 @@ export default function AccountPage() {
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm text-zinc-200">¥{o.amount} · {o.channel === 'alipay' ? '支付宝' : '微信'}</div>
-                        <div className="truncate text-[11px] text-zinc-500">{formatTime(o.createdAt)}</div>
+                        <div className="truncate text-[10px] text-zinc-500">{formatTime(o.createdAt)}</div>
                       </div>
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${s.cls}`}>{s.label}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${s.cls}`}>{s.label}</span>
                     </div>
                   );
                 })}
