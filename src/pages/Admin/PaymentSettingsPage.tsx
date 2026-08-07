@@ -179,7 +179,7 @@ function ProvidersPanel({ providers, onChanged }: { providers: PaymentProvider[]
                   </div>
                 </td>
                 <td className="py-2 pr-3">
-                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${p.enabled ? 'bg-emerald-400/10 text-emerald-400' : 'bg-zinc-700/40 text-zinc-400'}`}>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${p.enabled ? 'bg-emerald-400/10 text-emerald-400' : 'bg-zinc-700/40 text-zinc-400'}`}>
                     {p.enabled ? '已启用' : '已停用'}
                   </span>
                 </td>

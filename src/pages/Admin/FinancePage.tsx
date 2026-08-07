@@ -174,7 +174,7 @@ export default function FinancePage() {
                       <td className="py-2 pr-3 text-zinc-400">{o.channel === 'alipay' ? '支付宝' : '微信'}</td>
                       <td className="py-2 pr-3 tabular-nums text-white">¥{o.amount}</td>
                       <td className="py-2 pr-3">
-                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
                           o.status === 'paid' ? 'bg-emerald-400/10 text-emerald-400'
                           : o.status === 'failed' ? 'bg-red-400/10 text-red-400'
                           : 'bg-amber-400/10 text-amber-400'
@@ -320,7 +320,7 @@ export default function FinancePage() {
                     <td className="py-2 pr-3 tabular-nums text-amber-300">+{p.bonus}</td>
                     <td className="py-2 pr-3 text-zinc-500">{p.sortOrder}</td>
                     <td className="py-2 pr-3">
-                      <button onClick={() => togglePkg(p)} className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${p.enabled ? 'bg-emerald-400/10 text-emerald-400' : 'bg-zinc-700/40 text-zinc-400'}`}>
+                      <button onClick={() => togglePkg(p)} className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${p.enabled ? 'bg-emerald-400/10 text-emerald-400' : 'bg-zinc-700/40 text-zinc-400'}`}>
                         {p.enabled ? '启用' : '停用'}
                       </button>
                     </td>
