@@ -105,27 +105,20 @@ export function workspaceDockConfig(
           { key: 'lib-upload', label: '上传的内容', icon: Upload, path: '/library/upload', end: true, count: counts?.upload },
         ],
       },
-      // 管理区只有角色管理一项，内容太少，直接平铺避免折叠后空荡荡
+      // 管理板块：创作者的资源管理，手风琴折叠
       {
         title: '管理',
+        collapsible: true,
         items: [
           { key: 'characters', label: '角色管理', icon: User, path: '/characters', end: true },
-        ],
-      },
-      // 全站跳转是高频入口，直接平铺；不再重复放置置顶「工作台」项
-      globalNavSection(userRole, { excludeWorkspace: true }),
-    ],
-    bottomActions: [
-      {
-        key: 'tools',
-        label: '工具',
-        icon: Wrench,
-        children: [
           ...(userRole === 'admin'
-            ? [{ key: 'model-hub', label: '模型 Hub', icon: Settings2, path: '/model-hub' }]
+            ? [{ key: 'model-hub', label: '模型 Hub', icon: Cpu, path: '/model-hub', end: true }]
             : []),
+          { key: 'account', label: '账户设置', icon: Settings2, path: '/account', end: true },
         ],
       },
+      // 全站跨模块跳转：手风琴，不重复放置置顶「工作台」项
+      globalNavSection(userRole, { collapsible: true, excludeWorkspace: true }),
     ],
   };
 }
