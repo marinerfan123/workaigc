@@ -1,12 +1,14 @@
 // M4 全局智能体层（真实数据）
 // 监控看板 + 管理：agents / agent_providers / agent_rules（§B.9）
 // 接口：/api/admin/agents* / agent-providers / agent-rules*；调度器 dispatcher 令牌桶 + round-robin。
-import { Bot, Server, GitBranch, BarChart3, Power } from 'lucide-react';
+import { Bot, Server, GitBranch, BarChart3, Power, Wand2, Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { PageHeader, SectionCard, TabBar, StatCard, cn } from '@/components/skeleton';
 import { useCallback, useEffect, useState } from 'react';
 import {
   apiAdminAgents, apiAdminToggleAgent,
   apiAdminAgentProviders, apiAdminAgentRules, apiAdminToggleAgentRule,
+  apiGetModels, apiGetSettings, apiSaveSettings,
   type AdminAgent, type AgentProvider, type AgentRule,
 } from '@/services/api';
 
@@ -16,14 +18,36 @@ export default function AgentsPage() {
   const [providers, setProviders] = useState<AgentProvider[]>([]);
   const [rules, setRules] = useState<AgentRule[]>([]);
   const [loading, setLoading] = useState(true);
+  // 提示词优化智能体：可选 text 模型（写入 settings.app.promptOptimizeModel）
+  const [textModels, setTextModels] = useState<{ id: string; displayName: string; modelId: string }[]>([]);
+  const [promptOptimizeModel, setPromptOptimizeModel] = useState('');
+  const [savingModel, setSavingModel] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [a, p, r] = await Promise.all([apiAdminAgents(), apiAdminAgentProviders(), apiAdminAgentRules()]);
+    const [a, p, r, ms, s] = await Promise.all([
+      apiAdminAgents(), apiAdminAgentProviders(), apiAdminAgentRules(),
+      apiGetModels(), apiGetSettings(),
+    ]);
     setAgents(a); setProviders(p); setRules(r);
+    setTextModels(ms.filter((m) => m.type === 'text' && m.enabled).map((m) => ({ id: m.id, displayName: m.displayName || '', modelId: m.modelId || '' })));
+    if (s && s.promptOptimizeModel) setPromptOptimizeModel(String(s.promptOptimizeModel));
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  const savePromptOptimizeModel = async () => {
+    setSavingModel(true);
+    try {
+      const cur = (await apiGetSettings().catch(() => ({}))) || {};
+      await apiSaveSettings({ ...cur, promptOptimizeModel });
+      toast.success(promptOptimizeModel ? '已指定提示词优化模型' : '已恢复自动选择');
+    } catch (e) {
+      toast.error('保存失败');
+    } finally {
+      setSavingModel(false);
+    }
+  };
 
   const toggleAgent = async (a: AdminAgent) => {
     await apiAdminToggleAgent(a.key, !a.enabled);
@@ -69,21 +93,76 @@ export default function AgentsPage() {
       {tab === 'agents' && (
         <SectionCard title="agents 表" hint="key / name / enabled / daily_budget / config" actions={<span className="text-xs text-zinc-500">{loading ? '加载中…' : `${enabledAgents}/${agents.length} 启用`}</span>}>
           <div className="space-y-2">
-            {agents.map((a) => (
-              <div key={a.key} className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3">
-                <div>
-                  <div className="font-medium text-zinc-100">{a.name}</div>
-                  <div className="text-xs text-zinc-500">{a.key} · 日预算 {a.dailyBudget}</div>
+            {agents.map((a) => {
+              const isPromptOptimizer = a.key === 'prompt_optimizer';
+              const skillName = (a.config?.skillName as string) || '';
+              return (
+                <div key={a.key} className={cn('rounded-2xl px-4 py-3', isPromptOptimizer ? 'border border-emerald-500/20 bg-emerald-500/5' : 'bg-white/5')}>
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <div className="font-medium text-zinc-100">{a.name}</div>
+                        {skillName && <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-300">{skillName}</span>}
+                      </div>
+                      <div className="text-xs text-zinc-500">{a.key} · 日预算 {a.dailyBudget}</div>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      {isPromptOptimizer && (
+                        <div className="hidden sm:flex items-center gap-2">
+                          <select
+                            value={promptOptimizeModel}
+                            onChange={(e) => setPromptOptimizeModel(e.target.value)}
+                            className="min-w-[12rem] rounded-xl bg-zinc-900/50 px-3 py-1.5 text-xs text-zinc-200 border border-zinc-700/50 focus:outline-none focus:border-emerald-500/50"
+                          >
+                            <option value="">自动（最便宜的 text 模型）</option>
+                            {textModels.map((m) => (
+                              <option key={m.id} value={m.id}>{m.displayName || m.modelId}</option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={() => savePromptOptimizeModel()}
+                            disabled={savingModel}
+                            className="inline-flex items-center gap-1 rounded-xl bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50"
+                          >
+                            {savingModel ? <Loader2 className="size-3.5 animate-spin" /> : <Wand2 className="size-3.5" />}
+                            保存
+                          </button>
+                        </div>
+                      )}
+                      <button
+                        onClick={() => toggleAgent(a)}
+                        className={cn('inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors',
+                          a.enabled ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25' : 'bg-white/10 text-zinc-400 hover:bg-white/15')}
+                      >
+                        <Power className="size-3.5" /> {a.enabled ? '已启用' : '已停用'}
+                      </button>
+                    </div>
+                  </div>
+                  {isPromptOptimizer && (
+                    <div className="mt-3 flex flex-col gap-2 sm:hidden">
+                      <select
+                        value={promptOptimizeModel}
+                        onChange={(e) => setPromptOptimizeModel(e.target.value)}
+                        className="w-full rounded-xl bg-zinc-900/50 px-3 py-2 text-xs text-zinc-200 border border-zinc-700/50 focus:outline-none focus:border-emerald-500/50"
+                      >
+                        <option value="">自动（最便宜的 text 模型）</option>
+                        {textModels.map((m) => (
+                          <option key={m.id} value={m.id}>{m.displayName || m.modelId}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => savePromptOptimizeModel()}
+                        disabled={savingModel}
+                        className="inline-flex w-full items-center justify-center gap-1 rounded-xl bg-emerald-500/15 px-3 py-2 text-xs font-medium text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50"
+                      >
+                        {savingModel ? <Loader2 className="size-3.5 animate-spin" /> : <Wand2 className="size-3.5" />}
+                        保存模型设置
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <button
-                  onClick={() => toggleAgent(a)}
-                  className={cn('inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-medium transition-colors',
-                    a.enabled ? 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25' : 'bg-white/10 text-zinc-400 hover:bg-white/15')}
-                >
-                  <Power className="size-3.5" /> {a.enabled ? '已启用' : '已停用'}
-                </button>
-              </div>
-            ))}
+              );
+            })}
             {agents.length === 0 && !loading && <div className="py-6 text-center text-xs text-zinc-500">暂无智能体</div>}
           </div>
         </SectionCard>

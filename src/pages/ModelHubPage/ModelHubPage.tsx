@@ -25,7 +25,6 @@ import {
   Briefcase,
   Boxes,
   Gift,
-  Wand2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -137,8 +136,6 @@ export default function ModelHubPage() {
   const [waitingAreaThreshold, setWaitingAreaThreshold] = useState(10);
   // 新用户注册奖励（注册赠送积分，后台可视化设置）
   const [signupBonus, setSignupBonus] = useState(50);
-  // 提示词优化模型（智能体 skill：prompt_optimizer，后台可视化设置）
-  const [promptOptimizeModel, setPromptOptimizeModel] = useState('');
   useEffect(() => {
     apiGetSettings().then((s) => {
       if (s && s.maxThreads) setMaxThreads(Number(s.maxThreads) || 10);
@@ -147,9 +144,6 @@ export default function ModelHubPage() {
       }
       if (s && Number(s.signupBonusCredits) > 0) {
         setSignupBonus(Math.floor(Number(s.signupBonusCredits)));
-      }
-      if (s && s.promptOptimizeModel) {
-        setPromptOptimizeModel(String(s.promptOptimizeModel));
       }
     }).catch(() => {});
   }, []);
@@ -166,12 +160,6 @@ export default function ModelHubPage() {
     await apiSaveSettings({ ...cur, signupBonusCredits: v });
     setSignupBonus(v);
     toast.success('注册奖励已保存');
-  };
-  // 提示词优化模型设置（智能体 skill：prompt_optimizer）
-  const savePromptOptimizeModel = async () => {
-    const cur = (await apiGetSettings().catch(() => ({}))) || {};
-    await apiSaveSettings({ ...cur, promptOptimizeModel });
-    toast.success(promptOptimizeModel ? '提示词优化模型已设置' : '已恢复为自动选择');
   };
 
   const filteredModels = useMemo(() => {
@@ -1038,39 +1026,6 @@ export default function ModelHubPage() {
                   className="rounded-2xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-black hover:bg-emerald-400 transition-colors"
                 >
                   保存注册奖励
-                </button>
-              </div>
-            </div>
-
-            {/* 提示词优化模型（智能体 skill：prompt_optimizer） */}
-            <div className="mb-4 rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
-              <div className="flex items-center gap-2 mb-3">
-                <Wand2 className="size-4 text-emerald-400" />
-                <h3 className="text-sm font-bold text-white">提示词优化模型</h3>
-              </div>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-                <div className="flex-1">
-                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">指定用于提示词优化的推理模型</label>
-                  <select
-                    value={promptOptimizeModel}
-                    onChange={(e) => setPromptOptimizeModel(e.target.value)}
-                    className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                  >
-                    <option value="">自动（使用最便宜的 text 模型）</option>
-                    {models.filter((m) => m.type === 'text' && m.enabled).map((m) => (
-                      <option key={m.id} value={m.id}>{m.displayName || m.modelId || m.id}</option>
-                    ))}
-                  </select>
-                  <p className="mt-1 text-[10px] text-zinc-500">
-                    留空则自动选择最便宜的 type=text 模型；也可在 agents / agent_providers 中为该智能体配置专属模型池。
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => savePromptOptimizeModel()}
-                  className="rounded-2xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-black hover:bg-emerald-400 transition-colors"
-                >
-                  保存模型设置
                 </button>
               </div>
             </div>

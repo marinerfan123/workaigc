@@ -408,8 +408,8 @@ async function initDB() {
       VALUES ('ops_bot','运营智能体 ops_bot', TRUE, 1000, '{"desc":"自动封禁IP / 错误率告警 / 咨询应答草稿"}')
       ON CONFLICT (key) DO NOTHING;
       INSERT INTO agents (key, name, enabled, config)
-      VALUES ('prompt_optimizer','提示词优化智能体', TRUE, '{"desc":"将用户原始提示词改写为适合图像/视频生成的结构化英文提示词","endpoint":"/api/agent/optimize-prompt"}')
-      ON CONFLICT (key) DO NOTHING;
+      VALUES ('prompt_optimizer','提示词优化智能体', TRUE, '{"desc":"将用户原始提示词改写为适合图像/视频生成的结构化英文提示词","endpoint":"/api/agent/optimize-prompt","skill":"prompt_optimize","skillName":"提示词优化"}')
+      ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, config = EXCLUDED.config;
       INSERT INTO agent_rules (id, name, trigger, condition, action, enabled) VALUES
         ('rule-ban-ip','登录失败封禁','login_fail','{"threshold":20,"window":"ip"}','{"type":"ban_ip"}', TRUE),
         ('rule-error-rate','5xx 错误率告警','error_rate','{"threshold":0.02,"metric":"5xx"}','{"type":"alert"}', TRUE),
