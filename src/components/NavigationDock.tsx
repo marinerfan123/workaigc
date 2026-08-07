@@ -37,6 +37,10 @@ export interface NavMenuItem {
 export interface NavSection {
   title?: string;
   items: NavMenuItem[];
+  /** 是否可折叠为手风琴：点击标题展开/收起其子项，且同一时刻仅一个大类展开 */
+  collapsible?: boolean;
+  /** 默认是否展开（仅 collapsible 生效） */
+  defaultExpanded?: boolean;
 }
 
 export interface NavHeader {
@@ -107,11 +111,14 @@ function DockNavItem({
   collapsed,
   active,
   onNavigate,
+  indent = false,
 }: {
   item: NavMenuItem;
   collapsed: boolean;
   active: boolean;
   onNavigate?: () => void;
+  /** 是否为手风琴展开的子项（缩进显示） */
+  indent?: boolean;
 }) {
   const Icon = item.icon;
   const navigate = useNavigate();
@@ -146,7 +153,11 @@ function DockNavItem({
 
   const className = cn(
     'group flex items-center gap-3 rounded-2xl transition-all duration-200 border',
-    collapsed ? 'justify-center px-2 py-2.5' : 'px-3 py-2.5',
+    collapsed
+      ? 'justify-center px-2 py-2.5'
+      : indent
+        ? 'ml-2 pl-6 pr-3 py-2'
+        : 'px-3 py-2.5',
     active
       ? 'bg-emerald-500/10 text-emerald-300 font-medium border-emerald-500/20'
       : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-white border-transparent',
@@ -331,6 +342,13 @@ function DockBody({
   );
   const visibleBottom = useMemo(() => filterVisible(bottomActions || []), [bottomActions]);
 
+  // 手风琴：同一时刻仅一个可折叠大类展开；默认展开标记为 defaultExpanded 的那个
+  const [openSection, setOpenSection] = useState<string | null>(() => {
+    const def = sections.find((s) => s.collapsible && s.defaultExpanded && s.title);
+    return def ? (def.title as string) : null;
+  });
+  const searching = search.trim().length > 0;
+
   return (
     <>
       {/* 顶部：返回 + 项目/模块标题 */}
@@ -440,29 +458,54 @@ function DockBody({
 
       {/* 导航分组：滚动时隐藏滚动条，保持精致 */}
       <nav className="flex-1 space-y-1 overflow-y-auto px-2 py-2 min-h-0 scrollbar-hidden">
-        {visibleSections.map((section, idx) => (
-          <div key={section.title || `sec-${idx}`}>
-            {!collapsed && section.title && (
-              <div className="mt-3 mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">
-                {section.title}
-              </div>
-            )}
-            {collapsed && section.title && idx === 0 && (
-              <div className="my-2 flex justify-center">
-                <div className="h-px w-6 bg-zinc-800" />
-              </div>
-            )}
-            {section.items.map((item) => (
-              <DockNavItem
-                key={item.key}
-                item={item}
-                collapsed={collapsed}
-                active={isPathActive(item.path, location.pathname, item.end)}
-                onNavigate={onNavigate}
-              />
-            ))}
-          </div>
-        ))}
+        {visibleSections.map((section, idx) => {
+          const sectionKey = section.title || `sec-${idx}`;
+          const isCollapsible = !!section.collapsible && !!section.title && !collapsed;
+          const isOpen = openSection === sectionKey;
+          const showItems = !isCollapsible || isOpen || searching;
+          return (
+            <div key={sectionKey}>
+              {!collapsed && section.title ? (
+                isCollapsible ? (
+                  <button
+                    type="button"
+                    onClick={() => setOpenSection(isOpen ? null : sectionKey)}
+                    className="mt-3 mb-1 flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500 transition-colors hover:text-zinc-200"
+                    aria-expanded={isOpen}
+                  >
+                    <span className="truncate">{section.title}</span>
+                    <ChevronDown
+                      className={cn(
+                        'size-3 shrink-0 transition-transform duration-200',
+                        isOpen && 'rotate-180 text-emerald-400',
+                      )}
+                    />
+                  </button>
+                ) : (
+                  <div className="mt-3 mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">
+                    {section.title}
+                  </div>
+                )
+              ) : null}
+              {collapsed && section.title && idx === 0 && (
+                <div className="my-2 flex justify-center">
+                  <div className="h-px w-6 bg-zinc-800" />
+                </div>
+              )}
+              {showItems &&
+                section.items.map((item) => (
+                  <DockNavItem
+                    key={item.key}
+                    item={item}
+                    collapsed={collapsed}
+                    active={isPathActive(item.path, location.pathname, item.end)}
+                    onNavigate={onNavigate}
+                    indent={isCollapsible && isOpen && !collapsed}
+                  />
+                ))}
+            </div>
+          );
+        })}
       </nav>
 
       {/* 底部分隔 + 动作 + 收起按钮 */}

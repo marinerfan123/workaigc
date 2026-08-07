@@ -15,7 +15,6 @@ import {
   ShieldAlert,
   Wrench,
   Settings2,
-  Trash2,
   LayoutDashboard,
   Bot,
   Users,
@@ -38,16 +37,25 @@ import type { NavigationDockProps, NavSection } from '@/components/NavigationDoc
 // ───────────────────────────────────────────────
 // 全站跨模块导航（每个导航台底部都带，方便任意页面跳转）
 // ───────────────────────────────────────────────
-function globalNavSection(userRole?: string): NavSection {
+function globalNavSection(
+  userRole?: string,
+  opts?: { collapsible?: boolean; excludeWorkspace?: boolean },
+): NavSection {
   const items = [
-    { key: 'global-workspace', label: '工作台', icon: LayoutGrid, path: '/workspace', end: true },
+    ...(opts?.excludeWorkspace
+      ? []
+      : [{ key: 'global-workspace', label: '工作台', icon: LayoutGrid, path: '/workspace', end: true }]),
     { key: 'global-studio', label: '创作工作室', icon: Clapperboard, path: '/studio', end: true },
     { key: 'global-shop', label: 'AI 市集', icon: ShoppingBag, path: '/shop', end: true },
     ...(userRole === 'admin'
       ? [{ key: 'global-admin', label: '管理后台', icon: ShieldAlert, path: '/admin', end: true }]
       : []),
   ];
-  return { title: '全站', items };
+  return {
+    title: '全站',
+    items,
+    ...(opts?.collapsible ? { collapsible: true } : {}),
+  };
 }
 
 // ───────────────────────────────────────────────
@@ -59,20 +67,17 @@ export function workspaceDockConfig(
 ): NavigationDockProps {
   return {
     storageKey: 'workspace',
+    // 不再按项目分栏：头部改为通用模块标题，去掉「重命名/删除项目」等项目级菜单
     header: {
-      title: '东方古典美人项目',
+      title: '工作台',
       backTo: '/',
-      backLabel: '返回总览',
-      menu: [
-        { key: 'rename', label: '重命名', icon: Settings2 },
-        { key: 'trash', label: '查看回收站', icon: Trash2 },
-        { key: 'delete', label: '删除项目', icon: Trash2, danger: true },
-      ],
+      backLabel: '返回主页',
     },
     showSearch: true,
     searchPlaceholder: '搜索',
     sections: [
       {
+        // 置顶常驻：工作台首页入口（始终可见，不折叠）
         items: [
           {
             key: 'workspace',
@@ -85,7 +90,10 @@ export function workspaceDockConfig(
         ],
       },
       {
+        // 主要大类：手风琴，默认展开；点标题展开小类，其余大类自动折叠
         title: '素材库',
+        collapsible: true,
+        defaultExpanded: true,
         items: [
           { key: 'lib-all', label: '全部', icon: LayoutGrid, path: '/library', end: true, count: counts?.total },
           { key: 'lib-image', label: '图片', icon: ImageIcon, path: '/library/image', end: true, count: counts?.image },
@@ -99,11 +107,13 @@ export function workspaceDockConfig(
       },
       {
         title: '管理',
+        collapsible: true,
         items: [
           { key: 'characters', label: '角色管理', icon: User, path: '/characters', end: true },
         ],
       },
-      globalNavSection(userRole),
+      // 全站跳转：手风琴，且不重复放置置顶的「工作台」项
+      globalNavSection(userRole, { collapsible: true, excludeWorkspace: true }),
     ],
     bottomActions: [
       {
