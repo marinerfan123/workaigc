@@ -293,8 +293,8 @@ export function stripBlobItems<T extends { thumbnail?: string }>(items: T[]): T[
  * 旧调用方式（同步返回完整结果）仍兼容：传 `sync: true` 时后端会一次性返回 images。
  */
 export type GenerateResponse =
-  | { status: 'pending'; taskId: string; error?: string }
-  | { status: 'success' | 'failed'; taskId?: string; images?: string[]; error?: string; source?: string; usedProviders?: string[] };
+  | { status: 'pending'; taskId: string; error?: string; code?: string }
+  | { status: 'success' | 'failed'; taskId?: string; images?: string[]; error?: string; source?: string; usedProviders?: string[]; code?: string };
 
 export async function apiGenerate(payload: {
   model: string;
@@ -312,7 +312,13 @@ export async function apiGenerate(payload: {
   try {
     return await apiFetch('/api/generate', { method: 'POST', body: JSON.stringify(payload) }) as GenerateResponse;
   } catch (e) {
-    return { status: 'failed', error: (e instanceof Error ? e.message : String(e)).slice(0, 200), images: [] };
+    const msg = e instanceof Error ? e.message : String(e);
+    // 后端 402 会返回 {status:'failed',error,code}；apiFetch 抛 "API 402: {...}"，这里提取 code 透传，
+    // 供前端区分「不支持奖励且充值不足(NEED_RECHARGE)」与「支持奖励但双池皆不足(INSUFFICIENT)」。
+    let code: string | undefined;
+    const m = msg.match(/^API \d+:\s*(\{[\s\S]*\})\s*$/);
+    if (m) { try { const b = JSON.parse(m[1]); if (b && b.code) code = b.code; } catch {} }
+    return { status: 'failed', error: msg.slice(0, 200), code, images: [] };
   }
 }
 
@@ -444,6 +450,10 @@ export interface AuthUser {
   email: string;
   displayName: string;
   credits: number;
+  /** 奖励余额：平台赠送/活动发放，仅支持奖励余额的模型可用，全局优先扣减 */
+  rewardCredits: number;
+  /** 充值余额：真钱充值，所有模型可用 */
+  rechargeCredits: number;
   role: string;
   plan?: string;
 }
@@ -721,10 +731,10 @@ export async function apiRunSkill(payload: { key: string; input: string; idempot
 
 // ─── 用户侧账务（积分流水 / 充值订单 / 概览）───
 export async function apiMeSummary(): Promise<{
-  credits: number; totalRecharged: number; totalConsumed: number; monthConsumed: number; totalGranted: number;
+  credits: number; rewardCredits: number; rechargeCredits: number; totalRecharged: number; totalConsumed: number; monthConsumed: number; totalGranted: number; totalAdjusted?: number;
 }> {
   try { return await apiFetch('/api/me/summary'); }
-  catch { return { credits: 0, totalRecharged: 0, totalConsumed: 0, monthConsumed: 0, totalGranted: 0 }; }
+  catch { return { credits: 0, rewardCredits: 0, rechargeCredits: 0, totalRecharged: 0, totalConsumed: 0, monthConsumed: 0, totalGranted: 0 }; }
 }
 export interface MeTx {
   id: number; kind: string; amount: number; ref?: string; balanceAfter: number | null; createdAt: string;

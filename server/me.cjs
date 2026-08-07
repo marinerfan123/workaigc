@@ -11,9 +11,12 @@ function createMe(ctx) {
   // 我的账务概览：余额 / 累计充值 / 累计消费 / 本月消费 / 累计发放
   async function summary(user) {
     const p = pg();
-    const u = await p.query('SELECT credits FROM users WHERE id=$1', [user.id]);
+    const u = await p.query('SELECT reward_credits, recharge_credits, credits FROM users WHERE id=$1', [user.id]);
     if (!u.rows.length) throw new Error('用户不存在');
-    const cur = Number(u.rows[0].credits);
+    const row = u.rows[0];
+    const rewardCredits = Number(row.reward_credits) || 0;
+    const rechargeCredits = Number(row.recharge_credits) || 0;
+    const cur = Number(row.credits);
     const recharged = await p.query(
       "SELECT COALESCE(SUM(amount),0) AS s FROM recharge_orders WHERE user_id=$1 AND status='paid'", [user.id]);
     const consumed = await p.query(
@@ -25,6 +28,8 @@ function createMe(ctx) {
     const adjusted = await p.query(
       "SELECT COALESCE(SUM(amount),0) AS s FROM credit_transactions WHERE user_id=$1 AND kind='adjust'", [user.id]);
     return {
+      rewardCredits,
+      rechargeCredits,
       credits: cur,
       totalRecharged: Number(recharged.rows[0].s),
       totalConsumed: Number(consumed.rows[0].s),
@@ -39,7 +44,7 @@ function createMe(ctx) {
     const limit = Math.min(parseInt(query.limit || '30', 10) || 30, 100);
     const offset = parseInt(query.offset || '0', 10) || 0;
     const r = await pg().query(
-      `SELECT id, kind, amount, ref, balance_after, created_at
+      `SELECT id, kind, amount, ref, pool, balance_after, created_at
        FROM credit_transactions WHERE user_id=$1 ORDER BY id DESC LIMIT $2 OFFSET $3`,
       [user.id, limit, offset],
     );
@@ -50,6 +55,7 @@ function createMe(ctx) {
         kind: x.kind,
         amount: Number(x.amount),
         ref: x.ref,
+        pool: x.pool,
         balanceAfter: x.balance_after != null ? Number(x.balance_after) : null,
         createdAt: x.created_at,
       })),

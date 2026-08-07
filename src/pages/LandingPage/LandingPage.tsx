@@ -116,8 +116,8 @@ export default function LandingPage() {
                   onClick={() => setMenuOpen(!menuOpen)}
                   className="flex items-center gap-2 rounded-full bg-white/5 py-1 pl-2 pr-1 transition-colors hover:bg-white/10"
                 >
-                  <span className="shrink-0 rounded-full border border-amber-500/20 bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-400">
-                    {user.credits} 积分
+                  <span className="shrink-0 rounded-full border border-amber-500/20 bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-400" title="奖励余额 / 充值余额">
+                    {user.rewardCredits ?? 0} / {user.rechargeCredits ?? 0}
                   </span>
                   <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 text-xs font-bold text-black">
                     {(user.displayName || user.email || 'U')[0]?.toUpperCase() || 'U'}

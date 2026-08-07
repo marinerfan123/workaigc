@@ -99,15 +99,16 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
 
         {user ? (
           <div className="flex items-center gap-2">
-            {/* 积分 / 充值 */}
+            {/* 双池余额：奖励（平台赠送，限定模型优先扣）+ 充值（真钱，全部可用） */}
             <button
               onClick={() => setRechargeOpen(true)}
-              className="flex h-8 items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 transition-colors"
-              title="充值积分"
+              className="flex h-8 items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 text-xs font-semibold hover:bg-amber-500/20 transition-colors"
+              title="奖励余额（平台赠送/活动发放，限定模型可用，优先扣减）· 充值余额（真钱充值，全部模型可用）。点击充值"
             >
-              <Wallet className="size-3.5" />
-              <span className="tabular-nums">{user.credits}</span>
-              <span className="hidden sm:inline">积分</span>
+              <Wallet className="size-3.5 text-amber-300" />
+              <span className="text-emerald-300 tabular-nums" title="奖励余额">{user.rewardCredits ?? 0}</span>
+              <span className="text-zinc-500">/</span>
+              <span className="text-amber-300 tabular-nums" title="充值余额">{user.rechargeCredits ?? 0}</span>
             </button>
 
             {/* 头像菜单 */}
@@ -143,8 +144,13 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
                       </div>
                       <div className="relative mt-4 flex items-end justify-between">
                         <div>
-                          <div className="text-[11px] text-zinc-500">积分余额</div>
-                          <div className="text-2xl font-bold tabular-nums text-white">{user.credits}</div>
+                          <div className="text-[11px] text-zinc-500">账户余额</div>
+                          <div className="flex items-baseline gap-2 text-2xl font-bold tabular-nums text-white">
+                            <span className="text-emerald-400" title="奖励余额">{user.rewardCredits ?? 0}</span>
+                            <span className="text-zinc-600">/</span>
+                            <span className="text-amber-400" title="充值余额">{user.rechargeCredits ?? 0}</span>
+                          </div>
+                          <div className="mt-0.5 text-[10px] text-zinc-500">奖励 · 充值</div>
                         </div>
                         <button
                           onClick={() => { setMenuOpen(false); setRechargeOpen(true); }}

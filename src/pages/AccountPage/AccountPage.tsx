@@ -190,10 +190,10 @@ export default function AccountPage() {
           {/* 用量概览 */}
           <Card icon={Wallet} title="用量概览">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Stat label="剩余积分" value={user?.credits ?? 0} accent />
+              <Stat label="奖励余额" value={user?.rewardCredits ?? 0} accent />
+              <Stat label="充值余额" value={user?.rechargeCredits ?? 0} accent />
               <Stat label="图片" value={counts?.image ?? 0} />
               <Stat label="视频" value={counts?.video ?? 0} />
-              <Stat label="角色" value={counts?.character ?? 0} />
             </div>
             {summary && (
               <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">

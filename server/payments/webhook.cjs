@@ -133,13 +133,13 @@ function createWebhook(ctx) {
         [channelTradeNo, JSON.stringify({ trade_no: channelTradeNo, money: amount / 100 }), outTradeNo],
       );
       const bal = await client.query(
-        'UPDATE users SET credits=credits+$1 WHERE id=$2 RETURNING credits',
+        'UPDATE users SET recharge_credits=recharge_credits+$1 WHERE id=$2 RETURNING credits',
         [o.amount, o.user_id],
       );
       const newBal = bal.rows[0] ? Number(bal.rows[0].credits) : null;
       await client.query(
-        `INSERT INTO credit_transactions (user_id, kind, amount, ref, balance_after)
-         VALUES ($1,'grant',$2,$3,$4)`,
+        `INSERT INTO credit_transactions (user_id, kind, amount, ref, pool, balance_after)
+         VALUES ($1,'grant',$2,$3,'recharge',$4)`,
         [o.user_id, o.amount, o.id, newBal],
       );
       await client.query(

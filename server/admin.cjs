@@ -45,19 +45,19 @@ function createAdmin(ctx) {
     const amt = Math.floor(Number(amount));
     if (!Number.isFinite(amt) || amt === 0) throw new Error('金额必须为非零整数');
     if (amt < 0) {
-      const cur = await pg().query('SELECT credits FROM users WHERE id=$1', [userId]);
+      const cur = await pg().query('SELECT recharge_credits FROM users WHERE id=$1', [userId]);
       if (!cur.rows.length) throw new Error('用户不存在');
-      if (cur.rows[0].credits + amt < 0) throw new Error('扣减后余额不能为负');
+      if (cur.rows[0].recharge_credits + amt < 0) throw new Error('扣减后余额不能为负');
     }
     const u = await pg().query(
-      'UPDATE users SET credits = credits + $1, updated_at=NOW() WHERE id=$2 RETURNING credits',
+      'UPDATE users SET recharge_credits = recharge_credits + $1, updated_at=NOW() WHERE id=$2 RETURNING credits',
       [amt, userId],
     );
     if (!u.rows.length) throw new Error('用户不存在');
     const newCredits = u.rows[0].credits;
     await pg().query(
-      `INSERT INTO credit_transactions (user_id, kind, amount, ref, balance_after)
-       VALUES ($1,'adjust',$2,$3,(SELECT credits FROM users WHERE id=$1))`,
+      `INSERT INTO credit_transactions (user_id, kind, amount, ref, pool, balance_after)
+       VALUES ($1,'adjust',$2,$3,'recharge',(SELECT credits FROM users WHERE id=$1))`,
       [userId, amt, `admin:${actorId}`],
     );
     await pg().query(

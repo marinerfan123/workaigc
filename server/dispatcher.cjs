@@ -436,15 +436,15 @@ function getArrayByPath(obj, path) {
 // ─── 异步生成：返回 taskId 立即让前端可轮询，状态写入 PG ───
 async function generateAsync(pgPool, opts) {
   if (!pgPool) return { taskId: null, error: '数据库不可用' };
-  const { model, prompt, count, contentType, referenceImages, pendingIds = [], clientMeta = {}, user_id, idempotencyKey, cost = 0 } = opts;
+  const { model, prompt, count, contentType, referenceImages, pendingIds = [], clientMeta = {}, user_id, idempotencyKey, cost = 0, costPool = 'recharge' } = opts;
   // 生成一个稳定 taskId：便于前端 localStorage 持久化关联
   const taskId = `gt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   try {
     await pgPool.query(
       `INSERT INTO generation_tasks
-         (task_id, status, model, prompt, count, content_type, pending_ids, client_meta, user_id, idempotency_key, cost)
-       VALUES ($1, 'running', $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      [taskId, model || '', prompt || '', count || 1, contentType || 'image', pendingIds, clientMeta, user_id || null, idempotencyKey || null, cost || 0],
+         (task_id, status, model, prompt, count, content_type, pending_ids, client_meta, user_id, idempotency_key, cost, cost_pool)
+       VALUES ($1, 'running', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [taskId, model || '', prompt || '', count || 1, contentType || 'image', pendingIds, clientMeta, user_id || null, idempotencyKey || null, cost || 0, costPool || 'recharge'],
     );
   } catch (e) {
     return { taskId: null, error: `写入任务表失败：${e.message}` };
@@ -458,7 +458,7 @@ async function generateAsync(pgPool, opts) {
           // G3 结算点：成功 commit（reserve 已在 /api/generate handler 扣除）。
           // 注意：media 由前端负责写入（含 OSS 上传 + 探活 + 永久化），后端不重复写，
           // 避免双写重复行 + 原始服务商 URL 易过期（与 OSS 永久化目标冲突）。
-          await billing.commitCredits(pgPool, user_id, cost, idempotencyKey);
+          await billing.commitCredits(pgPool, user_id, cost, idempotencyKey, costPool);
           // 双边记账：按 (provider, model) 组记录后台量 vs 客户量（图/视频按资产数；客户收费按产出比例分摊，整体 margin 精确）
           try {
             const groups = (result && result.consumption) || [];
@@ -486,8 +486,8 @@ async function generateAsync(pgPool, opts) {
           await updateTaskStatus(pgPool, taskId, 'running', null, '资源紧张，已进入等待区排队重试', user_id);
           runWaitingPump(pgPool).catch((e) => console.warn('[waiting] pump error:', e.message));
         } else {
-          // 生成失败：释放 held 积分（G3 释放点）
-          await billing.releaseCredits(pgPool, user_id, cost, idempotencyKey);
+          // 生成失败：释放 held 积分（G3 释放点，按池回退）
+          await billing.releaseCredits(pgPool, user_id, cost, idempotencyKey, costPool);
           await pgPool.query(
             `UPDATE generation_tasks SET status=$2, result=$3, error=$4, completed_at=NOW(), user_id=$5
              WHERE task_id=$1`,
@@ -499,8 +499,8 @@ async function generateAsync(pgPool, opts) {
       }
     })
     .catch(async (e) => {
-      // 异常：释放 held 积分
-      await billing.releaseCredits(pgPool, user_id, cost, idempotencyKey).catch(() => {});
+      // 异常：释放 held 积分（按池回退）
+      await billing.releaseCredits(pgPool, user_id, cost, idempotencyKey, costPool).catch(() => {});
       await pgPool.query(
         `UPDATE generation_tasks SET status='failed', error=$2, completed_at=NOW(), user_id=$3
          WHERE task_id=$1`,
@@ -708,8 +708,7 @@ async function runWaitingPump(pgPool) {
         if (WAITING_AREA.get(taskId) !== item) continue; // 已被其它分支移除
         const opts = item.opts;
         if (reason === 'timeout') {
-          // 等待超时：释放 held 积分 + 判失败
-          await billing.releaseCredits(pgPool, opts.user_id, opts.cost, opts.idempotencyKey).catch(() => {});
+          await billing.releaseCredits(pgPool, opts.user_id, opts.cost, opts.idempotencyKey, opts.costPool).catch(() => {});
           await updateTaskStatus(pgPool, taskId, 'failed', null, '等待区超时：资源长时间不可用', opts.user_id);
           WAITING_AREA.delete(taskId);
           continue;
@@ -719,14 +718,13 @@ async function runWaitingPump(pgPool) {
         const result = await generate(pgPool, opts);
         const ok = result && result.status === 'success' && Array.isArray(result.images) && result.images.length;
         if (ok) {
-          await billing.commitCredits(pgPool, opts.user_id, opts.cost, opts.idempotencyKey).catch(() => {});
+          await billing.commitCredits(pgPool, opts.user_id, opts.cost, opts.idempotencyKey, opts.costPool).catch(() => {});
           await updateTaskStatus(pgPool, taskId, 'done', result, null, opts.user_id);
           WAITING_AREA.delete(taskId);
         } else if (result && result.status === 'throttled') {
           // 仍不可用：继续留在等待区，下一轮再试（任务保持 running，前台仍显示"生成中"）
         } else {
-          // 真实失败（非资源问题）：释放积分 + 判失败
-          await billing.releaseCredits(pgPool, opts.user_id, opts.cost, opts.idempotencyKey).catch(() => {});
+          await billing.releaseCredits(pgPool, opts.user_id, opts.cost, opts.idempotencyKey, opts.costPool).catch(() => {});
           await updateTaskStatus(pgPool, taskId, 'failed', result, (result && result.error) || '生成失败', opts.user_id);
           WAITING_AREA.delete(taskId);
         }

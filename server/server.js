@@ -95,7 +95,7 @@ async function initDB() {
   try {
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT DEFAULT 'official', base_url TEXT DEFAULT '', api_key TEXT DEFAULT '', supported_types TEXT[] DEFAULT '{}', enabled BOOLEAN DEFAULT TRUE, protocol TEXT DEFAULT 'openai-compatible', remark TEXT DEFAULT '', default_endpoint JSONB DEFAULT '{}', capacity_model TEXT DEFAULT 'limited', bucket_max INT, cooldown_ms INT DEFAULT 60000, created_at TIMESTAMPTZ DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, mapping_name TEXT DEFAULT '', type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', credit_cost INT DEFAULT 0, max_concurrent INT, created_at TIMESTAMPTZ DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, mapping_name TEXT DEFAULT '', type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', credit_cost INT DEFAULT 0, supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE, reward_credits_required INT NOT NULL DEFAULT 0, max_concurrent INT, created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, title TEXT DEFAULT '', type TEXT DEFAULT 'image', thumbnail TEXT DEFAULT '', full_url TEXT DEFAULT '', prompt TEXT DEFAULT '', model TEXT DEFAULT '', ratio TEXT DEFAULT '1:1', source TEXT DEFAULT 'user', is_favorite BOOLEAN DEFAULT FALSE, is_deleted BOOLEAN DEFAULT FALSE, oss_url TEXT DEFAULT '', oss_object_key TEXT DEFAULT '', oss_uploaded BOOLEAN DEFAULT FALSE, category TEXT DEFAULT 'generated', status TEXT DEFAULT 'success', error_message TEXT DEFAULT '', failed_at TIMESTAMPTZ, file_size BIGINT, created_at TIMESTAMPTZ DEFAULT NOW());
       -- 兼容旧库：缺失列自动补齐
       DO $$ BEGIN
@@ -110,6 +110,43 @@ async function initDB() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='creator') THEN ALTER TABLE models ADD COLUMN creator JSONB DEFAULT '{}'::jsonb; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='commercial_use') THEN ALTER TABLE models ADD COLUMN commercial_use BOOLEAN; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='max_concurrent') THEN ALTER TABLE models ADD COLUMN max_concurrent INT; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='supports_reward_balance') THEN ALTER TABLE models ADD COLUMN supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='reward_credits_required') THEN ALTER TABLE models ADD COLUMN reward_credits_required INT NOT NULL DEFAULT 0; END IF;
+      END $$;
+      -- 双余额拆分迁移：users 加奖励/充值池 + credits 改 STORED 生成列 + 流水记 pool
+      ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS pool TEXT;
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS cost_pool TEXT;
+      DO $$
+      DECLARE v_gen TEXT;
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reward_credits') THEN
+          ALTER TABLE users ADD COLUMN reward_credits INT NOT NULL DEFAULT 0;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='recharge_credits') THEN
+          ALTER TABLE users ADD COLUMN recharge_credits INT NOT NULL DEFAULT 0;
+        END IF;
+        SELECT is_generated INTO v_gen FROM information_schema.columns WHERE table_name='users' AND column_name='credits';
+        IF v_gen IS NOT DISTINCT FROM 'ALWAYS' THEN
+          NULL; -- 已是生成列（新库），无需迁移
+        ELSIF v_gen IS NOT NULL THEN
+          -- 老库：credits 仍是普通列 → 旧余额并入 recharge 池（保留全模型可用性），再转生成列
+          UPDATE users SET recharge_credits = COALESCE(recharge_credits,0) + COALESCE(credits,0)
+           WHERE reward_credits = 0 AND recharge_credits = 0;
+          ALTER TABLE users DROP COLUMN credits;
+          ALTER TABLE users ADD COLUMN credits INT GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED;
+        ELSE
+          -- credits 列缺失（理论不会发生，CREATE 已建）：补生成列
+          ALTER TABLE users ADD COLUMN credits INT GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED;
+        END IF;
+      END $$;
+      -- 存量模型奖励价默认等于充值价（一次性，幂等，settings 标记防重跑覆盖）
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM settings WHERE key='mig_models_reward_v1') THEN
+          UPDATE models SET reward_credits_required = GREATEST(0, COALESCE(credit_cost,0)) WHERE reward_credits_required = 0;
+          INSERT INTO settings (key, value) VALUES ('mig_models_reward_v1', '{"done":true}'::jsonb)
+            ON CONFLICT (key) DO UPDATE SET value='{"done":true}'::jsonb;
+        END IF;
       END $$;
       CREATE TABLE IF NOT EXISTS oss_config (id INTEGER PRIMARY KEY DEFAULT 1, provider TEXT DEFAULT 'aliyun-oss', access_point_name TEXT DEFAULT '', endpoint_external TEXT DEFAULT '', endpoint_internal TEXT DEFAULT '', bucket TEXT DEFAULT '', region TEXT DEFAULT '', region_label TEXT DEFAULT '', access_key_id TEXT DEFAULT '', access_key_secret TEXT DEFAULT '', path_prefix TEXT DEFAULT 'images/', custom_domain TEXT DEFAULT '', enabled BOOLEAN DEFAULT TRUE);
       -- ── 多槽位对象存储（两套 OSS 支持 + 单 active） ──
@@ -176,7 +213,9 @@ async function initDB() {
         email         TEXT UNIQUE NOT NULL,
         display_name  TEXT NOT NULL DEFAULT '',
         password_hash TEXT NOT NULL,
-        credits       INT  NOT NULL DEFAULT ${SIGNUP_BONUS_CREDITS},
+        reward_credits   INT NOT NULL DEFAULT 0,
+        recharge_credits INT NOT NULL DEFAULT 0,
+        credits          INT GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED,
         role          TEXT NOT NULL DEFAULT 'user',
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -550,7 +589,7 @@ async function initDB() {
       const adminEmail = process.env.ADMIN_SEED_EMAIL || 'admin@huabu.local';
       const adminPw = process.env.ADMIN_SEED_PASSWORD;
       await pgPool.query(
-        `INSERT INTO users (id, email, display_name, password_hash, credits, role)
+        `INSERT INTO users (id, email, display_name, password_hash, reward_credits, role)
          VALUES ($1,$2,'平台管理员',$3,1000,'admin')`,
         ['u-' + crypto.randomUUID(), adminEmail, session.hashPassword(adminPw)]
       );
@@ -603,6 +642,8 @@ const SNAKE_MAP = {
   error_message:'errorMessage', failed_at:'failedAt',
   file_size:'fileSize',
   is_default:'isDefault', default_key:'defaultKey', tags:'tags',
+  reward_credits:'rewardCredits', recharge_credits:'rechargeCredits',
+  supports_reward_balance:'supportsRewardBalance', reward_credits_required:'rewardCreditsRequired',
   // ── 多 OSS 槽位扩展 ──
   provider_type:'providerType', display_name:'displayName',
   app_id:'appId', active_id:'activeId',
@@ -947,19 +988,19 @@ async function handleRegister(req, res) {
   const id = 'u-' + crypto.randomUUID();
   const bonus = await resolveSignupBonus();
   await pgPool.query(
-    `INSERT INTO users (id, email, display_name, password_hash, credits, role)
+    `INSERT INTO users (id, email, display_name, password_hash, reward_credits, role)
      VALUES ($1, $2, $3, $4, ${bonus}, 'user')`,
     [id, email, displayName, session.hashPassword(pw)],
   );
-  await pgPool.query( // 注册赠送 50 credits（审计留痕）
-    `INSERT INTO credit_transactions (user_id, kind, amount, ref) VALUES ($1, 'grant', ${bonus}, 'signup-bonus')`,
+  await pgPool.query( // 注册赠送进奖励池（审计留痕）
+    `INSERT INTO credit_transactions (user_id, kind, amount, ref, pool) VALUES ($1, 'grant', ${bonus}, 'signup-bonus', 'reward')`,
     [id],
   );
   // 注册即拷贝公共默认资产到个人素材库（幂等）
   await ensureUserDefaults(id);
   const token = session.signSession({ id, role: 'user' });
   session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
-  return sendJSON(res, 200, { ok: true, user: { id, email, displayName, credits: bonus, role: 'user' } });
+  return sendJSON(res, 200, { ok: true, user: { id, email, displayName, rewardCredits: bonus, rechargeCredits: 0, credits: bonus, role: 'user' } });
 }
 
 async function handleLogin(req, res) {
@@ -974,7 +1015,7 @@ async function handleLogin(req, res) {
   const pw = (body && body.password) || '';
   if (!pgPool) return sendJSON(res, 503, { error: '数据库不可用' });
   const r = await pgPool.query(
-    'SELECT id, email, display_name, password_hash, credits, role FROM users WHERE email=$1', [email]);
+    'SELECT id, email, display_name, password_hash, reward_credits, recharge_credits, credits, role FROM users WHERE email=$1', [email]);
   if (!r.rows.length) return sendJSON(res, 401, { error: '邮箱或密码错误' });
   const u = r.rows[0];
   if (!session.verifyPassword(pw, u.password_hash)) return sendJSON(res, 401, { error: '邮箱或密码错误' });
@@ -985,7 +1026,7 @@ async function handleLogin(req, res) {
   session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
   return sendJSON(res, 200, {
     ok: true,
-    user: { id: u.id, email: u.email, displayName: u.display_name, credits: u.credits, role: u.role },
+    user: { id: u.id, email: u.email, displayName: u.display_name, rewardCredits: u.reward_credits, rechargeCredits: u.recharge_credits, credits: u.credits, role: u.role },
   });
 }
 
@@ -1007,11 +1048,11 @@ async function handleMe(req, res) {
   if (!user) return sendJSON(res, 401, { error: '未登录' });
   if (!pgPool) return sendJSON(res, 503, { error: '数据库不可用' });
   const r = await pgPool.query(
-    'SELECT id, email, display_name, credits, role, plan FROM users WHERE id=$1', [user.id]);
+    'SELECT id, email, display_name, reward_credits, recharge_credits, credits, role, plan FROM users WHERE id=$1', [user.id]);
   if (!r.rows.length) return sendJSON(res, 401, { error: '用户不存在' });
   const u = r.rows[0];
   return sendJSON(res, 200, {
-    user: { id: u.id, email: u.email, displayName: u.display_name, credits: u.credits, role: u.role, plan: u.plan || 'free' },
+    user: { id: u.id, email: u.email, displayName: u.display_name, rewardCredits: u.reward_credits, rechargeCredits: u.recharge_credits, credits: u.credits, role: u.role, plan: u.plan || 'free' },
   });
 }
 
@@ -1088,7 +1129,7 @@ async function handleSetupInit(req, res) {
     // 1) 首个管理员
     const adminId = 'u-' + crypto.randomUUID();
     await client.query(
-      `INSERT INTO users (id, email, display_name, password_hash, credits, role)
+      `INSERT INTO users (id, email, display_name, password_hash, reward_credits, role)
        VALUES ($1,$2,$3,$4,1000,'admin')`,
       [adminId, adminEmail, adminDisplayName, session.hashPassword(adminPassword)]
     );
@@ -1658,8 +1699,8 @@ async function handleAPI(req, res) {
     if (ex.rows.length) {
       const row = ex.rows[0];
       if (row.status === 'failed') {
-        // 失败的可复用同一键重试：先释放旧 held，再删行腾出唯一约束
-        await billing.releaseCredits(pgPool, realUser.id, row.cost || 0, idemKey).catch(() => {});
+        // 失败的可复用同一键重试：先释放旧 held（按原池），再删行腾出唯一约束
+        await billing.releaseCredits(pgPool, realUser.id, row.cost || 0, idemKey, row.cost_pool || 'recharge').catch(() => {});
         await pgPool.query('DELETE FROM generation_tasks WHERE idempotency_key=$1', [idemKey]);
       } else {
         // running/done：直接返回原 taskId，绝不重复 reserve（防双扣）
@@ -1670,20 +1711,32 @@ async function handleAPI(req, res) {
       }
     }
 
-    // 成本解析（L5）：用与 dispatcher 相同的 model 标识查 credit_cost
+    // 成本解析（L5）：查模型计费维度（充值价 + 是否支持奖励 + 奖励价），再解析实际扣费池
     const costRes = await pgPool.query(
-      'SELECT credit_cost FROM models WHERE id=$1 OR model_id=$1 LIMIT 1', [body.model]);
-    const cost = costRes.rows.length ? Number(costRes.rows[0].credit_cost) || 0 : 0;
+      'SELECT credit_cost, supports_reward_balance, reward_credits_required FROM models WHERE id=$1 OR model_id=$1 LIMIT 1', [body.model]);
+    const mrow = costRes.rows[0];
+    const creditCost = mrow ? Number(mrow.credit_cost) || 0 : 0;
+    const supportsReward = mrow ? (mrow.supports_reward_balance === true || mrow.supports_reward_balance === 't' || mrow.supports_reward_balance === 'true') : false;
+    const rewardRequired = mrow ? Math.max(0, Number(mrow.reward_credits_required) || 0) : 0;
+    // 解析实际扣费池（奖励优先；不足回退充值；都不够拦截）。双池账务核心。
+    let pay;
+    try {
+      pay = await billing.resolvePayment(pgPool, realUser.id, { supportsReward, rewardRequired, creditCost });
+    } catch (e) {
+      const code = (e && e.code) || 'NEED_RECHARGE';
+      return sendJSON(res, 402, { status: 'failed', error: e.message || '余额不足', code });
+    }
+    const cost = pay.amount;
 
     // 套餐等级（供 dispatcher 等待区做会员优先调度；缺省 free）
     const planRes = await pgPool.query('SELECT plan FROM users WHERE id=$1', [realUser.id]);
     const userPlan = (planRes.rows[0] && planRes.rows[0].plan) || 'free';
 
-    // reserve（G3 时序：仅在此扣，结算留给 dispatcher 后台回调）
+    // reserve（G3 时序：仅在此扣，结算留给 dispatcher 后台回调）—— 扣到解析出的池
     try {
-      await billing.reserveCredits(pgPool, realUser.id, cost, idemKey);
+      await billing.reserveCredits(pgPool, realUser.id, cost, idemKey, pay.pool);
     } catch (e) {
-      return sendJSON(res, 402, { status: 'failed', error: '积分不足' });
+      return sendJSON(res, 402, { status: 'failed', error: '余额不足', code: 'NEED_RECHARGE' });
     }
 
     const genOpts = {
@@ -1698,6 +1751,7 @@ async function handleAPI(req, res) {
       user_id: realUser.id,
       idempotencyKey: idemKey,
       cost,
+      costPool: pay.pool,
       userPlan,
       clientMeta: {
         ratio: body.ratio || '1:1',
@@ -1710,7 +1764,7 @@ async function handleAPI(req, res) {
       try {
         const result = await dispatcher.generate(pgPool, genOpts);
         if (result && result.status === 'success') {
-          await billing.commitCredits(pgPool, realUser.id, cost, idemKey);
+          await billing.commitCredits(pgPool, realUser.id, cost, idemKey, pay.pool);
           // 双边记账（sync 路径）：按 (provider, model) 组记录后台量 vs 客户量
           try {
             const groups = (result && result.consumption) || [];
@@ -1726,11 +1780,11 @@ async function handleAPI(req, res) {
             }
           } catch (e) { console.warn('[accounting generate-sync]', e.message); }
         } else {
-          await billing.releaseCredits(pgPool, realUser.id, cost, idemKey).catch(() => {});
+          await billing.releaseCredits(pgPool, realUser.id, cost, idemKey, pay.pool).catch(() => {});
         }
         return sendJSON(res, 200, result);
       } catch (e) {
-        await billing.releaseCredits(pgPool, realUser.id, cost, idemKey).catch(() => {});
+        await billing.releaseCredits(pgPool, realUser.id, cost, idemKey, pay.pool).catch(() => {});
         return sendJSON(res, 200, { status: 'failed', error: `分发异常：${(e && e.message) || String(e)}` });
       }
     }
@@ -1738,12 +1792,12 @@ async function handleAPI(req, res) {
     try {
       const { taskId, error } = await dispatcher.generateAsync(pgPool, genOpts);
       if (error) {
-        await billing.releaseCredits(pgPool, realUser.id, cost, idemKey).catch(() => {});
+        await billing.releaseCredits(pgPool, realUser.id, cost, idemKey, pay.pool).catch(() => {});
         return sendJSON(res, 200, { status: 'failed', error });
       }
       return sendJSON(res, 200, { status: 'pending', taskId });
     } catch (e) {
-      await billing.releaseCredits(pgPool, realUser.id, cost, idemKey).catch(() => {});
+      await billing.releaseCredits(pgPool, realUser.id, cost, idemKey, pay.pool).catch(() => {});
       return sendJSON(res, 200, { status: 'failed', error: `分发异常：${(e && e.message) || String(e)}` });
     }
   }
@@ -1961,8 +2015,8 @@ async function handleAPI(req, res) {
         for (const it of arr) {
           const s = toSnake(it);
           await pgPool.query(
-            `INSERT INTO models (id,model_id,display_name,mapping_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint,credit_cost,max_concurrent,estimated_seconds,category,commercial_use,creator) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name,mapping_name=EXCLUDED.mapping_name,enabled=EXCLUDED.enabled,credit_cost=EXCLUDED.credit_cost,max_concurrent=EXCLUDED.max_concurrent,estimated_seconds=EXCLUDED.estimated_seconds,category=EXCLUDED.category,commercial_use=EXCLUDED.commercial_use,creator=EXCLUDED.creator`,
-            [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, s.provider_id, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0)), (s.max_concurrent == null ? null : Math.max(0, Math.floor(Number(s.max_concurrent)))), (s.estimated_seconds == null ? null : Math.max(0, Math.floor(Number(s.estimated_seconds)))), (s.category == null ? '' : String(s.category)), (s.commercial_use === true || s.commercial_use === 'true' ? true : (s.commercial_use === false || s.commercial_use === 'false' ? false : null)), (s.creator && typeof s.creator === 'object' ? JSON.stringify(s.creator) : (s.creator == null ? null : JSON.stringify(s.creator)))]
+            `INSERT INTO models (id,model_id,display_name,mapping_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint,credit_cost,supports_reward_balance,reward_credits_required,max_concurrent,estimated_seconds,category,commercial_use,creator) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name,mapping_name=EXCLUDED.mapping_name,enabled=EXCLUDED.enabled,credit_cost=EXCLUDED.credit_cost,supports_reward_balance=EXCLUDED.supports_reward_balance,reward_credits_required=EXCLUDED.reward_credits_required,max_concurrent=EXCLUDED.max_concurrent,estimated_seconds=EXCLUDED.estimated_seconds,category=EXCLUDED.category,commercial_use=EXCLUDED.commercial_use,creator=EXCLUDED.creator`,
+            [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, s.provider_id, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0)), (s.supports_reward_balance === true || s.supports_reward_balance === 'true' ? true : (s.supports_reward_balance === false || s.supports_reward_balance === 'false' ? false : true)), (s.reward_credits_required != null && s.reward_credits_required !== '' ? Math.max(0, Math.floor(Number(s.reward_credits_required))) : Math.max(0, Math.floor(Number(s.credit_cost) || 0))), (s.max_concurrent == null ? null : Math.max(0, Math.floor(Number(s.max_concurrent)))), (s.estimated_seconds == null ? null : Math.max(0, Math.floor(Number(s.estimated_seconds)))), (s.category == null ? '' : String(s.category)), (s.commercial_use === true || s.commercial_use === 'true' ? true : (s.commercial_use === false || s.commercial_use === 'false' ? false : null)), (s.creator && typeof s.creator === 'object' ? JSON.stringify(s.creator) : (s.creator == null ? null : JSON.stringify(s.creator)))]
           );
         }
         return sendJSON(res, 200, { ok: true });
@@ -1986,17 +2040,24 @@ async function handleAPI(req, res) {
     // 字段白名单：snake 列名 → camel 前端字段名
     const allowed = {
       display_name: 'displayName', mapping_name: 'mappingName', type: 'type', enabled: 'enabled',
-      credit_cost: 'creditCost', max_concurrent: 'maxConcurrent', estimated_seconds: 'estimatedSeconds',
+      credit_cost: 'creditCost', supports_reward_balance: 'supportsRewardBalance', reward_credits_required: 'rewardCreditsRequired',
+      max_concurrent: 'maxConcurrent', estimated_seconds: 'estimatedSeconds',
       category: 'category', commercial_use: 'commercialUse', creator: 'creator',
     };
     if (!pgPool) return sendJSON(res, 501, { error: 'JSON 兜底模式不支持 PATCH' });
     try {
+      // 先读现状，用于「必须填写奖励积分」的校验
+      const exist = await pgPool.query('SELECT supports_reward_balance, reward_credits_required FROM models WHERE id=$1', [id]);
+      if (!exist.rows[0]) return sendJSON(res, 404, { error: '模型不存在' });
+      const cur = exist.rows[0];
       const sets = []; const vals = [id]; let i = 2;
       for (const [col, camel] of Object.entries(allowed)) {
         if (!(camel in patch)) continue;
         let v = patch[camel];
         if (col === 'enabled') v = v !== false;
         else if (col === 'credit_cost') v = Math.max(0, Math.floor(Number(v) || 0));
+        else if (col === 'supports_reward_balance') v = (v === true || v === 'true' || v === 1) ? true : (v === false || v === 'false' || v === 0 ? false : true);
+        else if (col === 'reward_credits_required') v = (v == null || v === '' || Number.isNaN(Number(v))) ? 0 : Math.max(0, Math.floor(Number(v)));
         else if (col === 'max_concurrent') v = (v == null || v === '' || Number.isNaN(Number(v))) ? null : Math.max(0, Math.floor(Number(v)));
         else if (col === 'estimated_seconds') v = (v == null || v === '') ? null : Math.max(0, Math.floor(Number(v)));
         else if (col === 'commercial_use') v = (v === true || v === 'true' || v === 1) ? true : (v === false || v === 'false' || v === 0 ? false : null);
@@ -2006,6 +2067,12 @@ async function handleAPI(req, res) {
         else if (col === 'type') v = v == null ? 'image' : String(v);
         else if (col === 'display_name') v = String(v);
         sets.push(`${col}=$${i++}`); vals.push(v);
+      }
+      // 校验：支持奖励余额的模型「必须填写」奖励积分(>0)
+      const willSupportReward = ('supportsRewardBalance' in patch) ? (patch.supportsRewardBalance === true || patch.supportsRewardBalance === 'true' || patch.supportsRewardBalance === 1) : (cur.supports_reward_balance === true || cur.supports_reward_balance === 't');
+      const rewardVal = ('rewardCreditsRequired' in patch) ? Math.max(0, Math.floor(Number(patch.rewardCreditsRequired) || 0)) : Number(cur.reward_credits_required) || 0;
+      if (willSupportReward && rewardVal <= 0) {
+        return sendJSON(res, 400, { error: '支持奖励余额的模型必须填写奖励积分（且需大于 0）' });
       }
       if (sets.length === 0) return sendJSON(res, 400, { error: '无可更新字段' });
       await pgPool.query(`UPDATE models SET ${sets.join(', ')} WHERE id=$1`, vals);

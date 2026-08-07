@@ -112,6 +112,9 @@ export default function ModelHubPage() {
   const [editDisplayName, setEditDisplayName] = useState('');
   const [editMappingName, setEditMappingName] = useState('');
   const [editCreditCost, setEditCreditCost] = useState<number>(0);
+  // 双池账务：是否支持奖励余额 + 支持时的奖励价（必须 > 0）
+  const [editSupportsReward, setEditSupportsReward] = useState(true);
+  const [editRewardCreditsRequired, setEditRewardCreditsRequired] = useState<number>(0);
 
   // 表单状态
   const [formName, setFormName] = useState('');
@@ -1266,9 +1269,17 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                       已映射
                                     </span>
                                   )}
+                                  {group.supportsRewardBalance !== false && (
+                                    <span
+                                      title={`支持奖励余额：单次需 ${typeof group.rewardCreditsRequired === 'number' && group.rewardCreditsRequired > 0 ? group.rewardCreditsRequired : (group.creditCost || 0)} 奖励积分（全局优先扣）`}
+                                      className="ml-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle"
+                                    >
+                                      奖 {typeof group.rewardCreditsRequired === 'number' && group.rewardCreditsRequired > 0 ? group.rewardCreditsRequired : (group.creditCost || 0)}
+                                    </span>
+                                  )}
                                   {group.creditCost > 0 && (
                                     <span
-                                      title={`单次生成消耗 ${group.creditCost} 积分`}
+                                      title={`单次生成消耗 ${group.creditCost} 积分（充值价）`}
                                       className="ml-1.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle"
                                     >
                                       {group.creditCost} 积分
@@ -1302,6 +1313,12 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                     setEditDisplayName(group.displayName || '');
                                     setEditMappingName(rep?.mappingName || '');
                                     setEditCreditCost(typeof rep?.creditCost === 'number' ? rep.creditCost : 0);
+                                    setEditSupportsReward(rep?.supportsRewardBalance !== false);
+                                    setEditRewardCreditsRequired(
+                                      typeof rep?.rewardCreditsRequired === 'number' && rep.rewardCreditsRequired > 0
+                                        ? rep.rewardCreditsRequired
+                                        : (typeof rep?.creditCost === 'number' ? rep.creditCost : 0),
+                                    );
                                   }
                                 }}
                                 title={isEditing ? '取消编辑' : '编辑名称 / 映射名 / 积分'}
@@ -1405,6 +1422,47 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                   前台下拉和详情会显示此值。同一 modelId 多供应商时，整组同步；提交 N 张请求时实际扣 N × 此值。
                                 </p>
                               </div>
+                              {/* 双池账务：支持奖励余额开关 + 奖励价（必须 > 0） */}
+                              <div>
+                                <label className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-zinc-500">
+                                  <span>支持奖励余额</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditSupportsReward((v) => !v)}
+                                    className={`relative h-5 w-9 rounded-full transition-colors ${editSupportsReward ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+                                    title="开启后，该模型可用奖励积分支付（平台赠送/活动发放），全局优先扣奖励"
+                                  >
+                                    <span className={`absolute top-0.5 size-4 rounded-full bg-white transition-all ${editSupportsReward ? 'left-[18px]' : 'left-0.5'}`} />
+                                  </button>
+                                </label>
+                                <p className="mt-1 text-[10px] text-zinc-500">
+                                  开启：用户可用奖励积分支付（优先扣减）。关闭：只能用充值余额。
+                                </p>
+                              </div>
+                              <div>
+                                <label className="mb-1 block text-[10px] uppercase tracking-wider text-zinc-500">
+                                  奖励积分（单次生成，必填 &gt; 0）
+                                </label>
+                                <div className="flex items-center gap-1.5">
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    step={1}
+                                    disabled={!editSupportsReward}
+                                    value={Number.isFinite(editRewardCreditsRequired) ? editRewardCreditsRequired : 0}
+                                    onChange={(e) => {
+                                      const v = parseInt(e.target.value, 10);
+                                      setEditRewardCreditsRequired(Number.isFinite(v) && v >= 0 ? v : 0);
+                                    }}
+                                    placeholder="0"
+                                    className="w-24 rounded-lg border border-zinc-700 bg-zinc-800/60 px-2 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none disabled:opacity-40"
+                                  />
+                                  <span className="text-[10px] text-zinc-500">奖励积分 / 张</span>
+                                </div>
+                                <p className="mt-1 text-[10px] text-zinc-500">
+                                  支持奖励余额时必填且需大于 0；未填写将按充值价（{typeof group.creditCost === 'number' ? group.creditCost : 0}）兜底。
+                                </p>
+                              </div>
                               <div className="flex items-center justify-end gap-1.5 pt-1">
                                 <button
                                   onClick={() => setEditingGroupId(null)}
@@ -1417,10 +1475,26 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                     const newDisplay = editDisplayName.trim() || group.displayName || group.modelId;
                                     const newMapping = editMappingName.trim();
                                     const newCost = Math.max(0, Math.floor(Number(editCreditCost) || 0));
+                                    const newSupportsReward = editSupportsReward;
+                                    const newRewardRequired = newSupportsReward
+                                      ? Math.max(1, Math.floor(Number(editRewardCreditsRequired) || 0))
+                                      : 0;
+                                    // 必填校验：支持奖励余额时，奖励积分必须 > 0
+                                    if (newSupportsReward && newRewardRequired <= 0) {
+                                      toast.error('支持奖励余额的模型必须填写奖励积分（且需大于 0）');
+                                      return;
+                                    }
                                     setModels((prev) =>
                                       prev.map((m) =>
                                         m.modelId === group.modelId
-                                          ? { ...m, displayName: newDisplay, mappingName: newMapping, creditCost: newCost }
+                                          ? {
+                                              ...m,
+                                              displayName: newDisplay,
+                                              mappingName: newMapping,
+                                              creditCost: newCost,
+                                              supportsRewardBalance: newSupportsReward,
+                                              rewardCreditsRequired: newRewardRequired,
+                                            }
                                           : m,
                                       ),
                                     );
