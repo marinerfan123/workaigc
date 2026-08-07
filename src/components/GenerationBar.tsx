@@ -106,6 +106,8 @@ interface GenerationBarProps {
   referenceImages: string[];
   onRemoveReference: (url: string) => void;
   onAddReference: () => void;
+  /** 外部（配方 / 变体）触发时，把参考图写回父级 state（变体要把示例缩略图当参考图） */
+  onSetReferenceImages?: (urls: string[]) => void;
   generating: boolean;
   setGenerating: (v: boolean) => void;
   prompt: string;
@@ -119,11 +121,24 @@ export interface RetryPayload {
   ratio: string;
 }
 
-/** 父级通过 ref 触发重试的 imperative handle */
+/** 父级通过 ref 触发「配方预填 / 变体生成」的参数 */
+export interface GenerationPayload {
+  prompt: string;
+  model: string;
+  ratio: string;
+  /** 变体 / Remix：把示例缩略图当作参考图传入（不传则纯预填配方） */
+  referenceImages?: string[];
+  /** 是否立即触发生成（默认 true：一键复刻 / 一键变体） */
+  auto?: boolean;
+}
+
+/** 父级通过 ref 触发重试 / 配方 / 变体的 imperative handle */
 export interface GenerationBarHandle {
   retry: (payload: RetryPayload) => void;
   /** 聚焦底部提示词输入框（供空状态「立即创作」CTA 使用） */
   focusInput: () => void;
+  /** 配方预填 + 可选变体参考图（T1 配方复用 / T2 变体 Remix） */
+  generate: (payload: GenerationPayload) => void;
 }
 
 function GenerationBar({
@@ -134,6 +149,7 @@ function GenerationBar({
   referenceImages,
   onRemoveReference,
   onAddReference,
+  onSetReferenceImages,
   generating,
   setGenerating,
   prompt,
@@ -173,13 +189,18 @@ function GenerationBar({
   const { config: ossConfig, uploadFile: uploadToOss, buildOssUrl } = useOssConfig();
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // ── 重试 imperative handle：父级通过 ref.current.retry({prompt,model,ratio}) 触发 ──
-  const pendingRetryRef = useRef<RetryPayload | null>(null);
-  const retryingRef = useRef(false);
-  // 锁住 handleGenerate 最新引用（避免 useEffect 闭包陷阱）
-  // 注意：handleGenerate 自身在本组件下方声明，不能在组件顶层提前读它（TDZ）。
-  // 改在 handleGenerate 函数体首行自我注册到 ref.current。
-  const handleGenerateRef = useRef<() => Promise<void>>(async () => {});
+  // ── 重试 / 配方 / 变体 imperative handle ──
+  // 全部走 ref（而非 useEffect 依赖 state），避免父级回调身份变化导致 effect 重跑取消定时器。
+  const handleGenerateRef = useRef<(overrides?: { referenceImages?: string[] }) => Promise<void>>(async () => {});
+  // 把会被 imperative 方法用到的「最新值 / 回调」放进 ref，确保调用时拿到当前渲染的最新版本
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const onPromptChangeRef = useRef(onPromptChange);
+  onPromptChangeRef.current = onPromptChange;
+  const onSettingsChangeRef = useRef(onSettingsChange);
+  onSettingsChangeRef.current = onSettingsChange;
+  const onSetReferenceImagesRef = useRef(onSetReferenceImages);
+  onSetReferenceImagesRef.current = onSetReferenceImages;
 
   // ── 持久化：把进行中的 taskId+pending 写入 localStorage，刷新后能恢复 ──
   // 跨页面/刷新后由下方 useEffect 读取并续上轮询
@@ -379,32 +400,31 @@ function GenerationBar({
 
   useImperativeHandle(ref, () => ({
     retry: (payload: RetryPayload) => {
-      pendingRetryRef.current = payload;
+      // 直接编排：预填 prompt + model + ratio，延时后触发生成。
+      // 不依赖 useEffect，避免父级回调身份变化导致定时器被取消。
+      onPromptChangeRef.current(payload.prompt);
+      onSettingsChangeRef.current({ ...settingsRef.current, model: payload.model, ratio: payload.ratio });
+      setTimeout(() => {
+        handleGenerateRef.current();
+      }, 120);
     },
     focusInput: () => {
       inputRef.current?.focus();
     },
+    generate: (payload: GenerationPayload) => {
+      // T1 配方复用：预填 prompt + model + ratio（一键复刻）
+      // T2 变体 Remix：额外把示例缩略图当参考图传入 apiGenerate
+      onPromptChangeRef.current(payload.prompt);
+      onSettingsChangeRef.current({ ...settingsRef.current, model: payload.model, ratio: payload.ratio });
+      if (payload.referenceImages && payload.referenceImages.length > 0) {
+        onSetReferenceImagesRef.current?.(payload.referenceImages);
+      }
+      setTimeout(() => {
+        // auto=false 时只预填不生成；否则立即生成（一键复刻 / 一键变体）
+        handleGenerateRef.current(payload.auto === false ? undefined : { referenceImages: payload.referenceImages });
+      }, 120);
+    },
   }), []);
-
-  useEffect(() => {
-    const payload = pendingRetryRef.current;
-    if (!payload) return;
-    if (retryingRef.current) return;
-    retryingRef.current = true;
-    pendingRetryRef.current = null;
-    // 1. 写 prompt
-    onPromptChange(payload.prompt);
-    // 2. 更新 settings（model+ratio）
-    onSettingsChange({ ...settings, model: payload.model, ratio: payload.ratio });
-    // 3. 等 React state 完成更新后调 handleGenerate
-    const tid = setTimeout(() => {
-      handleGenerateRef.current().finally(() => {
-        // 给后端分发、OSS 上传、UI 状态重置留时间，再释放锁
-        setTimeout(() => { retryingRef.current = false; }, 300);
-      });
-    }, 80);
-    return () => clearTimeout(tid);
-  }, [settings, onPromptChange, onSettingsChange]);
 
   // 类型切换 + 模型列表变化时，自动校准默认模型
   useEffect(() => {
@@ -568,9 +588,14 @@ function GenerationBar({
     });
   };
 
-  const handleGenerate = async () => {
+  const handleGenerate = async (overrides?: { referenceImages?: string[] }) => {
     // 自我注册到 ref（避免在组件顶层读未初始化的 const，绕过 TDZ）
     handleGenerateRef.current = handleGenerate;
+
+    // 变体 Remix：优先用外部传入的参考图（示例缩略图），否则用当前参考图 state
+    const effectiveRefs = overrides?.referenceImages?.length
+      ? overrides.referenceImages
+      : referenceImages;
 
     if (!promptText.trim()) {
       toast.error('请先输入提示词', { duration: 3000 });
@@ -636,7 +661,7 @@ function GenerationBar({
           quality: settings.quality,
           count,
           contentType: settings.contentType,
-          referenceImages: referenceImages && referenceImages.length > 0 ? referenceImages : undefined,
+          referenceImages: effectiveRefs.length > 0 ? effectiveRefs : undefined,
           pendingIds,
           idempotencyKey,
         });
@@ -674,7 +699,7 @@ function GenerationBar({
             resolution: settings.resolution || '1k',
             count,
             contentType: settings.contentType,
-            referenceImages: referenceImages && referenceImages.length > 0 ? referenceImages : undefined,
+            referenceImages: effectiveRefs.length > 0 ? effectiveRefs : undefined,
             createdAt: new Date(now).toISOString(),
           });
           // 在本会话内启动轮询（这条 promise 完了就移除持久化条目）

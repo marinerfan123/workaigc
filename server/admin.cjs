@@ -317,9 +317,19 @@ function createAdmin(ctx) {
   // ───────────────────────── 示例库（运营维护，推送给顾客） ─────────────────────────
   // 数据源：default_assets 表（全局示例模板）。顾客通过 ensureUserDefaults 在注册/登录时
   // 自动获得副本（is_default=TRUE）；本模块提供后台 CRUD + 手动一键推送。
+
+  // 把 tags 入参归一化为 JSONB 存储字符串（接受数组 / 逗号分隔字符串）
+  function normalizeTags(v) {
+    if (Array.isArray(v)) return JSON.stringify(v.filter(Boolean).map(String));
+    if (typeof v === 'string' && v.trim()) {
+      return JSON.stringify(v.split(',').map((s) => s.trim()).filter(Boolean));
+    }
+    return '[]';
+  }
+
   async function listSamples() {
     const r = await pg().query(
-      'SELECT id,key,title,type,thumbnail,full_url,prompt,model,ratio,category,status,sort,created_at FROM default_assets ORDER BY sort ASC, created_at ASC');
+      'SELECT id,key,title,type,thumbnail,full_url,prompt,model,ratio,category,status,sort,tags,created_at FROM default_assets ORDER BY sort ASC, created_at ASC');
     return { samples: r.rows };
   }
 
@@ -339,9 +349,9 @@ function createAdmin(ctx) {
     const ex = await pg().query('SELECT 1 FROM default_assets WHERE key=$1', [key]);
     if (ex.rows.length) throw new Error('示例 key 已存在：' + key);
     await pg().query(
-      `INSERT INTO default_assets (id,key,title,type,thumbnail,full_url,prompt,model,ratio,source,category,status,sort)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'default',$10,$11,$12)`,
-      [id, key, title, type, thumbnail, fullUrl, prompt, model, ratio, category, status, sort]
+      `INSERT INTO default_assets (id,key,title,type,thumbnail,full_url,prompt,model,ratio,source,category,status,sort,tags)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'default',$10,$11,$12,$13::jsonb)`,
+      [id, key, title, type, thumbnail, fullUrl, prompt, model, ratio, category, status, sort, normalizeTags(body.tags)]
     );
     return { ok: true, id, key };
   }
@@ -362,6 +372,11 @@ function createAdmin(ctx) {
     if (body.prompt !== undefined) set('prompt', body.prompt);
     if (body.status !== undefined) set('status', body.status);
     if (body.sort !== undefined) set('sort', Number.isFinite(+body.sort) ? +body.sort : 0);
+    if (body.tags !== undefined) {
+      fields.push(`tags=$${i}::jsonb`);
+      vals.push(normalizeTags(body.tags));
+      i++;
+    }
     if (fields.length === 0) return { ok: true, noop: true };
     vals.push(id);
     await pg().query(`UPDATE default_assets SET ${fields.join(',')} WHERE id=$${i}`, vals);
@@ -388,11 +403,11 @@ function createAdmin(ctx) {
           if (ex.rows.length) continue;
           const mid = 'def-' + crypto.randomUUID();
           await pg().query(
-            `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,created_at,user_id,is_default,default_key)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'default',FALSE,FALSE,$9,$10,$11,$12,$13,$14,NULL,$15,$16,TRUE,$17)`,
+            `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,created_at,user_id,is_default,default_key,tags)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'default',FALSE,FALSE,$9,$10,$11,$12,$13,$14,NULL,$15,$16,TRUE,$17,$18::jsonb)`,
             [mid, t.title, t.type, t.thumbnail, t.full_url || t.thumbnail, t.prompt, t.model, t.ratio,
              t.oss_url || '', t.oss_object_key || '', t.oss_uploaded || false, t.category, t.status || 'success', t.error_message || '',
-             t.created_at || new Date().toISOString(), u.id, t.key]
+             t.created_at || new Date().toISOString(), u.id, t.key, JSON.stringify(t.tags || [])]
           );
           copied++; perUser++;
         } catch (e) {

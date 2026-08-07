@@ -10,6 +10,8 @@ import {
   Maximize2,
   Ruler,
   HardDrive,
+  Sparkles,
+  Wand2,
 } from 'lucide-react';
 import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
@@ -37,6 +39,10 @@ interface ImageViewerProps {
   currentIndex: number;
   onClose: () => void;
   onIndexChange: (index: number) => void;
+  /** 示例配方复用（T1）：用当前图 prompt + model + ratio 一键复刻 */
+  onUseRecipe?: (item: IMediaItem) => void;
+  /** 示例变体生成（T2）：把当前图当参考图生成同源变体 */
+  onRemix?: (item: IMediaItem) => void;
 }
 
 export default function ImageViewer({
@@ -44,6 +50,8 @@ export default function ImageViewer({
   currentIndex,
   onClose,
   onIndexChange,
+  onUseRecipe,
+  onRemix,
 }: ImageViewerProps) {
   const [scale, setScale] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
@@ -261,6 +269,30 @@ export default function ImageViewer({
           </button>
 
           <div className="mx-2 h-5 w-px bg-zinc-700" />
+          {onUseRecipe && (
+            <button
+              type="button"
+              onClick={() => onUseRecipe(current)}
+              className="flex h-9 items-center gap-1.5 rounded-full bg-zinc-800/60 px-3 text-zinc-300 hover:bg-emerald-500/20 hover:text-emerald-300 transition-colors"
+              title="使用此配方创作（预填 prompt + 模型 + 比例，一键复刻）"
+            >
+              <Sparkles className="size-4" />
+              <span className="text-xs">配方</span>
+            </button>
+          )}
+          {onRemix && (
+            <button
+              type="button"
+              onClick={() => onRemix(current)}
+              className="flex h-9 items-center gap-1.5 rounded-full bg-zinc-800/60 px-3 text-zinc-300 hover:bg-emerald-500/20 hover:text-emerald-300 transition-colors"
+              title="生成变体（把当前图当参考图，输出同源变体）"
+            >
+              <Wand2 className="size-4" />
+              <span className="text-xs">变体</span>
+            </button>
+          )}
+
+          <div className="mx-2 h-5 w-px bg-zinc-700" />
 
           <button
             type="button"
@@ -358,6 +390,20 @@ export default function ImageViewer({
               ? formatBytes(current.fileSize)
               : (estimateBytes(dims?.w, dims?.h) || '— KB') + (dims ? '（估）' : '')}
           </span>
+          {current.source === 'default' && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-2 py-0.5 text-sm font-semibold text-emerald-300 border border-emerald-500/20" title="平台示例（一键复刻 / 变体）">
+              <Sparkles className="size-3.5" />示例
+            </span>
+          )}
+          {current.tags && current.tags.length > 0 && (
+            <>
+              {current.tags.map((t) => (
+                <span key={t} className="inline-flex items-center rounded-md bg-zinc-800/60 px-2 py-0.5 text-sm text-zinc-300 border border-zinc-700/50">
+                  #{t}
+                </span>
+              ))}
+            </>
+          )}
           <span className="text-zinc-700">·</span>
           <span className="text-sm text-zinc-400">
             {current.createdAt

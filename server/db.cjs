@@ -86,6 +86,7 @@ async function initDB() {
         oss_uploaded BOOLEAN DEFAULT FALSE,
         category TEXT DEFAULT 'generated',
         file_size BIGINT,
+        tags JSONB DEFAULT '[]',
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 

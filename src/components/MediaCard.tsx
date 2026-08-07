@@ -19,6 +19,7 @@ import {
   AlertCircle,
   RotateCw,
   Loader2,
+  Wand2,
   X,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -37,6 +38,10 @@ interface MediaCardProps {
   onDelete: (id: string) => void;
   onRetry?: (item: IMediaItem) => void;
   onAddAsReference?: (url: string) => void;
+  /** 示例配方复用（T1）：用该图的 prompt + model + ratio 一键复刻 */
+  onUseRecipe?: (item: IMediaItem) => void;
+  /** 示例变体生成（T2）：把该图当参考图生成同源变体 */
+  onRemix?: (item: IMediaItem) => void;
   /**
    * 探测图片失败时回调（父级汇总 id 写后端）。
    * 命中条件：item.status 不是 'failed' 但图片 URL 实际加载失败（破图/404/超时）。
@@ -55,6 +60,8 @@ export default function MediaCard({
   onRetry,
   onProbeFailed,
   onAddAsReference,
+  onUseRecipe,
+  onRemix,
   gridSize,
 }: MediaCardProps) {
   const [moreOpen, setMoreOpen] = useState(false);
@@ -148,7 +155,8 @@ export default function MediaCard({
 
   const moreItems = [
     { icon: Heart, label: item.isFavorite ? '取消收藏' : '收藏' },
-    { icon: Sparkles, label: '重复使用提示' },
+    ...(onUseRecipe && !isPending && !isFailed ? [{ icon: Sparkles, label: '使用此配方创作' }] : []),
+    ...(onRemix && !isPending && !isFailed ? [{ icon: Wand2, label: '生成变体' }] : []),
     { icon: Film, label: '添加动画效果' },
     { icon: ImagePlus, label: '添加为参考图' },
     { icon: Download, label: '下载' },
@@ -436,6 +444,8 @@ export default function MediaCard({
                     if (mi.label === '移至回收站') onDelete(item.id);
                     if (mi.label === '收藏' || mi.label === '取消收藏') onToggleFavorite(item.id);
                     if (mi.label === '添加为参考图' && onAddAsReference) onAddAsReference(item.fullUrl);
+                    if (mi.label === '使用此配方创作' && onUseRecipe) onUseRecipe(item);
+                    if (mi.label === '生成变体' && onRemix) onRemix(item);
                     closeMenu();
                   }}
                   className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs transition-colors ${

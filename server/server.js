@@ -213,10 +213,12 @@ async function initDB() {
         category TEXT DEFAULT 'generated',
         status TEXT DEFAULT 'success',
         sort INT DEFAULT 0,
+        tags JSONB DEFAULT '[]'::jsonb,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
       ALTER TABLE media ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE;
       ALTER TABLE media ADD COLUMN IF NOT EXISTS default_key TEXT;
+      ALTER TABLE media ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb;
       CREATE INDEX IF NOT EXISTS ix_media_default ON media(user_id, default_key) WHERE default_key IS NOT NULL;
     `);
 
@@ -468,6 +470,7 @@ const SNAKE_MAP = {
   path_prefix:'pathPrefix', custom_domain:'customDomain', region_label:'regionLabel',
   error_message:'errorMessage', failed_at:'failedAt',
   file_size:'fileSize',
+  is_default:'isDefault', default_key:'defaultKey', tags:'tags',
   // ── 多 OSS 槽位扩展 ──
   provider_type:'providerType', display_name:'displayName',
   app_id:'appId', active_id:'activeId',
@@ -494,23 +497,23 @@ function toSnake(obj) {
 // 初始为本地 SVG 示例素材（public/samples），保证 dev/prod 均可直出。
 // 真实素材可在 default_assets 表直接增改，或通过运营后台维护。
 const DEFAULT_ASSET_SEED = [
-  { key: 'char-01', title: '示例·古风角色', type: 'image', category: 'character', ratio: '3:4', model: 'Nano Banana Pro', thumbnail: '/samples/character.svg', prompt: '电影级 8K 超写实人像，东方古典美人，汉服，柔光，中式庭院背景。', sort: 1 },
-  { key: 'scene-01', title: '示例·古城场景', type: 'image', category: 'scene', ratio: '16:9', model: '即梦', thumbnail: '/samples/scene.svg', prompt: '宏大古城全景，晨雾，电影感光影，超宽幅。', sort: 2 },
-  { key: 'prop-01', title: '示例·道具参考', type: 'image', category: 'prop', ratio: '1:1', model: 'Nano Banana Pro', thumbnail: '/samples/prop.svg', prompt: '精致道具特写，金属质感，工作室打光。', sort: 3 },
-  { key: 'style-cinematic', title: '示例·电影感风格', type: 'image', category: 'other', ratio: '16:9', model: 'Nano Banana Pro', thumbnail: '/samples/style-cinematic.svg', prompt: '电影感调色，低饱和青橙对比，胶片颗粒，宽幅构图。', sort: 4 },
-  { key: 'style-anime', title: '示例·二次元风格', type: 'image', category: 'other', ratio: '3:4', model: '即梦', thumbnail: '/samples/style-anime.svg', prompt: '二次元动画风格，明亮配色，清晰描边，高光柔和。', sort: 5 },
-  { key: 'prompt-portrait', title: '示例·人像提示词', type: 'image', category: 'other', ratio: '4:5', model: 'Nano Banana Pro', thumbnail: '/samples/prompt-portrait.svg', prompt: '8K 超写实人像，自然光，浅景深，柔和肤质，情绪自然。', sort: 6 },
+  { key: 'char-01', title: '示例·古风角色', type: 'image', category: 'character', ratio: '3:4', model: 'Nano Banana Pro', thumbnail: '/samples/character.svg', prompt: '电影级 8K 超写实人像，东方古典美人，汉服，柔光，中式庭院背景。', sort: 1, tags: ['古风', '人像'] },
+  { key: 'scene-01', title: '示例·古城场景', type: 'image', category: 'scene', ratio: '16:9', model: '即梦', thumbnail: '/samples/scene.svg', prompt: '宏大古城全景，晨雾，电影感光影，超宽幅。', sort: 2, tags: ['场景', '古城'] },
+  { key: 'prop-01', title: '示例·道具参考', type: 'image', category: 'prop', ratio: '1:1', model: 'Nano Banana Pro', thumbnail: '/samples/prop.svg', prompt: '精致道具特写，金属质感，工作室打光。', sort: 3, tags: ['道具', '产品'] },
+  { key: 'style-cinematic', title: '示例·电影感风格', type: 'image', category: 'other', ratio: '16:9', model: 'Nano Banana Pro', thumbnail: '/samples/style-cinematic.svg', prompt: '电影感调色，低饱和青橙对比，胶片颗粒，宽幅构图。', sort: 4, tags: ['风格', '电影感'] },
+  { key: 'style-anime', title: '示例·二次元风格', type: 'image', category: 'other', ratio: '3:4', model: '即梦', thumbnail: '/samples/style-anime.svg', prompt: '二次元动画风格，明亮配色，清晰描边，高光柔和。', sort: 5, tags: ['风格', '二次元'] },
+  { key: 'prompt-portrait', title: '示例·人像提示词', type: 'image', category: 'other', ratio: '4:5', model: 'Nano Banana Pro', thumbnail: '/samples/prompt-portrait.svg', prompt: '8K 超写实人像，自然光，浅景深，柔和肤质，情绪自然。', sort: 6, tags: ['人像', '提示词'] },
 ];
 
 async function seedDefaultAssets() {
   if (!pgPool) return;
   for (const a of DEFAULT_ASSET_SEED) {
-    await pgPool.query(
-      `INSERT INTO default_assets (id,key,title,type,thumbnail,full_url,prompt,model,ratio,source,category,status,sort)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'default',$10,'success',$11)
-       ON CONFLICT (key) DO UPDATE SET title=EXCLUDED.title, thumbnail=EXCLUDED.thumbnail, full_url=EXCLUDED.full_url, prompt=EXCLUDED.prompt, model=EXCLUDED.model, ratio=EXCLUDED.ratio, category=EXCLUDED.category, sort=EXCLUDED.sort`,
-      ['da-' + a.key, a.key, a.title, a.type, a.thumbnail, a.thumbnail, a.prompt, a.model, a.ratio, a.category, a.sort || 0]
-    );
+      await pgPool.query(
+        `INSERT INTO default_assets (id,key,title,type,thumbnail,full_url,prompt,model,ratio,source,category,status,sort,tags)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'default',$10,'success',$11,$12::jsonb)
+         ON CONFLICT (key) DO UPDATE SET title=EXCLUDED.title, thumbnail=EXCLUDED.thumbnail, full_url=EXCLUDED.full_url, prompt=EXCLUDED.prompt, model=EXCLUDED.model, ratio=EXCLUDED.ratio, category=EXCLUDED.category, sort=EXCLUDED.sort, tags=EXCLUDED.tags`,
+        ['da-' + a.key, a.key, a.title, a.type, a.thumbnail, a.thumbnail, a.prompt, a.model, a.ratio, a.category, a.sort || 0, JSON.stringify(a.tags || [])]
+      );
   }
   console.log(`[Seed] default_assets 已确保 ${DEFAULT_ASSET_SEED.length} 条公共默认资产`);
 }
@@ -525,13 +528,13 @@ async function ensureUserDefaults(userId) {
         const ex = await pgPool.query('SELECT 1 FROM media WHERE user_id=$1 AND default_key=$2 LIMIT 1', [userId, t.key]);
         if (ex.rows.length) continue;
         const id = 'def-' + crypto.randomUUID();
-        await pgPool.query(
-          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,created_at,user_id,is_default,default_key)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'default',FALSE,FALSE,$9,$10,$11,$12,$13,$14,NULL,$15,$16,TRUE,$17)`,
-          [id, t.title, t.type, t.thumbnail, t.full_url || t.thumbnail, t.prompt, t.model, t.ratio,
-           t.oss_url || '', t.oss_object_key || '', t.oss_uploaded || false, t.category, t.status || 'success', t.error_message || '',
-           t.created_at || new Date().toISOString(), userId, t.key]
-        );
+          await pgPool.query(
+            `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,created_at,user_id,is_default,default_key,tags)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'default',FALSE,FALSE,$9,$10,$11,$12,$13,$14,NULL,$15,$16,TRUE,$17,$18::jsonb)`,
+            [id, t.title, t.type, t.thumbnail, t.full_url || t.thumbnail, t.prompt, t.model, t.ratio,
+             t.oss_url || '', t.oss_object_key || '', t.oss_uploaded || false, t.category, t.status || 'success', t.error_message || '',
+             t.created_at || new Date().toISOString(), userId, t.key, JSON.stringify(t.tags || [])]
+          );
       } catch (e) {
         console.warn('[Defaults] 拷贝失败 key=%s :', t.key, e.message);
       }

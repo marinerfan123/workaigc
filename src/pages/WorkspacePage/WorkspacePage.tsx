@@ -312,6 +312,30 @@ export default function WorkspacePage() {
     setReferenceImages((prev) => prev.filter((u) => u !== url));
   };
 
+  // ── 示例库高级玩法 ──
+  // T1 配方复用：用示例的 prompt + model + ratio 一键预填并立即生成（复刻）
+  const handleUseRecipe = (item: IMediaItem) => {
+    generationBarRef.current?.generate({
+      prompt: item.prompt,
+      model: item.model,
+      ratio: item.ratio,
+      auto: true,
+    });
+    setViewerOpen(false); // 关闭灯箱，让用户看到生成进度
+  };
+  // T2 变体 Remix：把示例缩略图当参考图，生成同源变体
+  const handleRemix = (item: IMediaItem) => {
+    const refUrl = item.fullUrl || item.thumbnail;
+    generationBarRef.current?.generate({
+      prompt: item.prompt,
+      model: item.model,
+      ratio: item.ratio,
+      referenceImages: refUrl ? [refUrl] : [],
+      auto: true,
+    });
+    setViewerOpen(false);
+  };
+
   const gridCols = gridSize === 'S' ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6' :
     gridSize === 'M' ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5' :
     'grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4';
@@ -419,6 +443,8 @@ export default function WorkspacePage() {
                     onToggleFavorite={handleToggleFavorite}
                     onDelete={handleDelete}
                     onAddAsReference={handleAddReference}
+                    onUseRecipe={handleUseRecipe}
+                    onRemix={handleRemix}
                     gridSize={gridSize}
                   />
                 ))}
@@ -448,6 +474,7 @@ export default function WorkspacePage() {
               referenceImages={referenceImages}
               onRemoveReference={handleRemoveReference}
               onAddReference={() => setPickerOpen(true)}
+              onSetReferenceImages={setReferenceImages}
               generating={generating}
               setGenerating={setGenerating}
               prompt={prompt}
@@ -486,6 +513,8 @@ export default function WorkspacePage() {
           currentIndex={viewerIndex}
           onClose={handleCloseViewer}
           onIndexChange={handleViewerIndexChange}
+          onUseRecipe={handleUseRecipe}
+          onRemix={handleRemix}
         />
       )}
     </div>
