@@ -133,7 +133,7 @@ function DockNavItem({
       />
       {!collapsed && (
         <>
-          <span className="truncate">{item.label}</span>
+          <span className="truncate text-sm">{item.label}</span>
           {item.count != null && item.count > 0 && (
             <span
               className={cn(
@@ -156,7 +156,7 @@ function DockNavItem({
     collapsed
       ? 'justify-center px-2 py-2.5'
       : indent
-        ? 'ml-2 pl-6 pr-3 py-2'
+        ? 'ml-2 pl-6 pr-3 py-2.5'
         : 'px-3 py-2.5',
     active
       ? 'bg-emerald-500/10 text-emerald-300 font-medium border-emerald-500/20'
@@ -376,7 +376,7 @@ function DockBody({
                     className="flex w-full items-center justify-between gap-1 rounded-2xl px-3 py-2 text-sm font-medium text-white hover:bg-zinc-800/60 transition-colors"
                   >
                     <span className="truncate">{header.title}</span>
-                    <MoreVertical className="size-3.5 shrink-0 text-zinc-500" />
+                    <MoreVertical className="size-4 shrink-0 text-zinc-500" />
                   </button>
                   {projectMenuOpen && (
                     <>
@@ -470,19 +470,19 @@ function DockBody({
                   <button
                     type="button"
                     onClick={() => setOpenSection(isOpen ? null : sectionKey)}
-                    className="mt-3 mb-1 flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500 transition-colors hover:text-zinc-200"
+                    className="mt-5 mb-1.5 flex w-full items-center justify-between rounded-lg px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-500 transition-colors hover:text-zinc-200"
                     aria-expanded={isOpen}
                   >
                     <span className="truncate">{section.title}</span>
                     <ChevronDown
                       className={cn(
-                        'size-3 shrink-0 transition-transform duration-200',
+                        'size-4 shrink-0 transition-transform duration-200',
                         isOpen && 'rotate-180 text-emerald-400',
                       )}
                     />
                   </button>
                 ) : (
-                  <div className="mt-3 mb-1 px-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">
+                  <div className="mt-5 mb-1.5 px-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-500">
                     {section.title}
                   </div>
                 )
