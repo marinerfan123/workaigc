@@ -411,7 +411,7 @@ export default function WorkspacePage() {
                         {(() => {
                           const cost = getModelCreditCostByDisplayName(item.model);
                           return cost > 0 ? (
-                            <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold">
+                            <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold">
                               {cost} 积分
                             </span>
                           ) : null;

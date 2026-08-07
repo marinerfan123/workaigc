@@ -5,6 +5,22 @@
 @import "./styles/premium.css";
 @import "./styles/fonts.css";
 
+/* ════════════════════════════════════════════════════════════════
+   设计刻度约定（统一锚点 · 新增样式前先对照此处，避免"有大有小"）
+   原则：间距只走 4pt 节奏；字号/图标靠层级而非随手数值；颜色用 token
+   ── 字号层级（size + weight + color + space 四维叠加建立层级）──
+     页面标题  text-lg  font-bold
+     区块标题  text-base font-semibold
+     正文/卡片标题 text-sm font-medium
+     辅助文字  text-xs
+     角标徽章  text-[10px] font-semibold（统一，禁止 9px/11px 混用）
+   ── 图标尺寸（按功能映射，不允许随机跨档）──
+     操作/状态图标 size-4 （按钮内、卡片角标操作）
+     次级状态点   size-3.5（卡片悬浮小图标、徽章内图标）
+     装饰性大图标 size-10（空状态、首屏）
+   ── 间距（4pt 基底：1=4px 2=8px 3=12px 4=16px 5=20px 6=24px）──
+   ════════════════════════════════════════════════════════════════ */
+
 /* Shimmer 流光动画：用于"检测链接中..."等临时加载状态 */
 @keyframes shimmer {
   0% { transform: translateX(-100%); }

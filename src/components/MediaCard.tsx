@@ -233,7 +233,7 @@ export default function MediaCard({
               className="absolute right-2 top-9 z-20 flex h-6 w-6 items-center justify-center rounded-full bg-zinc-900/60 backdrop-blur-md text-zinc-400 ring-1 ring-zinc-700/30 opacity-50 transition-all hover:bg-red-500/40 hover:text-red-100 hover:opacity-100"
               title="取消"
             >
-              <X className="size-3" />
+              <X className="size-3.5" />
             </button>
 
             {/* 左下角：Image 图标（参考 Nano Banana Pro 风格） */}
@@ -277,7 +277,7 @@ export default function MediaCard({
               {failedError || '图片链接已失效，无法显示'}
             </p>
             {failedAt && (
-              <p className="text-[9px] text-zinc-300/80">
+              <p className="text-[10px] text-zinc-300/80">
                 {new Date(failedAt).toLocaleString('zh-CN', { hour12: false })}
               </p>
             )}
@@ -290,7 +290,7 @@ export default function MediaCard({
                 className="mt-1 inline-flex items-center gap-1.5 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold text-red-700 shadow-md transition-all hover:bg-white hover:shadow-lg"
                 title="用相同 prompt + model 重新生成"
               >
-                <RotateCw className="size-3" />
+                <RotateCw className="size-3.5" />
                 重新生成
               </button>
             )}

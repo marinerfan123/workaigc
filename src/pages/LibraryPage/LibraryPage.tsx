@@ -530,7 +530,7 @@ export default function LibraryPage() {
           {filtered.length > 0 && (
             <>
               <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-sm font-bold text-white">已上传文件</h2>
+                <h2 className="text-base font-semibold text-white">已上传文件</h2>
                 <span className="text-xs text-zinc-500">{filtered.length} 个</span>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
