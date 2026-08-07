@@ -783,6 +783,20 @@ function appGateway(req) {
 // 集中管理，避免 credits 列默认 / INSERT / 流水 / 返回值 四处硬编码不一致
 const SIGNUP_BONUS_CREDITS = Number(process.env.SIGNUP_BONUS_CREDITS ?? 50);
 
+// 解析注册赠送积分：优先级 环境变量 SIGNUP_BONUS_CREDITS > settings.app.signupBonusCredits > 默认 50
+async function resolveSignupBonus() {
+  const env = Number(process.env.SIGNUP_BONUS_CREDITS);
+  if (env > 0) return Math.floor(env);
+  if (pgPool) {
+    try {
+      const r = await pgPool.query("SELECT value FROM settings WHERE key='app'");
+      const v = (r.rows[0] && r.rows[0].value) || {};
+      if (v && Number(v.signupBonusCredits) > 0) return Math.floor(Number(v.signupBonusCredits));
+    } catch {}
+  }
+  return SIGNUP_BONUS_CREDITS;
+}
+
 async function handleRegister(req, res) {
   // Phase 0 限流：同一 IP 60s 内最多 5 次注册
   const rlReg = await rateLimit({ key: 'rl:register:' + clientIp(req), limit: 5, windowSec: 60 });
@@ -800,20 +814,21 @@ async function handleRegister(req, res) {
   const ex = await pgPool.query('SELECT id FROM users WHERE email=$1', [email]);
   if (ex.rows.length) return sendJSON(res, 409, { error: '该邮箱已注册' });
   const id = 'u-' + crypto.randomUUID();
+  const bonus = await resolveSignupBonus();
   await pgPool.query(
     `INSERT INTO users (id, email, display_name, password_hash, credits, role)
-     VALUES ($1, $2, $3, $4, ${SIGNUP_BONUS_CREDITS}, 'user')`,
+     VALUES ($1, $2, $3, $4, ${bonus}, 'user')`,
     [id, email, displayName, session.hashPassword(pw)],
   );
   await pgPool.query( // 注册赠送 50 credits（审计留痕）
-    `INSERT INTO credit_transactions (user_id, kind, amount, ref) VALUES ($1, 'grant', ${SIGNUP_BONUS_CREDITS}, 'signup-bonus')`,
+    `INSERT INTO credit_transactions (user_id, kind, amount, ref) VALUES ($1, 'grant', ${bonus}, 'signup-bonus')`,
     [id],
   );
   // 注册即拷贝公共默认资产到个人素材库（幂等）
   await ensureUserDefaults(id);
   const token = session.signSession({ id, role: 'user' });
   session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
-  return sendJSON(res, 200, { ok: true, user: { id, email, displayName, credits: SIGNUP_BONUS_CREDITS, role: 'user' } });
+  return sendJSON(res, 200, { ok: true, user: { id, email, displayName, credits: bonus, role: 'user' } });
 }
 
 async function handleLogin(req, res) {

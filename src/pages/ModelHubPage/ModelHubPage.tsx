@@ -24,6 +24,7 @@ import {
   Tag,
   Briefcase,
   Boxes,
+  Gift,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -133,11 +134,16 @@ export default function ModelHubPage() {
   // 全局调度设置（最大并发 + 等待区阈值）
   const [maxThreads, setMaxThreads] = useState(10);
   const [waitingAreaThreshold, setWaitingAreaThreshold] = useState(10);
+  // 新用户注册奖励（注册赠送积分，后台可视化设置）
+  const [signupBonus, setSignupBonus] = useState(50);
   useEffect(() => {
     apiGetSettings().then((s) => {
       if (s && s.maxThreads) setMaxThreads(Number(s.maxThreads) || 10);
       if (s && typeof s.waitingAreaThreshold === 'number' && s.waitingAreaThreshold > 0) {
         setWaitingAreaThreshold(Math.floor(s.waitingAreaThreshold));
+      }
+      if (s && Number(s.signupBonusCredits) > 0) {
+        setSignupBonus(Math.floor(Number(s.signupBonusCredits)));
       }
     }).catch(() => {});
   }, []);
@@ -147,6 +153,13 @@ export default function ModelHubPage() {
     await apiSaveSettings({ ...cur, maxThreads: Number(maxThreads) || 10, waitingAreaThreshold: thr });
     setWaitingAreaThreshold(thr);
     toast.success('调度设置已保存');
+  };
+  const saveSignupBonus = async () => {
+    const cur = (await apiGetSettings().catch(() => ({}))) || {};
+    const v = Math.max(0, Math.floor(Number(signupBonus) || 0));
+    await apiSaveSettings({ ...cur, signupBonusCredits: v });
+    setSignupBonus(v);
+    toast.success('注册奖励已保存');
   };
 
   const filteredModels = useMemo(() => {
@@ -976,12 +989,43 @@ export default function ModelHubPage() {
                     所有账号不可用且等待区积压超过该值，前台提示"资源不足"。
                   </p>
                 </div>
+                  <button
+                    type="button"
+                    onClick={() => saveScheduler()}
+                    className="rounded-2xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-black hover:bg-emerald-400 transition-colors"
+                  >
+                    保存调度设置
+                  </button>
+              </div>
+            </div>
+
+            {/* 新用户注册奖励 */}
+            <div className="mb-4 rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <Gift className="size-4 text-emerald-400" />
+                <h3 className="text-sm font-bold text-white">新用户注册奖励</h3>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="flex-1">
+                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">注册赠送积分</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100000}
+                    value={signupBonus}
+                    onChange={(e) => setSignupBonus(Number(e.target.value) || 0)}
+                    className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                  />
+                  <p className="mt-1 text-[10px] text-zinc-500">
+                    新用户注册时自动赠送的积分，保存后立即对新注册用户生效（优先级：后台设置 &gt; 环境变量 &gt; 默认 50）。
+                  </p>
+                </div>
                 <button
                   type="button"
-                  onClick={() => saveScheduler()}
+                  onClick={() => saveSignupBonus()}
                   className="rounded-2xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-black hover:bg-emerald-400 transition-colors"
                 >
-                  保存调度设置
+                  保存注册奖励
                 </button>
               </div>
             </div>
