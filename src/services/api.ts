@@ -264,6 +264,13 @@ export async function apiGetCharacters(): Promise<any[]> {
 export async function apiSaveCharacters(items: any[]) {
   try { await apiFetch('/api/characters', { method: 'POST', body: JSON.stringify(items) }); } catch {}
 }
+export async function apiDeleteCharacter(id: string) {
+  try { await apiFetch(`/api/characters/${encodeURIComponent(id)}`, { method: 'DELETE' }); } catch {}
+}
+export async function apiGetCharacterStats(id: string): Promise<{ totalGenerations: number; favorites: number }> {
+  try { return await apiFetch(`/api/characters/${encodeURIComponent(id)}/stats`); }
+  catch { return { totalGenerations: 0, favorites: 0 }; }
+}
 
 // ─── 后台示例库（运营维护，一键推送给顾客） ───
 export async function apiGetSamples(): Promise<any[]> {

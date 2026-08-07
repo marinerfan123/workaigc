@@ -147,6 +147,8 @@ interface GenerationBarProps {
   setGenerating: (v: boolean) => void;
   prompt: string;
   onPromptChange: (v: string) => void;
+  /** 由「用此角色创作」带入的角色 id：生成出的素材会自动归属到该角色，用于角色生成记录聚合 */
+  characterId?: string;
 }
 
 /** 父级调用 retry() 时用的参数：仅需 prompt + model + ratio（其它用当前 settings） */
@@ -189,8 +191,11 @@ function GenerationBar({
   setGenerating,
   prompt,
   onPromptChange,
+  characterId,
   ref,
 }: GenerationBarProps & { ref?: React.Ref<GenerationBarHandle> }) {
+  const characterIdRef = useRef(characterId);
+  characterIdRef.current = characterId;
   const promptText = prompt ?? '';
   const [agentOpen, setAgentOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -361,6 +366,7 @@ function GenerationBar({
         ossObjectKey,
         ossUploaded,
         progress: 100,
+        characterId: characterIdRef.current,
       };
       // finalItem.status 默认 'success'——server 已返图就是成功。
       // 显示层由 useMediaUrlStatus 处理：OSS 链接直接展示，provider 兜底链接失效时由 useImageProbe 提示。
@@ -437,6 +443,7 @@ function GenerationBar({
         errorMessage: friendly,
         failedAt: new Date().toISOString(),
         progress: 100,
+        characterId: characterIdRef.current,
       });
     }
   };

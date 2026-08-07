@@ -103,6 +103,7 @@ async function initDB() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='error_message') THEN ALTER TABLE media ADD COLUMN error_message TEXT DEFAULT ''; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='failed_at') THEN ALTER TABLE media ADD COLUMN failed_at TIMESTAMPTZ; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='file_size') THEN ALTER TABLE media ADD COLUMN file_size BIGINT; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='character_id') THEN ALTER TABLE media ADD COLUMN character_id TEXT DEFAULT NULL; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='mapping_name') THEN ALTER TABLE models ADD COLUMN mapping_name TEXT DEFAULT ''; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='credit_cost') THEN ALTER TABLE models ADD COLUMN credit_cost INT DEFAULT 0; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='estimated_seconds') THEN ALTER TABLE models ADD COLUMN estimated_seconds INT; END IF;
@@ -663,7 +664,7 @@ const SNAKE_MAP = {
   access_key_id:'accessKeyId', access_key_secret:'accessKeySecret',
   path_prefix:'pathPrefix', custom_domain:'customDomain', region_label:'regionLabel',
   error_message:'errorMessage', failed_at:'failedAt',
-  file_size:'fileSize',
+  file_size:'fileSize', character_id:'characterId',
   is_default:'isDefault', default_key:'defaultKey', tags:'tags',
   reward_credits:'rewardCredits', recharge_credits:'rechargeCredits',
   target_url:'targetUrl',
@@ -1550,8 +1551,8 @@ async function handleAPI(req, res) {
         // 真实文件大小：前端已带则直接用；否则落库后由服务端异步回探（不受浏览器缓存/CORS 影响）
         const fileSize = (typeof it.fileSize === 'number' && it.fileSize > 0) ? it.fileSize : null;
         await pgPool.query(
-          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,file_size,created_at,user_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,full_url=EXCLUDED.full_url,thumbnail=EXCLUDED.thumbnail,oss_url=EXCLUDED.oss_url,oss_object_key=EXCLUDED.oss_object_key,oss_uploaded=EXCLUDED.oss_uploaded,is_deleted=EXCLUDED.is_deleted,status=EXCLUDED.status,error_message=EXCLUDED.error_message,failed_at=EXCLUDED.failed_at,file_size=COALESCE(EXCLUDED.file_size, media.file_size),user_id=EXCLUDED.user_id`,
-          [s.id, s.title, s.type, s.thumbnail, s.full_url, s.prompt, s.model, s.ratio, s.source, s.is_favorite || false, s.is_deleted || false, s.oss_url, s.oss_object_key, s.oss_uploaded || false, s.category || 'generated', s.status || 'success', s.error_message || '', s.failed_at || null, fileSize, s.created_at || new Date().toISOString(), ownerId]
+          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,file_size,created_at,user_id,character_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,full_url=EXCLUDED.full_url,thumbnail=EXCLUDED.thumbnail,oss_url=EXCLUDED.oss_url,oss_object_key=EXCLUDED.oss_object_key,oss_uploaded=EXCLUDED.oss_uploaded,is_deleted=EXCLUDED.is_deleted,status=EXCLUDED.status,error_message=EXCLUDED.error_message,failed_at=EXCLUDED.failed_at,file_size=COALESCE(EXCLUDED.file_size, media.file_size),user_id=EXCLUDED.user_id,character_id=EXCLUDED.character_id`,
+          [s.id, s.title, s.type, s.thumbnail, s.full_url, s.prompt, s.model, s.ratio, s.source, s.is_favorite || false, s.is_deleted || false, s.oss_url, s.oss_object_key, s.oss_uploaded || false, s.category || 'generated', s.status || 'success', s.error_message || '', s.failed_at || null, fileSize, s.created_at || new Date().toISOString(), ownerId, s.character_id || null]
         );
         // 异步回探真实字节数（仅当本次没有显式 fileSize 时）
         if (!fileSize) {
@@ -1666,6 +1667,36 @@ async function handleAPI(req, res) {
     for (const it of arr) { const id = it.id || ('ch-' + crypto.randomUUID()); const idx = list.findIndex(x => x.id === id); const rec = { ...it, id }; if (idx >= 0) list[idx] = rec; else list.push(rec); }
     writeJSON('characters', list);
     return sendJSON(res, 200, { ok: true, count: arr.length });
+  }
+  // ── 角色删除（单条）：幂等 DELETE，关联素材保留（已生成作品不删），仅解绑 ──
+  if (url.startsWith('/api/characters/') && method === 'DELETE') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    const id = decodeURIComponent(url.split('/api/characters/')[1]);
+    if (pgPool) {
+      await pgPool.query('DELETE FROM characters WHERE id=$1', [id]);
+      await pgPool.query('UPDATE media SET character_id=NULL WHERE character_id=$1', [id]);
+    } else {
+      const list = readJSON('characters') || [];
+      writeJSON('characters', list.filter((c) => c.id !== id));
+    }
+    return sendJSON(res, 200, { ok: true });
+  }
+  // ── 角色生成统计（实时聚合 media，按当前用户归属，杜绝写死数字）──
+  if (url.match(/^\/api\/characters\/.+\/stats$/) && method === 'GET') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    const id = decodeURIComponent(url.slice(0, -'/stats'.length).split('/api/characters/')[1]);
+    if (pgPool) {
+      const r = await pgPool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE is_deleted=false) AS total,
+           COUNT(*) FILTER (WHERE is_favorite=true AND is_deleted=false) AS fav
+         FROM media WHERE character_id=$1 AND user_id=$2`,
+        [id, realUser.id],
+      );
+      const row = r.rows[0] || { total: 0, fav: 0 };
+      return sendJSON(res, 200, { totalGenerations: Number(row.total) || 0, favorites: Number(row.fav) || 0 });
+    }
+    return sendJSON(res, 200, { totalGenerations: 0, favorites: 0 });
   }
 
   // ── Providers ──

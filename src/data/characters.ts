@@ -9,6 +9,16 @@ export interface ICharacter {
   baseModel: string;
   createdAt: string;
   source: 'mock' | 'user';
+  // 后端冗余字段（fromSnake 透传，前端目前仅展示/编辑部分）
+  gender?: string;
+  age?: number;
+  tags?: string[];
+  style?: Record<string, unknown>;
+}
+
+export interface ICharacterStats {
+  totalGenerations: number;
+  favorites: number;
 }
 
 export const MOCK_CHARACTERS: ICharacter[] = [

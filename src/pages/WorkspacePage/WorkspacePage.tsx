@@ -13,6 +13,7 @@ import MediaPicker from '@/components/MediaPicker';
 import ImageViewer from '@/components/ImageViewer';
 import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
+import { ICharacter } from '@/data/characters';
 import { useModelHub, getModelDisplayNameByDisplayName, getModelCreditCostByDisplayName } from '@/hooks/useModelHub';
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
@@ -68,6 +69,7 @@ export default function WorkspacePage() {
   const [settings, setSettings] = useState<IGenerationSettings>(DEFAULT_SETTINGS);
   const [prompt, setPrompt] = useState('');
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
+  const [activeCharacter, setActiveCharacter] = useState<ICharacter | null>(null);
   const [generating, setGenerating] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
@@ -120,20 +122,45 @@ export default function WorkspacePage() {
   }, []);
 
   // 接收 LibraryPage 跳转过来的 retry 请求：用原 prompt+model+ratio 重新生成，并清掉旧的 failed item
+  // 以及 CharactersPage「用此角色创作」：把角色描述当 prompt、参考图当参考图，预填后自动生成一次
+  const characterFiredRef = useRef(false);
   useEffect(() => {
-    const state = (location.state as { retryItem?: IMediaItem } | null) || null;
+    const state = (location.state as { retryItem?: IMediaItem; character?: ICharacter } | null) || null;
     const item = state?.retryItem;
-    if (!item) return;
+    const character = state?.character;
+    if (!item && !character) return;
     // 1. 删掉旧失败项（避免列表里残留）
-    setMediaList((prev) => prev.filter((m) => m.id !== item.id));
-    // 2. 通知 GenerationBar 重新生成
+    if (item) {
+      setMediaList((prev) => prev.filter((m) => m.id !== item.id));
+    }
+    // 2. 用此角色创作：预填 prompt + 参考图 + 模型，并自动生成一次（仅触发一次）
+    if (character && !characterFiredRef.current) {
+      characterFiredRef.current = true;
+      setActiveCharacter(character);
+      if (character.description) setPrompt(character.description);
+      if (character.referenceImages?.length) setReferenceImages(character.referenceImages);
+      setTimeout(() => {
+        generationBarRef.current?.generate({
+          prompt: character.description,
+          model: character.baseModel || settings.model,
+          referenceImages: character.referenceImages || [],
+          auto: true,
+        });
+        // 3. 清掉 navigate state，避免重复触发
+        navigate(location.pathname, { replace: true, state: null });
+      }, 80);
+      return;
+    }
+    // 3. 通知 GenerationBar 重新生成（retry 路径）
     setTimeout(() => {
-      generationBarRef.current?.retry({
-        prompt: item.prompt,
-        model: item.model,
-        ratio: item.ratio,
-      });
-      // 3. 清掉 navigate state，避免重复触发
+      if (item) {
+        generationBarRef.current?.retry({
+          prompt: item.prompt,
+          model: item.model,
+          ratio: item.ratio,
+        });
+      }
+      // 清掉 navigate state，避免重复触发
       navigate(location.pathname, { replace: true, state: null });
     }, 50);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -479,6 +506,7 @@ export default function WorkspacePage() {
               setGenerating={setGenerating}
               prompt={prompt}
               onPromptChange={setPrompt}
+              characterId={activeCharacter?.id}
             />
           </div>
         </div>
