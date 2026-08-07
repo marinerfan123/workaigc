@@ -298,11 +298,21 @@ export default function MediaCard({
             <p className="relative z-10 text-[11px] font-medium text-zinc-300">检测链接中…</p>
           </div>
         ) : (
-          <Image
-            src={mediaUrl.url}
-            alt={item.title}
-            className="h-full w-full object-cover duration-700 ease-out group-hover:scale-105"
-          />
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenViewer?.();
+            }}
+            className="h-full w-full cursor-zoom-in"
+            title="点击放大查看"
+          >
+            <Image
+              src={mediaUrl.url}
+              alt={item.title}
+              className="h-full w-full object-cover duration-700 ease-out group-hover:scale-105"
+            />
+          </button>
         )}
 
         {/* 视频播放角标（仅成功状态显示） */}

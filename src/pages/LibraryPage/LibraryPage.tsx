@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import MediaCard from '@/components/MediaCard';
+import ImageViewer from '@/components/ImageViewer';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { apiGetMedia, apiSaveMedia, apiUpdateMedia, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
 import { useOssConfig } from '@/hooks/useOssConfig';
@@ -46,6 +47,8 @@ export default function LibraryPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [showFailed, setShowFailed] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerIndex, setViewerIndex] = useState(0);
 
   const { enabled: ossEnabled, uploadFile: uploadToOss } = useOssConfig();
 
@@ -53,6 +56,15 @@ export default function LibraryPage() {
     // 跳转到 WorkspacePage 并把 retryItem 通过 router state 传过去
     navigate('/workspace', { state: { retryItem: item } });
   };
+
+  const handleOpenViewer = (index: number) => {
+    setViewerIndex(index);
+    setViewerOpen(true);
+  };
+
+  const handleCloseViewer = () => setViewerOpen(false);
+
+  const handleViewerIndexChange = (index: number) => setViewerIndex(index);
 
   /**
    * MediaCard 探测图片失败时回调：把对应 item 标为 failed，并写回后端。
@@ -522,7 +534,7 @@ export default function LibraryPage() {
                 <span className="text-xs text-zinc-500">{filtered.length} 个</span>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                {filtered.map((item) => (
+                {filtered.map((item, index) => (
                   <div key={item.id} className="relative">
                     <MediaCard
                       item={item}
@@ -534,6 +546,7 @@ export default function LibraryPage() {
                           setSelectedId(it.id);
                         }
                       }}
+                      onOpenViewer={() => handleOpenViewer(index)}
                       onToggleFavorite={handleToggleFavorite}
                       onDelete={handleDelete}
                       onRetry={handleRetry}
@@ -575,6 +588,16 @@ export default function LibraryPage() {
             </div>
           )}
         </div>
+
+        {/* 图片放大查看器 */}
+        {viewerOpen && (
+          <ImageViewer
+            items={filtered}
+            currentIndex={viewerIndex}
+            onClose={handleCloseViewer}
+            onIndexChange={handleViewerIndexChange}
+          />
+        )}
       </div>
     );
   }
@@ -677,7 +700,7 @@ export default function LibraryPage() {
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-            {filtered.map((item) => (
+            {filtered.map((item, index) => (
               <div key={item.id} className="relative">
                 <MediaCard
                   item={item}
@@ -689,6 +712,7 @@ export default function LibraryPage() {
                       setSelectedId(it.id);
                     }
                   }}
+                  onOpenViewer={() => handleOpenViewer(index)}
                   onToggleFavorite={handleToggleFavorite}
                   onDelete={handleDelete}
                   onRetry={handleRetry}
@@ -712,6 +736,16 @@ export default function LibraryPage() {
           </div>
         )}
       </div>
+
+      {/* 图片放大查看器 */}
+      {viewerOpen && (
+        <ImageViewer
+          items={filtered}
+          currentIndex={viewerIndex}
+          onClose={handleCloseViewer}
+          onIndexChange={handleViewerIndexChange}
+        />
+      )}
     </div>
   );
 }

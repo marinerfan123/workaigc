@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { ImageOff, ArrowLeft, Loader2 } from 'lucide-react';
 import { apiGetUser, apiGetUserMedia } from '@/services/api';
 import { useAuth } from '@/services/authStore';
+import ImageViewer from '@/components/ImageViewer';
 
 interface PubUser { id: string; displayName: string; createdAt: string; }
 interface PubMedia { id: string; title: string; thumbnail: string; fullUrl: string; type: string; category: string; }
@@ -14,6 +15,8 @@ export default function UserPage() {
   const [media, setMedia] = useState<PubMedia[]>([]);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerIndex, setViewerIndex] = useState(0);
 
   useEffect(() => {
     if (!id) return;
@@ -56,6 +59,21 @@ export default function UserPage() {
 
   const isSelf = user?.id === profile.id;
 
+  const viewerItems = useMemo(
+    () =>
+      media.map((m) => ({
+        id: m.id,
+        title: m.title,
+        fullUrl: m.fullUrl,
+        thumbnail: m.thumbnail,
+        type: (m.type === 'video' ? 'video' : 'image') as 'image' | 'video',
+        model: '',
+        ratio: '',
+        createdAt: '',
+      })),
+    [media],
+  );
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-5xl px-6 py-8">
@@ -93,13 +111,15 @@ export default function UserPage() {
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-            {media.map((m) => (
-              <a
+            {media.map((m, index) => (
+              <button
                 key={m.id}
-                href={m.fullUrl || m.thumbnail}
-                target="_blank"
-                rel="noreferrer"
-                className="group relative aspect-[4/5] overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/50 transition-all duration-300 hover:border-emerald-500/40 hover:shadow-xl hover:shadow-black/40"
+                type="button"
+                onClick={() => {
+                  setViewerIndex(index);
+                  setViewerOpen(true);
+                }}
+                className="group relative aspect-[4/5] overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/50 text-left transition-all duration-300 hover:border-emerald-500/40 hover:shadow-xl hover:shadow-black/40 cursor-zoom-in"
               >
                 <img
                   src={m.thumbnail}
@@ -111,11 +131,21 @@ export default function UserPage() {
                 <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-3">
                   <p className="truncate text-xs font-medium text-white">{m.title || '未命名作品'}</p>
                 </div>
-              </a>
+              </button>
             ))}
           </div>
         )}
       </div>
+
+      {/* 图片放大查看器 */}
+      {viewerOpen && (
+        <ImageViewer
+          items={viewerItems}
+          currentIndex={viewerIndex}
+          onClose={() => setViewerOpen(false)}
+          onIndexChange={setViewerIndex}
+        />
+      )}
     </div>
   );
 }
