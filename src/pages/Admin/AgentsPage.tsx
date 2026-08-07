@@ -6,10 +6,10 @@ import { toast } from 'sonner';
 import { PageHeader, SectionCard, TabBar, StatCard, cn } from '@/components/skeleton';
 import { useCallback, useEffect, useState } from 'react';
 import {
-  apiAdminAgents, apiAdminToggleAgent,
+  apiAdminAgents, apiAdminToggleAgent, apiAdminUpsertAgent,
   apiAdminAgentProviders, apiAdminAgentRules, apiAdminToggleAgentRule,
-  apiGetModels, apiGetSettings, apiSaveSettings,
-  type AdminAgent, type AgentProvider, type AgentRule,
+  apiGetModels, apiGetSettings, apiSaveSettings, apiAdminListSkills,
+  type AdminAgent, type AgentProvider, type AgentRule, type ISkill,
 } from '@/services/api';
 
 export default function AgentsPage() {
@@ -17,7 +17,12 @@ export default function AgentsPage() {
   const [agents, setAgents] = useState<AdminAgent[]>([]);
   const [providers, setProviders] = useState<AgentProvider[]>([]);
   const [rules, setRules] = useState<AgentRule[]>([]);
+  const [skills, setSkills] = useState<ISkill[]>([]);
   const [loading, setLoading] = useState(true);
+  // 新建智能体表单状态
+  const [creating, setCreating] = useState(false);
+  const [form, setForm] = useState({ key: '', name: '', agentType: 'model' as 'model' | 'skill', skillKey: '', dailyBudget: 0, enabled: true });
+  const [savingAgent, setSavingAgent] = useState(false);
   // 提示词优化智能体：可选 text 模型（写入 settings.app.promptOptimizeModel）
   const [textModels, setTextModels] = useState<{ id: string; displayName: string; modelId: string }[]>([]);
   const [promptOptimizeModel, setPromptOptimizeModel] = useState('');
@@ -25,16 +30,29 @@ export default function AgentsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [a, p, r, ms, s] = await Promise.all([
+    const [a, p, r, ms, s, sk] = await Promise.all([
       apiAdminAgents(), apiAdminAgentProviders(), apiAdminAgentRules(),
-      apiGetModels(), apiGetSettings(),
+      apiGetModels(), apiGetSettings(), apiAdminListSkills(),
     ]);
-    setAgents(a); setProviders(p); setRules(r);
+    setAgents(a); setProviders(p); setRules(r); setSkills(sk);
     setTextModels(ms.filter((m) => m.type === 'text' && m.enabled).map((m) => ({ id: m.id, displayName: m.displayName || '', modelId: m.modelId || '' })));
     if (s && s.promptOptimizeModel) setPromptOptimizeModel(String(s.promptOptimizeModel));
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  const createAgent = async () => {
+    if (!form.key || !form.name) return;
+    setSavingAgent(true);
+    const r = await apiAdminUpsertAgent({
+      key: form.key, name: form.name, agentType: form.agentType,
+      skillKey: form.agentType === 'skill' ? form.skillKey : '',
+      dailyBudget: Number(form.dailyBudget) || 0, enabled: form.enabled,
+    });
+    setSavingAgent(false);
+    if (r.ok) { setCreating(false); setForm({ key: '', name: '', agentType: 'model', skillKey: '', dailyBudget: 0, enabled: true }); await load(); }
+    else alert(r.error || '创建失败');
+  };
 
   const savePromptOptimizeModel = async () => {
     setSavingModel(true);
@@ -91,18 +109,77 @@ export default function AgentsPage() {
       )}
 
       {tab === 'agents' && (
-        <SectionCard title="agents 表" hint="key / name / enabled / daily_budget / config" actions={<span className="text-xs text-zinc-500">{loading ? '加载中…' : `${enabledAgents}/${agents.length} 启用`}</span>}>
+        <SectionCard
+          title="agents 表"
+          hint="key / name / agent_type / skill_key / enabled / daily_budget"
+          actions={
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-zinc-500">{loading ? '加载中…' : `${enabledAgents}/${agents.length} 启用`}</span>
+              <button
+                onClick={() => setCreating((v) => !v)}
+                className="rounded-xl bg-emerald-500/15 px-2.5 py-1.5 text-xs font-medium text-emerald-300 hover:bg-emerald-500/25"
+              >
+                {creating ? '收起' : '新建智能体'}
+              </button>
+            </div>
+          }
+        >
+          {creating && (
+            <div className="mb-4 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs text-zinc-400">key（唯一）</span>
+                  <input value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value })} placeholder="my_skill_agent" className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500" />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs text-zinc-400">名称 name</span>
+                  <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500" />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs text-zinc-400">类型 agent_type</span>
+                  <select value={form.agentType} onChange={(e) => setForm({ ...form, agentType: e.target.value as 'model' | 'skill' })} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500">
+                    <option value="model">模型智能体（model）</option>
+                    <option value="skill">技能智能体（skill）</option>
+                  </select>
+                </label>
+                {form.agentType === 'skill' && (
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-zinc-400">绑定技能 skill_key</span>
+                    <select value={form.skillKey} onChange={(e) => setForm({ ...form, skillKey: e.target.value })} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500">
+                      <option value="">— 选择技能 —</option>
+                      {skills.map((s) => <option key={s.key} value={s.key}>{s.name} ({s.key})</option>)}
+                    </select>
+                  </label>
+                )}
+                <label className="block">
+                  <span className="mb-1 block text-xs text-zinc-400">日预算 daily_budget</span>
+                  <input type="number" min={0} value={form.dailyBudget} onChange={(e) => setForm({ ...form, dailyBudget: Number(e.target.value) })} className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500" />
+                </label>
+              </div>
+              <div className="mt-3 flex items-center justify-end gap-2">
+                <button onClick={() => setCreating(false)} className="rounded-xl px-3 py-2 text-sm text-zinc-400 hover:text-white">取消</button>
+                <button onClick={createAgent} disabled={savingAgent || !form.key || !form.name} className="rounded-xl bg-emerald-500 px-4 py-2 text-sm font-medium text-black hover:bg-emerald-400 disabled:opacity-50">
+                  {savingAgent ? '创建中…' : '创建智能体'}
+                </button>
+              </div>
+            </div>
+          )}
           <div className="space-y-2">
             {agents.map((a) => {
               const isPromptOptimizer = a.key === 'prompt_optimizer';
               const skillName = (a.config?.skillName as string) || '';
+              const isSkillAgent = a.agentType === 'skill';
               return (
                 <div key={a.key} className={cn('rounded-2xl px-4 py-3', isPromptOptimizer ? 'border border-emerald-500/20 bg-emerald-500/5' : 'bg-white/5')}>
                   <div className="flex items-center justify-between gap-4">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <div className="font-medium text-zinc-100">{a.name}</div>
+                        <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-medium', isSkillAgent ? 'bg-sky-500/15 text-sky-300' : 'bg-zinc-700/50 text-zinc-300')}>
+                          {isSkillAgent ? '技能' : '模型'}
+                        </span>
                         {skillName && <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-300">{skillName}</span>}
+                        {isSkillAgent && a.skillKey && <span className="rounded-full bg-zinc-800/60 px-2 py-0.5 text-[10px] text-zinc-400">↳ {a.skillKey}</span>}
                       </div>
                       <div className="text-xs text-zinc-500">{a.key} · 日预算 {a.dailyBudget}</div>
                     </div>

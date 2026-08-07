@@ -125,21 +125,26 @@ function createAdmin(ctx) {
   // ───────────────────────── 全局智能体层（§B.9 / M4） ─────────────────────────
   async function listAgents() {
     const r = await pg().query(
-      'SELECT key, name, enabled, daily_budget, config, created_at FROM agents ORDER BY name');
+      'SELECT key, name, enabled, daily_budget, config, agent_type, skill_key, created_at FROM agents ORDER BY name');
     return r.rows.map((a) => ({
       key: a.key, name: a.name, enabled: a.enabled,
-      dailyBudget: a.daily_budget, config: a.config || {}, createdAt: a.created_at,
+      dailyBudget: a.daily_budget, config: a.config || {},
+      agentType: a.agent_type || 'model', skillKey: a.skill_key || '',
+      createdAt: a.created_at,
     }));
   }
   async function upsertAgent(a) {
     const key = (a.key || '').trim();
     if (!key) throw new Error('key 必填');
+    const agentType = (a.agentType === 'skill') ? 'skill' : 'model';
+    const skillKey = (a.skillKey || (a.config && a.config.skill) || '').toString();
     await pg().query(
-      `INSERT INTO agents (key, name, enabled, daily_budget, config)
-       VALUES ($1,$2,$3,$4,$5)
+      `INSERT INTO agents (key, name, enabled, daily_budget, config, agent_type, skill_key)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (key) DO UPDATE SET name=EXCLUDED.name, enabled=EXCLUDED.enabled,
-         daily_budget=EXCLUDED.daily_budget, config=EXCLUDED.config`,
-      [key, a.name || key, a.enabled !== false, Math.max(0, Number(a.dailyBudget) || 0), JSON.stringify(a.config || {})],
+         daily_budget=EXCLUDED.daily_budget, config=EXCLUDED.config,
+         agent_type=EXCLUDED.agent_type, skill_key=EXCLUDED.skill_key`,
+      [key, a.name || key, a.enabled !== false, Math.max(0, Number(a.dailyBudget) || 0), JSON.stringify(a.config || {}), agentType, skillKey],
     );
     return { ok: true };
   }

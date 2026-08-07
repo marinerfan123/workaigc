@@ -1,19 +1,29 @@
-// 商城首页（骨架，M6 / Phase 5）
-// products: title / subtitle / cover_url / price_cents / credit_price / stock / ai_fields / status
+// 商城首页（M6 · 真实数据）
+// 数字能力包网格：GET /api/shop/products（仅 published）；点击进入详情页（含获取安装 + 试用台）
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ShoppingBag } from 'lucide-react';
+import { ShoppingBag, Sparkles } from 'lucide-react';
 import { PageHeader, SectionCard, Placeholder } from '@/components/skeleton';
+import { apiGetShopProducts, type IShopProduct } from '@/services/api';
 
-// 骨架占位商品；真实列表经 GET /api/shop/products。
-const SAMPLE = [
-  { id: '1', title: '东方古典美人·艺术微喷', price: 19900 },
-  { id: '2', title: '赛博长安·数字藏品', price: 9900 },
-  { id: '3', title: '非遗文创·手办模型', price: 39900 },
-  { id: '4', title: 'AI 摄影画册', price: 5900 },
-];
+function priceLabel(p: IShopProduct) {
+  if (p.priceCents > 0) return `¥${(p.priceCents / 100).toFixed(2)}`;
+  if (p.priceCredits > 0) return `${p.priceCredits} 积分`;
+  return '免费';
+}
 
 export default function ShopHomePage() {
   const navigate = useNavigate();
+  const [products, setProducts] = useState<IShopProduct[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const data = await apiGetShopProducts();
+    setProducts(data);
+    setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
 
   return (
     <div className="space-y-6">
@@ -23,41 +33,46 @@ export default function ShopHomePage() {
           <ShoppingBag className="size-5" />
           <span className="text-sm font-medium">AI 市集</span>
         </div>
-        <h1 className="mt-3 text-2xl font-semibold text-white">把 AI 创作变成可收藏的周边</h1>
+        <h1 className="mt-3 text-2xl font-semibold text-white">把 AI 能力变成可获取的数字能力包</h1>
         <p className="mt-2 max-w-xl text-sm text-zinc-400">
-          艺术微喷、数字藏品、手办模型与出版物——每个商品页都内嵌智能体协助面板。
+          浏览、试用并获取技能包——获取即安装进你的技能库，可在智能体层绑定调用。
         </p>
       </div>
 
-      <PageHeader title="精选商品" subtitle="M6 · 高并发读（Redis 缓存 + CDN + 只读副本）" />
+      <PageHeader title="精选能力包" subtitle="M6 · 数字能力包（skill_pack）" />
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
-        {SAMPLE.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => navigate(`/product/${p.id}`)}
-            className="group overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900/50 text-left transition-all duration-300 hover:border-emerald-500/40 hover:bg-zinc-900"
-          >
-            <div className="aspect-square w-full bg-zinc-800/60" />
-            <div className="p-4">
-              <h3 className="truncate text-sm font-medium text-white group-hover:text-emerald-300 transition-colors">
-                {p.title}
-              </h3>
-              <div className="mt-2 flex items-baseline gap-1">
-                <span className="text-base font-semibold text-emerald-400">¥{(p.price / 100).toFixed(2)}</span>
+      {loading ? (
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => <div key={i} className="aspect-[3/4] rounded-3xl border border-zinc-800 bg-zinc-900/50 animate-pulse" />)}
+        </div>
+      ) : products.length === 0 ? (
+        <SectionCard><Placeholder label="暂未上架任何能力包" height="h-40" /></SectionCard>
+      ) : (
+        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+          {products.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => navigate(`/shop/product/${p.id}`)}
+              className="group overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900/50 text-left transition-all duration-300 hover:border-emerald-500/40 hover:bg-zinc-900 hover:-translate-y-0.5"
+            >
+              <div className="relative flex aspect-[4/3] w-full items-center justify-center bg-gradient-to-br from-zinc-800/60 to-zinc-900/60">
+                <Sparkles className="size-8 text-emerald-400/60" />
+                {p.tags?.[0] && (
+                  <span className="absolute left-3 top-3 rounded-full bg-black/40 px-2 py-0.5 text-[10px] text-zinc-200 backdrop-blur">#{p.tags[0]}</span>
+                )}
               </div>
-            </div>
-          </button>
-        ))}
-      </div>
-
-      <SectionCard title="product_skus" hint="specs / price_cents / stock" className="opacity-80">
-        <Placeholder
-          label="真实商品网格经 GET /api/shop/products（按 shop_id + status 索引）"
-          note="搜索走 search_agent；推荐位走 recommender"
-          height="h-20"
-        />
-      </SectionCard>
+              <div className="p-4">
+                <h3 className="truncate text-sm font-medium text-white group-hover:text-emerald-300 transition-colors">{p.title}</h3>
+                <p className="mt-1 line-clamp-1 text-xs text-zinc-500">{p.subtitle || p.description}</p>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="text-base font-semibold text-emerald-400">{priceLabel(p)}</span>
+                  <span className="text-xs text-zinc-500">{p.installs} 安装</span>
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -581,12 +581,14 @@ export interface AdminAgent {
   enabled: boolean;
   dailyBudget: number;
   config: Record<string, unknown>;
+  agentType: 'model' | 'skill';
+  skillKey: string;
   createdAt: string;
 }
 export async function apiAdminAgents(): Promise<AdminAgent[]> {
   try { return await apiFetch('/api/admin/agents'); } catch { return []; }
 }
-export async function apiAdminUpsertAgent(a: { key: string; name: string; enabled?: boolean; dailyBudget?: number; config?: Record<string, unknown> }): Promise<{ ok: boolean; error?: string }> {
+export async function apiAdminUpsertAgent(a: { key: string; name: string; enabled?: boolean; dailyBudget?: number; config?: Record<string, unknown>; agentType?: 'model' | 'skill'; skillKey?: string }): Promise<{ ok: boolean; error?: string }> {
   try { return await apiFetch('/api/admin/agents', { method: 'POST', body: JSON.stringify(a) }); } catch (e) { return { ok: false, error: (e as Error).message }; }
 }
 export async function apiAdminToggleAgent(key: string, enabled: boolean): Promise<{ ok: boolean }> {
@@ -628,6 +630,93 @@ export async function apiAdminUpsertAgentRule(r: { id?: string; name: string; tr
 }
 export async function apiAdminToggleAgentRule(id: string, enabled: boolean): Promise<{ ok: boolean }> {
   try { return await apiFetch(`/api/admin/agent-rules/${encodeURIComponent(id)}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } catch { return { ok: false }; }
+}
+
+// ─── 技能注册表 + AI 市集（M4/M6 数字能力包）───
+export interface ISkill {
+  key: string;
+  name: string;
+  stage: string;            // generation | prompt | post | analysis
+  adapter: string;          // prompt_optimize | text_gen | ...
+  costCredits: number;
+  enabled: boolean;
+  description: string;
+  author: string;
+  icon: string;
+  version: string;
+  params?: Record<string, unknown>;
+}
+export interface IShopProduct {
+  id: string;
+  title: string;
+  subtitle: string;
+  coverUrl: string;
+  kind: string;             // skill_pack | agent_template
+  refKey: string;           // skill_registry.key
+  priceCredits: number;
+  priceCents: number;
+  author: string;
+  description: string;
+  tags: string[];
+  installs: number;
+  createdAt: string;
+}
+export interface IShopProductDetail {
+  product: IShopProduct & { status?: string; coverUrl?: string };
+  skill: (ISkill & { costCredits?: number }) | null;
+}
+export interface IMySkill {
+  skillKey: string;
+  acquiredAt: string;
+  name?: string;
+  stage?: string;
+  adapter?: string;
+  description?: string;
+  icon?: string;
+  version?: string;
+}
+
+// 能力目录（公开，仅启用）
+export async function apiGetSkills(): Promise<ISkill[]> {
+  try { const d = await apiFetch<{ items: ISkill[] }>('/api/skills'); return d.items || []; } catch { return []; }
+}
+// 后台技能列表（含未启用）
+export async function apiAdminListSkills(): Promise<ISkill[]> {
+  try { const d = await apiFetch<{ items: ISkill[] }>('/api/admin/skills'); return d.items || []; } catch { return []; }
+}
+// 新建 / 更新（有 key 走 PUT，无 key 走 POST）
+export async function apiAdminSaveSkill(s: Partial<ISkill> & { key: string; params?: Record<string, unknown> }): Promise<{ ok: boolean; error?: string }> {
+  try {
+    if (s.key) return await apiFetch(`/api/admin/skills/${encodeURIComponent(s.key)}`, { method: 'PUT', body: JSON.stringify(s) });
+    return await apiFetch('/api/admin/skills', { method: 'POST', body: JSON.stringify(s) });
+  } catch (e) { return { ok: false, error: (e as Error).message }; }
+}
+export async function apiAdminDeleteSkill(key: string): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch(`/api/admin/skills/${encodeURIComponent(key)}`, { method: 'DELETE' }); }
+  catch (e) { return { ok: false, error: (e as Error).message }; }
+}
+
+// 市集商品列表（公开，仅 published）
+export async function apiGetShopProducts(): Promise<IShopProduct[]> {
+  try { const d = await apiFetch<{ items: IShopProduct[] }>('/api/shop/products'); return d.items || []; } catch { return []; }
+}
+// 市集商品详情（公开）
+export async function apiGetProduct(id: string): Promise<IShopProductDetail | null> {
+  try { return await apiFetch<IShopProductDetail>(`/api/shop/products/${encodeURIComponent(id)}`); } catch { return null; }
+}
+// 获取安装（登录；免费/积分；现金收银台本版未做）
+export async function apiAcquireProduct(id: string): Promise<{ ok: boolean; alreadyOwned?: boolean; skillKey?: string; installs?: number; error?: string; kind?: string }> {
+  try { return await apiFetch(`/api/shop/products/${encodeURIComponent(id)}/acquire`, { method: 'POST' }); }
+  catch (e) { return { ok: false, error: (e as Error).message }; }
+}
+// 我的技能（登录）
+export async function apiGetMySkills(): Promise<IMySkill[]> {
+  try { const d = await apiFetch<{ items: IMySkill[] }>('/api/skills/mine'); return d.items || []; } catch { return []; }
+}
+// 试跑技能 / 执行技能（登录；真实扣积分）
+export async function apiRunSkill(payload: { key: string; input: string; idempotencyKey?: string }): Promise<{ ok: boolean; content?: string; modelUsed?: string; costCredits?: number; error?: string }> {
+  try { return await apiFetch('/api/skill/run', { method: 'POST', body: JSON.stringify(payload) }); }
+  catch (e) { return { ok: false, error: (e as Error).message }; }
 }
 
 // ─── 用户侧账务（积分流水 / 充值订单 / 概览）───
@@ -771,8 +860,6 @@ export {
   apiGetCart,
   apiGetOrder,
   apiGetOrders,
-  apiGetProduct,
-  apiGetShopProducts,
   apiRemoveCartItem,
   apiUpdateCartItem,
 } from '@/pages/Admin/UsersPage';

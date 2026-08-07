@@ -1,132 +1,195 @@
-// 商品详情（骨架，M6 / §G.2 详情页字段清单）
-// 左图区 / 右上信息区 / 右智能体协助面板 / 下 AI 结构化图文 / 下评价
-import { useParams } from 'react-router-dom';
-import { Star, Sparkles, ShoppingCart, Zap } from 'lucide-react';
+// 商品详情（M6 数字能力包 · 真实数据）
+// 左信息区：标题/描述/价格/标签/获取安装；右：内置试用台（调真实 adapter 跑一遍 skill）
+import { useCallback, useEffect, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { ShoppingBag, Sparkles, Zap, Check, Loader2, ArrowLeft } from 'lucide-react';
+import { toast } from 'sonner';
 import { PageHeader, SectionCard, Placeholder, cn } from '@/components/skeleton';
+import {
+  apiGetProduct, apiAcquireProduct, apiRunSkill,
+  type IShopProductDetail,
+} from '@/services/api';
 
 export default function ProductDetailPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
+  const [detail, setDetail] = useState<IShopProductDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [owned, setOwned] = useState(false);
+  const [acquiring, setAcquiring] = useState(false);
 
-  const agentActions = [
-    { label: '改写卖点', icon: <Sparkles className="size-4" /> },
-    { label: '写种草文案', icon: <Zap className="size-4" /> },
-    { label: '配图建议', icon: <Sparkles className="size-4" /> },
-    { label: '问答预测', icon: <Sparkles className="size-4" /> },
-  ];
+  // 试用台
+  const [trialInput, setTrialInput] = useState('');
+  const [trialResult, setTrialResult] = useState('');
+  const [trialLoading, setTrialLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!id) return;
+    setLoading(true);
+    const d = await apiGetProduct(id);
+    setDetail(d);
+    setLoading(false);
+  }, [id]);
+  useEffect(() => { load(); }, [load]);
+
+  const priceLabel = (p: IShopProductDetail['product']) => {
+    if (p.priceCents > 0) return `¥${(p.priceCents / 100).toFixed(2)}`;
+    if (p.priceCredits > 0) return `${p.priceCredits} 积分`;
+    return '免费';
+  };
+
+  const acquire = async () => {
+    if (!detail) return;
+    setAcquiring(true);
+    const r = await apiAcquireProduct(detail.product.id);
+    setAcquiring(false);
+    if (r.ok) {
+      setOwned(true);
+      toast.success(r.alreadyOwned ? '你已拥有该能力' : '获取成功，已安装到你的技能库');
+    } else {
+      toast.error(r.error || '获取失败');
+    }
+  };
+
+  const runTrial = async () => {
+    if (!detail?.skill || !trialInput.trim()) return;
+    setTrialLoading(true);
+    setTrialResult('');
+    const r = await apiRunSkill({ key: detail.skill.key, input: trialInput });
+    setTrialLoading(false);
+    if (r.ok) {
+      setTrialResult(r.content || '');
+      toast.success(`试跑成功 · 消耗 ${r.costCredits ?? 0} 积分 · ${r.modelUsed || ''}`);
+    } else {
+      toast.error(r.error || '试跑失败');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-6">
+        <Placeholder label="加载商品中…" height="h-64" />
+      </div>
+    );
+  }
+
+  if (!detail) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title="商品不存在" subtitle="M6 · 该商品可能已下架" />
+        <Placeholder label="未找到对应商品" height="h-40" />
+        <button onClick={() => navigate('/shop')} className="flex items-center gap-1.5 text-sm text-emerald-300 hover:text-emerald-200">
+          <ArrowLeft className="size-4" /> 返回市集
+        </button>
+      </div>
+    );
+  }
+
+  const p = detail.product;
+  const sk = detail.skill;
+  const isPromptOptimize = sk?.adapter === 'prompt_optimize';
 
   return (
     <div className="space-y-6">
-      <PageHeader title={`商品 #${id}`} subtitle="M6 详情页 · 内嵌智能体协助面板（product_designer 等）" />
+      <button onClick={() => navigate('/shop')} className="flex items-center gap-1.5 text-sm text-zinc-400 hover:text-emerald-300 transition-colors">
+        <ArrowLeft className="size-4" /> 返回市集
+      </button>
+
+      <PageHeader
+        title={p.title}
+        subtitle={`${p.subtitle || ''} · 作者 ${p.author || '官方'} · 已安装 ${p.installs}`}
+        icon={<ShoppingBag className="size-5" />}
+      />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* 左：图区 */}
-        <SectionCard title="图区" hint="cover_url + ai_fields.gallery[]" bodyClassName="p-0">
-          <div className="space-y-3 p-5">
-            <div className="aspect-[4/3] w-full rounded-2xl bg-zinc-800/60" />
-            <div className="flex gap-2">
-              {[0, 1, 2, 3].map((i) => (
-                <div key={i} className="size-14 rounded-xl bg-zinc-800/60" />
+        {/* 左：信息区 */}
+        <SectionCard>
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              {p.tags?.map((t) => (
+                <span key={t} className="rounded-full bg-zinc-800/70 px-2.5 py-0.5 text-xs text-zinc-300">#{t}</span>
               ))}
+              <span className="rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-xs text-emerald-300">{p.kind === 'skill_pack' ? '数字能力包' : p.kind}</span>
             </div>
-            <p className="text-xs text-zinc-600">主图轮播 + 缩略图条 + 放大镜 / 3D 预览占位</p>
+            <p className="text-sm leading-relaxed text-zinc-300">{p.description || '—'}</p>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-semibold text-emerald-400">{priceLabel(p)}</span>
+              {owned && <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">已拥有</span>}
+            </div>
+
+            {/* 获取安装 */}
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                onClick={acquire}
+                disabled={acquiring || owned}
+                className={cn(
+                  'flex flex-1 items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium transition-colors',
+                  owned
+                    ? 'bg-zinc-800 text-zinc-400 cursor-default'
+                    : 'bg-emerald-500 text-black hover:bg-emerald-400',
+                )}
+              >
+                {acquiring ? <Loader2 className="size-4 animate-spin" /> : owned ? <Check className="size-4" /> : <ShoppingBag className="size-4" />}
+                {owned ? '已安装' : acquiring ? '获取中…' : '获取并安装'}
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500">
+              获取即把该能力装进你的技能库（user_skills），可在「工作台 / 智能体层」绑定调用。
+            </p>
           </div>
         </SectionCard>
 
-        {/* 右上：信息区 */}
-        <div className="space-y-4">
-          <SectionCard>
+        {/* 右：内置试用台 */}
+        <SectionCard title="试一试 · 内置试用台" hint="调真实 adapter 跑一遍，消耗少量积分" className="ring-1 ring-emerald-500/20">
+          {!sk ? (
+            <Placeholder label="该商品暂未关联可执行技能" height="h-40" />
+          ) : (
             <div className="space-y-3">
-              <h2 className="text-xl font-semibold text-white">商品标题</h2>
-              <p className="text-sm text-zinc-500">副标题</p>
-              <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-semibold text-emerald-400">¥199.00</span>
-                <span className="text-sm text-zinc-500">积分价 1990</span>
+              <div className="flex items-center gap-2 text-xs text-zinc-400">
+                <Sparkles className="size-4 text-emerald-400" />
+                技能 <code className="text-zinc-300">{sk.key}</code> · adapter <code className="text-zinc-300">{sk.adapter}</code> · 单次 {sk.costCredits ?? 0} 积分
               </div>
-              <div className="flex items-center gap-2 text-xs text-zinc-500">
-                <span>销量 1.2k</span>
-                <span className="text-zinc-700">·</span>
-                <span className="flex items-center gap-0.5">
-                  <Star className="size-3.5 fill-amber-400 text-amber-400" /> 4.8
-                </span>
-                <span className="text-zinc-700">·</span>
-                <span>库存 99</span>
-              </div>
-              {/* SKU 选择器 */}
-              <div className="flex gap-2">
-                {['规格A', '规格B', '规格C'].map((s, i) => (
-                  <button
-                    key={s}
-                    className={cn(
-                      'rounded-xl border px-3 py-1.5 text-xs transition-colors',
-                      i === 0
-                        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                        : 'border-zinc-800 text-zinc-400 hover:border-zinc-600',
-                    )}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-              {/* 数量 + 操作 */}
-              <div className="flex items-center gap-3 pt-1">
-                <div className="flex items-center rounded-xl border border-zinc-800">
-                  <button className="px-3 py-1.5 text-zinc-400 hover:text-white">−</button>
-                  <span className="w-8 text-center text-sm text-white">1</span>
-                  <button className="px-3 py-1.5 text-zinc-400 hover:text-white">+</button>
+              <textarea
+                value={trialInput}
+                onChange={(e) => setTrialInput(e.target.value)}
+                rows={4}
+                placeholder={isPromptOptimize ? '输入一段粗糙的中文提示词，例如：一个穿汉服的女孩在樱花树下' : '输入主题或要点，例如：为这张出片写一条小红书种草文案'}
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500"
+              />
+              <button
+                onClick={runTrial}
+                disabled={trialLoading || !trialInput.trim()}
+                className="flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-medium text-black hover:bg-emerald-400 disabled:opacity-50"
+              >
+                {trialLoading ? <Loader2 className="size-4 animate-spin" /> : <Zap className="size-4" />}
+                {trialLoading ? '运行中…' : '立即试跑'}
+              </button>
+              {trialResult && (
+                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+                  <div className="mb-1 flex items-center gap-1 text-xs text-emerald-300"><Check className="size-3.5" /> 输出结果</div>
+                  <p className="whitespace-pre-wrap text-sm text-zinc-200">{trialResult}</p>
                 </div>
-                <button className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-zinc-800 py-2.5 text-sm font-medium text-white hover:bg-zinc-700 transition-colors">
-                  <ShoppingCart className="size-4" /> 加入购物车
-                </button>
-                <button className="flex-1 rounded-2xl bg-emerald-500 py-2.5 text-sm font-medium text-black hover:bg-emerald-400 transition-colors">
-                  立即购买
-                </button>
-              </div>
+              )}
             </div>
-          </SectionCard>
-
-          {/* 右：智能体协助面板 */}
-          <SectionCard title="智能体协助面板" hint="DESIGN §15 mockup" className="ring-1 ring-emerald-500/20">
-            <div className="grid grid-cols-2 gap-2">
-              {agentActions.map((a) => (
-                <button
-                  key={a.label}
-                  className="flex items-center justify-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-300 hover:border-emerald-500/40 hover:text-emerald-300 transition-colors"
-                >
-                  {a.icon} {a.label}
-                </button>
-              ))}
-            </div>
-            <Placeholder
-              label="agent 返回输出区（可一键「应用到详情」）"
-              note="product_writer / product_designer / copywriter / smart_cs"
-              height="h-24"
-            />
-          </SectionCard>
-        </div>
+          )}
+        </SectionCard>
       </div>
 
-      {/* 下：AI 结构化图文 */}
-      <SectionCard title="AI 结构化图文" hint="ai_fields（product_designer 生成）">
-        <Placeholder
-          label="功效对比表 / 成分图谱 / 场景卡"
-          note="ai_fields JSONB 渲染"
-          height="h-40"
-        />
-      </SectionCard>
-
-      {/* 下：评价 */}
-      <SectionCard title="评价" hint="reviews: rating(1-5) / content">
-        <div className="mb-3 flex items-center gap-3">
-          <span className="text-3xl font-semibold text-white">4.8</span>
-          <div className="flex items-center gap-0.5">
-            {[1, 2, 3, 4, 5].map((i) => (
-              <Star key={i} className={cn('size-4', i <= 4 ? 'fill-amber-400 text-amber-400' : 'text-zinc-700')} />
-            ))}
+      {/* 关联技能说明 */}
+      {sk && (
+        <SectionCard title="关联能力" hint="skill_registry">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-950/50 p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-white">{sk.name}</div>
+                <code className="text-xs text-zinc-500">{sk.key}</code>
+              </div>
+              <span className="rounded-lg bg-zinc-800/60 px-2 py-0.5 text-[11px] text-zinc-400">stage: {sk.stage}</span>
+            </div>
+            <p className="mt-2 text-xs text-zinc-400">{sk.description || '—'}</p>
           </div>
-          <span className="text-xs text-zinc-500">评分分布 + 最新 reviews</span>
-        </div>
-        <Placeholder label="评价列表（评分分布柱状 + 最新评论）" height="h-32" />
-      </SectionCard>
+        </SectionCard>
+      )}
     </div>
   );
 }

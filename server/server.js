@@ -266,6 +266,10 @@ async function initDB() {
         config JSONB DEFAULT '{}',
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
+      -- Phase M4/M6：智能体可绑定 skill（agent_type=skill 时引用 skill_registry.key）
+      ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_type TEXT DEFAULT 'model';
+      ALTER TABLE agents ADD COLUMN IF NOT EXISTS skill_key TEXT DEFAULT '';
+      CREATE INDEX IF NOT EXISTS ix_agents_type ON agents(agent_type);
       CREATE TABLE IF NOT EXISTS agent_providers (
         id TEXT PRIMARY KEY,
         agent_key TEXT NOT NULL REFERENCES agents(key) ON DELETE CASCADE,
@@ -414,6 +418,51 @@ async function initDB() {
       );
       CREATE INDEX IF NOT EXISTS ix_pa_created ON payment_audit(created_at DESC);
 
+      -- === Phase M4/M6：技能注册表（能力原子，市集获取即安装到此表）===
+      CREATE TABLE IF NOT EXISTS skill_registry (
+        key          TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        stage        TEXT DEFAULT 'generation',   -- generation | prompt | post | analysis
+        adapter      TEXT NOT NULL,               -- prompt_optimize | text_gen | ...
+        params       JSONB DEFAULT '{}',
+        cost_credits INT DEFAULT 0,
+        enabled      BOOLEAN DEFAULT TRUE,
+        description  TEXT DEFAULT '',
+        author       TEXT DEFAULT '',
+        icon         TEXT DEFAULT '',
+        version      TEXT DEFAULT '1.0.0',
+        created_at   TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_sr_enabled ON skill_registry(enabled);
+
+      -- === Phase M6：AI 市集商品（数字能力包 / 智能体模板）===
+      CREATE TABLE IF NOT EXISTS products (
+        id            TEXT PRIMARY KEY DEFAULT 'prod-' || gen_random_uuid()::text,
+        title         TEXT NOT NULL,
+        subtitle      TEXT DEFAULT '',
+        cover_url     TEXT DEFAULT '',
+        kind          TEXT DEFAULT 'skill_pack',    -- skill_pack | agent_template
+        ref_key       TEXT DEFAULT '',              -- skill_registry.key（kind=skill_pack 时）
+        price_credits INT DEFAULT 0,                -- 积分价格（0 = 免费）
+        price_cents   INT DEFAULT 0,                -- 现金价格（分；0 = 免费）
+        status        TEXT DEFAULT 'published',     -- draft | published | archived
+        author        TEXT DEFAULT '',
+        description   TEXT DEFAULT '',
+        tags          TEXT[] DEFAULT '{}',
+        installs      INT DEFAULT 0,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_prod_status ON products(status, created_at DESC);
+
+      -- 用户已获取技能（市集 acquire = 在此表落一条授权）
+      CREATE TABLE IF NOT EXISTS user_skills (
+        user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        skill_key    TEXT NOT NULL,
+        acquired_at  TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (user_id, skill_key)
+      );
+      CREATE INDEX IF NOT EXISTS ix_us_user ON user_skills(user_id);
+
       -- Node 内存 worker 游标持久化（超时扫描 / Webhook 重试调度）
       CREATE TABLE IF NOT EXISTS cron_marker (
         name      TEXT PRIMARY KEY,
@@ -434,6 +483,20 @@ async function initDB() {
         ('rule-ban-ip','登录失败封禁','login_fail','{"threshold":20,"window":"ip"}','{"type":"ban_ip"}', TRUE),
         ('rule-error-rate','5xx 错误率告警','error_rate','{"threshold":0.02,"metric":"5xx"}','{"type":"alert"}', TRUE),
         ('rule-auto-reply','客服咨询应答','support_query','{"kb_match":true}','{"type":"draft_reply"}', TRUE)
+      ON CONFLICT (id) DO NOTHING;
+    `);
+
+    // 种子：技能注册表 + 市集示例商品（M4/M6 数字能力包雏形）
+    await pgPool.query(`
+      INSERT INTO skill_registry (key, name, stage, adapter, params, cost_credits, enabled, description, author, icon, version)
+      VALUES
+        ('prompt_optimize','提示词优化','prompt','prompt_optimize','{"target":"image"}',1,TRUE,'将原始提示词改写为结构化英文生成提示词','官方','sparkles','1.0.0'),
+        ('copy_writer','文案生成','post','text_gen','{"max_tokens":800,"temperature":0.8}',2,TRUE,'为成片生成营销文案 / 标题 / 社媒描述','官方','pencil','1.0.0')
+      ON CONFLICT (key) DO NOTHING;
+      INSERT INTO products (id, title, subtitle, kind, ref_key, price_credits, price_cents, status, author, description, tags)
+      VALUES
+        ('prod-prompt-optimize','提示词优化包','一键升级你的提示词质量','skill_pack','prompt_optimize',0,0,'published','官方','将口语化提示词改写为专业生成提示词，显著提升出图质量。',ARRAY['提示词','效率']),
+        ('prod-copy-writer','文案生成包','成片自动配文案','skill_pack','copy_writer',50,0,'published','官方','为你的图像 / 视频生成营销文案、标题与社媒描述。',ARRAY['文案','营销'])
       ON CONFLICT (id) DO NOTHING;
     `);
 
@@ -1097,10 +1160,14 @@ async function handleAPI(req, res) {
   if (url === '/api/admin/console/stream' && method === 'GET') return admin.streamConsole(req, res);
   // ── 后台账务系统（Phase 4：总览 / 对账 / 账本 / 套餐）── 优先于通用 admin 分发
   if (url.startsWith('/api/admin/finance/') && method !== 'OPTIONS') return finance.handleFinance(req, res, url.split('?')[0], method);
+  // ── 技能注册表后台 CRUD（M4/M6）── 必须在通用 /api/admin/ 之前拦截（否则会被 admin 模块的 404 吞掉）
+  if (url.startsWith('/api/admin/skills') && method !== 'OPTIONS') {
+    if (await shop.handleShop(req, res, url.split('?')[0], method)) return;
+  }
   if (url.startsWith('/api/admin/') && method !== 'OPTIONS') return admin.handleAdmin(req, res, url.split('?')[0], method);
 
-  // ── 电商模块（AI 市集）── 命中即处理（内部自行鉴权：商品列表/详情公开，购物车/订单需登录）
-  if ((url.startsWith('/api/shop/') || url.startsWith('/api/products/') || url.startsWith('/api/cart') || url.startsWith('/api/orders')) && method !== 'OPTIONS') {
+  // ── 电商模块（AI 市集 / 技能注册表 / 试用台）── 命中即处理（内部自行鉴权：目录/商品公开，试用/获取/我的技能需登录）
+  if ((url.startsWith('/api/shop/') || url.startsWith('/api/products/') || url.startsWith('/api/cart') || url.startsWith('/api/orders') || url.startsWith('/api/skills') || url.startsWith('/api/skill/')) && method !== 'OPTIONS') {
     if (await shop.handleShop(req, res, url.split('?')[0], method)) return;
   }
 
