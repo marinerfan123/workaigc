@@ -53,10 +53,6 @@ export default function ImageViewer({
   const imgRef = useRef<HTMLDivElement>(null);
   // 当前图片的像素尺寸（来自 naturalWidth/Height，可能为空直到 onLoad 触发）
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
-  // 当前图片的文件大小（字节），HEAD 拿不到时为 null
-  const [bytes, setBytes] = useState<number | null>(null);
-  // 上一张图 URL（用于切换时重置 dims/bytes）
-  const lastSrcRef = useRef<string>('');
 
   const current = items[currentIndex];
   const viewUrl = useMediaUrl(current);
@@ -197,63 +193,11 @@ export default function ImageViewer({
     };
   }, []);
 
-  // 从 Performance Resource Timing 读取浏览器实际下载大小（最准，不额外发请求）
-  const readSizeFromTiming = useCallback((url: string) => {
-    try {
-      if (typeof performance === 'undefined') return null;
-      const entries = performance.getEntriesByName(url, 'resource');
-      for (let i = entries.length - 1; i >= 0; i--) {
-        const e = entries[i] as PerformanceResourceTiming;
-        // transferSize 包含响应体大小；decodedBodySize/encodedBodySize 也可兜底
-        if (e.transferSize && e.transferSize > 0) return e.transferSize;
-        if (e.encodedBodySize && e.encodedBodySize > 0) return e.encodedBodySize;
-      }
-    } catch {
-      // ignore
-    }
-    return null;
-  }, []);
-
-  // 切换图片时：重置像素/大小 + 异步 HEAD 拉文件大小
+  // 切换图片时重置像素尺寸（文件大小只认后端 fileSize，浏览器不做任何探测，不给客户端加压）
   useEffect(() => {
-    if (!current || lastSrcRef.current === viewUrl) return;
-    lastSrcRef.current = viewUrl;
+    if (!current) return;
     setDims(null);
-    setBytes(null);
-    // 后端已记录真实大小：无需再向浏览器 Timing/HEAD 探测
-    if (current.fileSize && current.fileSize > 0) return;
-
-    const url = viewUrl;
-    // dataURL 直接转 base64 长度（KB/MB）
-    if (url.startsWith('data:')) {
-      const m = url.match(/^data:[^;]+;base64,(.+)$/);
-      if (m) setBytes(Math.round((m[1].length * 3) / 4));
-      return;
-    }
-    // 远程 URL：优先读 Performance Timing（已下载大小），再试 HEAD
-    let cancelled = false;
-    (async () => {
-      const fromTiming = readSizeFromTiming(url);
-      if (fromTiming) {
-        if (!cancelled) setBytes(fromTiming);
-        return;
-      }
-      try {
-        const r = await fetch(url, { method: 'HEAD' });
-        if (cancelled) return;
-        const cl = r.headers.get('content-length');
-        if (cl) {
-          const n = parseInt(cl, 10);
-          if (Number.isFinite(n) && n > 0) setBytes(n);
-        }
-      } catch {
-        // CORS 或网络失败：忽略，留 null 让下方估算兜底
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [viewUrl, readSizeFromTiming]);
+  }, [viewUrl]);
 
   if (!current) return null;
 
@@ -376,9 +320,6 @@ export default function ImageViewer({
             if (el.naturalWidth && el.naturalHeight) {
               setDims({ w: el.naturalWidth, h: el.naturalHeight });
             }
-            // 图片已下载，从 Performance Timing 取准确大小（HEAD 被 CORS 拦截时的兜底）
-            const actual = readSizeFromTiming(el.currentSrc || viewUrl);
-            if (actual && actual > 0) setBytes(actual);
           }}
         />
       </div>
@@ -406,20 +347,16 @@ export default function ImageViewer({
           <span className="text-zinc-700">·</span>
           <span
             className="inline-flex items-center gap-1 rounded-md bg-amber-500/10 px-2 py-0.5 text-sm font-semibold text-amber-300 border border-amber-500/20"
-            title={(() => {
-              const accurate = current.fileSize && current.fileSize > 0;
-              const known = accurate || (bytes && bytes > 0);
-              return known ? '文件大小（后端记录的准确值）' : '文件大小（按像素估算，后端未记录）';
-            })()}
+            title={
+              current.fileSize && current.fileSize > 0
+                ? '文件大小（后端记录的准确值）'
+                : '文件大小（按像素估算，后端未记录）'
+            }
           >
             <HardDrive className="size-3.5" />
-            {(() => {
-              const accurate = current.fileSize && current.fileSize > 0 ? current.fileSize : null;
-              const known = accurate || (bytes && bytes > 0 ? bytes : null);
-              if (known) return formatBytes(known);
-              // 后端未记录 + 浏览器也没探到：按像素估算，并标注（估）
-              return (estimateBytes(dims?.w, dims?.h) || '— KB') + (dims ? '（估）' : '');
-            })()}
+            {current.fileSize && current.fileSize > 0
+              ? formatBytes(current.fileSize)
+              : (estimateBytes(dims?.w, dims?.h) || '— KB') + (dims ? '（估）' : '')}
           </span>
           <span className="text-zinc-700">·</span>
           <span className="text-sm text-zinc-400">
