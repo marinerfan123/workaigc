@@ -105,11 +105,11 @@ const payments = {
       const payOrderNo = 'P' + Date.now().toString(36) + crypto.randomBytes(4).toString('hex');
       const sign = hmac(SIGN_SECRET, `${payOrderNo}:${amount}:${channel}`);
       // 计算绝对过期时间（前端倒计时用），与 order-expiry worker 阈值保持一致
-      const expiresAt = new Date(Date.now() + settings.defaultExpiresMin * 60000).toISOString();
+      const expiresAt = new Date(Date.now() + settings.defaultExpiresMin * 60000);
       await pg.query(
-        `INSERT INTO recharge_orders (id, user_id, channel, amount, status, pay_order_no, sign)
-         VALUES ($1,$2,$3,$4,'pending',$5,$6)`,
-        [id, u.id, channel, amount, payOrderNo, sign],
+        `INSERT INTO recharge_orders (id, user_id, channel, amount, status, pay_order_no, sign, expired_at)
+         VALUES ($1,$2,$3,$4,'pending',$5,$6,$7)`,
+        [id, u.id, channel, amount, payOrderNo, sign, expiresAt],
       );
 
       // 向真实通道下单，拿回支付链接（无 payUrl 时前端显示安全提示，不再有 DEV 入口）
@@ -139,7 +139,7 @@ const payments = {
 
       return sendJSON(res, 200, {
         ok: true,
-        order: { id, payOrderNo, amount, channel, status: 'pending', payUrl, expiresAt },
+        order: { id, payOrderNo, amount, channel, status: 'pending', payUrl, expiresAt: expiresAt.toISOString() },
       });
     }
 

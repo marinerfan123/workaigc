@@ -34,13 +34,18 @@ function createOrderExpiryWorker(ctx) {
       const mins = (s.rows[0] && Number(s.rows[0].default_expires_min)) || 15;
       if (!(mins > 0)) return { scanned: 0, expired: 0, skipped: true };
 
-      // 原子过期：单条 UPDATE 锁定被改行，RETURNING 取走批次，天然无并发双改
+      // 原子过期：单条 UPDATE 锁定被改行，RETURNING 取走批次，天然无并发双改。
+      // ⚠️ 双分支兼容：早期订单 expired_at 为 NULL（按 created_at 阈值判超时）；
+      //    新订单已持久化 expired_at（按绝对过期时刻判超时）。二者都要覆盖，
+      //    否则一旦 createOrder 落 expired_at，新 pending 会被 AND expired_at IS NULL 排除而永不失效。
       const upd = await pg.query(
         `UPDATE recharge_orders
             SET status='expired', expired_at=NOW()
           WHERE status='pending'
-            AND expired_at IS NULL
-            AND created_at < NOW() - ($1::int * INTERVAL '1 minute')
+            AND (
+              (expired_at IS NULL AND created_at < NOW() - ($1::int * INTERVAL '1 minute'))
+              OR (expired_at IS NOT NULL AND expired_at < NOW())
+            )
           RETURNING id, user_id, amount, pay_order_no`,
         [mins],
       );
