@@ -8,6 +8,12 @@ const { decrypt } = require('./crypto.cjs');
 const { EasyPayProvider } = require('./providers/easypay.cjs');
 
 // 把一行 DB 记录（加密密钥）还原成可实例化的 provider 对象
+function normalizeMethods(methods, type) {
+  const defaults = { easypay: ['alipay', 'wxpay'], alipay: ['alipay'], wxpay: ['wxpay'], stripe: ['card'], mock: ['alipay', 'wxpay'] };
+  if (Array.isArray(methods) && methods.length) return methods.map((m) => String(m).toLowerCase()).filter((m) => ['alipay', 'wxpay', 'card'].includes(m));
+  return defaults[type] || defaults.easypay;
+}
+
 function buildEntry(row) {
   const cfg = {
     pid: decrypt(row.pid_enc),
@@ -20,7 +26,13 @@ function buildEntry(row) {
   if (row.type === 'easypay') provider = new EasyPayProvider(cfg);
   // 其他 type（alipay/wxpay/stripe）暂未实现适配器 → provider 为 null，被调用方跳过
   if (!provider) return null;
-  return { id: row.id, type: row.type, provider, weight: Number(row.weight) || 1 };
+  return {
+    id: row.id,
+    type: row.type,
+    provider,
+    weight: Number(row.weight) || 1,
+    supportedMethods: normalizeMethods(row.supported_methods, row.type),
+  };
 }
 
 function createLoader(ctx) {
@@ -35,7 +47,7 @@ function createLoader(ctx) {
     try {
       r = await pg.query(
         `SELECT id, name, type, enabled, weight, sort_order, api_base,
-                pid_enc, pkey_enc, webhook_secret_enc, product_name_prefix
+                pid_enc, pkey_enc, webhook_secret_enc, product_name_prefix, supported_methods
          FROM payment_providers WHERE enabled = TRUE
          ORDER BY sort_order ASC, weight DESC`,
       );
@@ -101,6 +113,20 @@ function createLoader(ctx) {
       } catch (e) {
         console.warn('[loader] getDefault 失败:', e.message);
         return null;
+      }
+    },
+    // 返回当前所有启用 provider 支持的支付方式并集（供前端充值弹窗显隐）
+    async getSupportedMethods() {
+      try {
+        const map = await getMap();
+        const set = new Set();
+        Object.values(map).forEach((list) => {
+          (list || []).forEach((e) => { if (e && e.supportedMethods) e.supportedMethods.forEach((m) => set.add(m)); });
+        });
+        return Array.from(set);
+      } catch (e) {
+        console.warn('[loader] getSupportedMethods 失败:', e.message);
+        return [];
       }
     },
     invalidate() { cache = null; },

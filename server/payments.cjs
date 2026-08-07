@@ -67,6 +67,11 @@ const payments = {
       // 通道可用性校验：无配置通道直接 503，绝不回退 DEV 模拟（防白嫖命门）
       const providerEntry = await loader.getDefault().catch(() => null);
       if (!providerEntry) return sendJSON(res, 503, { error: '支付通道暂未配置，无法充值' });
+      // 校验所选支付方式是否在该 provider 支持列表内
+      const method = channel === 'alipay' ? 'alipay' : 'wxpay';
+      if (!Array.isArray(providerEntry.supportedMethods) || !providerEntry.supportedMethods.includes(method)) {
+        return sendJSON(res, 400, { error: `该支付通道不支持「${method === 'alipay' ? '支付宝' : '微信支付'}」，请选择其他方式` });
+      }
 
       // ── 支付全局设置校验（防滥用：总开关 / 金额区间 / 单用户日限额 / 最大待付数）──
       const settings = await loadPaymentSettings();
@@ -115,7 +120,6 @@ const payments = {
       // 向真实通道下单，拿回支付链接（无 payUrl 时前端显示安全提示，不再有 DEV 入口）
       let payUrl = '';
       try {
-        const method = channel === 'alipay' ? 'alipay' : 'wxpay';
         // 公网回调地址：优先用 PUBLIC_BASE_URL（隧道/生产域名），否则回退到请求 Host（本地联调）。
         // 这是「真实充值端到端跑通」的命门——localhost 下平台公网回调打不进来，必须用公网可达地址。
         const publicBase = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
@@ -188,7 +192,14 @@ const payments = {
       });
     }
 
+    // 公开接口：返回当前可用的支付方式列表（无需登录）
+    async function listPaymentMethods(req, res) {
+      const methods = await loader.getSupportedMethods().catch(() => []);
+      return sendJSON(res, 200, { items: methods });
+    }
+
     function handlePayments(req, res, url, method) {
+      if (url === '/api/credits/payment-methods' && method === 'GET') { listPaymentMethods(req, res); return true; }
       if (url === '/api/credits/orders' && method === 'POST') { createOrder(req, res); return true; }
       if (url === '/api/credits/orders' && method === 'GET') { listOrders(req, res); return true; }
       const m = url.match(/^\/api\/credits\/orders\/([^/]+)$/);

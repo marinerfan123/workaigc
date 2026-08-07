@@ -287,9 +287,15 @@ function createFinance(ctx) {
   }
 
   // 支付服务商列表（脱敏：只暴露是否已配置密钥，不返回明文）
-  async function listProviders() {
+    function normalizeProviderMethods(methods, type) {
+      const defaults = { easypay: ['alipay', 'wxpay'], alipay: ['alipay'], wxpay: ['wxpay'], stripe: ['card'], mock: ['alipay', 'wxpay'] };
+      if (Array.isArray(methods) && methods.length) return methods.map((m) => String(m).toLowerCase()).filter((m) => ['alipay', 'wxpay', 'card'].includes(m));
+      return defaults[type] || defaults.easypay;
+    }
+
+    async function listProviders() {
     const r = await pg().query(
-      `SELECT id,name,type,enabled,weight,sort_order,api_base,product_name_prefix,allow_refund,remark,
+      `SELECT id,name,type,enabled,weight,sort_order,api_base,product_name_prefix,allow_refund,remark,supported_methods,
               pid_enc IS NOT NULL AS has_pid, pkey_enc IS NOT NULL AS has_pkey, webhook_secret_enc IS NOT NULL AS has_webhook,
               created_at, updated_at
        FROM payment_providers ORDER BY sort_order ASC, weight DESC, created_at ASC`);
@@ -298,21 +304,23 @@ function createFinance(ctx) {
         id: x.id, name: x.name, type: x.type, enabled: x.enabled,
         weight: Number(x.weight), sortOrder: Number(x.sort_order), apiBase: x.api_base,
         productNamePrefix: x.product_name_prefix, allowRefund: x.allow_refund, remark: x.remark || '',
+        supportedMethods: normalizeProviderMethods(x.supported_methods, x.type),
         hasPid: x.has_pid, hasPkey: x.has_pkey, hasWebhook: x.has_webhook,
         createdAt: x.created_at, updatedAt: x.updated_at,
       })),
     };
   }
-  async function createProvider(body, actor) {
+    async function createProvider(body, actor) {
     const name = (body.name || '').toString().trim();
     const type = (body.type || 'easypay').toString().trim();
     if (!name) throw new Error('名称不能为空');
     if (!['easypay', 'alipay', 'wxpay', 'stripe', 'mock'].includes(type)) throw new Error('不支持的支付类型');
+    const supportedMethods = normalizeProviderMethods(body.supportedMethods, type);
     const id = 'pp-' + crypto.randomUUID();
     await pg().query(
       `INSERT INTO payment_providers
-        (id,name,type,enabled,weight,sort_order,api_base,pid_enc,pkey_enc,webhook_secret_enc,product_name_prefix,allow_refund,remark,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,NOW())`,
+        (id,name,type,enabled,weight,sort_order,api_base,pid_enc,pkey_enc,webhook_secret_enc,product_name_prefix,allow_refund,remark,supported_methods,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())`,
       [
         id, name, type,
         body.enabled !== false,
@@ -323,13 +331,14 @@ function createFinance(ctx) {
         body.productNamePrefix || '充值',
         body.allowRefund === true,
         body.remark || '',
+        JSON.stringify(supportedMethods),
       ],
     );
-    await auditPayment('provider_change', actor, { action: 'create', id, name, type });
+    await auditPayment('provider_change', actor, { action: 'create', id, name, type, supportedMethods });
     if (invalidateProviders) try { invalidateProviders(); } catch (e) {}
     return { ok: true, id };
   }
-  async function updateProvider(id, body, actor) {
+    async function updateProvider(id, body, actor) {
     const fields = []; const vals = []; let i = 1;
     const set = (c, v) => { fields.push(`${c}=$${i}`); vals.push(v); i++; };
     if (body.name !== undefined) set('name', body.name);
@@ -341,6 +350,7 @@ function createFinance(ctx) {
     if (body.productNamePrefix !== undefined) set('product_name_prefix', body.productNamePrefix);
     if (body.allowRefund !== undefined) set('allow_refund', !!body.allowRefund);
     if (body.remark !== undefined) set('remark', body.remark);
+    if (body.supportedMethods !== undefined) set('supported_methods', JSON.stringify(normalizeProviderMethods(body.supportedMethods, body.type)));
     // 密钥仅在提供非空值时更新；留空则保留原值
     if (body.pid) set('pid_enc', encrypt(body.pid));
     if (body.pkey) set('pkey_enc', encrypt(body.pkey));

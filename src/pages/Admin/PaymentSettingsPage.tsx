@@ -129,14 +129,20 @@ function ProvidersPanel({ providers, onChanged }: { providers: PaymentProvider[]
   const [editing, setEditing] = useState<PaymentProvider | null>(null);
   const [form, setForm] = useState<Partial<PaymentProvider> & { pid?: string; pkey?: string; webhookSecret?: string }>({});
 
+  function defaultMethods(type: string) {
+    if (type === 'alipay') return ['alipay'];
+    if (type === 'wxpay') return ['wxpay'];
+    if (type === 'stripe') return ['card'];
+    return ['alipay', 'wxpay'];
+  }
   function openNew() {
     setEditing(null);
-    setForm({ name: '', type: 'easypay', enabled: true, weight: 1, sortOrder: providers.length, apiBase: '', productNamePrefix: '充值', allowRefund: false, remark: '', pid: '', pkey: '', webhookSecret: '' });
+    setForm({ name: '', type: 'easypay', enabled: true, weight: 1, sortOrder: providers.length, apiBase: '', productNamePrefix: '充值', allowRefund: false, supportedMethods: ['alipay', 'wxpay'], remark: '', pid: '', pkey: '', webhookSecret: '' });
     setShowForm(true);
   }
   function openEdit(p: PaymentProvider) {
     setEditing(p);
-    setForm({ name: p.name, type: p.type, enabled: p.enabled, weight: p.weight, sortOrder: p.sortOrder, apiBase: p.apiBase, productNamePrefix: p.productNamePrefix, allowRefund: p.allowRefund, remark: p.remark, pid: '', pkey: '', webhookSecret: '' });
+    setForm({ name: p.name, type: p.type, enabled: p.enabled, weight: p.weight, sortOrder: p.sortOrder, apiBase: p.apiBase, productNamePrefix: p.productNamePrefix, allowRefund: p.allowRefund, supportedMethods: p.supportedMethods || defaultMethods(p.type), remark: p.remark, pid: '', pkey: '', webhookSecret: '' });
     setShowForm(true);
   }
 
@@ -156,6 +162,7 @@ function ProvidersPanel({ providers, onChanged }: { providers: PaymentProvider[]
               <th className="pb-2 pr-3 font-medium">名称</th>
               <th className="pb-2 pr-3 font-medium">类型</th>
               <th className="pb-2 pr-3 font-medium">权重</th>
+              <th className="pb-2 pr-3 font-medium">支持方式</th>
               <th className="pb-2 pr-3 font-medium">密钥</th>
               <th className="pb-2 pr-3 font-medium">状态</th>
               <th className="pb-2 pr-3 font-medium">排序</th>
@@ -164,13 +171,14 @@ function ProvidersPanel({ providers, onChanged }: { providers: PaymentProvider[]
           </thead>
           <tbody>
             {providers.length === 0 && (
-              <tr><td colSpan={7} className="py-6 text-center text-zinc-500">暂无服务商，新增后充值将自动选用已启用的通道</td></tr>
+              <tr><td colSpan={8} className="py-6 text-center text-zinc-500">暂无服务商，新增后充值将自动选用已启用的通道</td></tr>
             )}
             {providers.map((p) => (
               <tr key={p.id} className="border-t border-zinc-800/60">
                 <td className="py-2 pr-3 text-zinc-200">{p.name || '—'}</td>
                 <td className="py-2 pr-3 text-zinc-400">{PROVIDER_TYPES.find((t) => t.v === p.type)?.label || p.type}</td>
                 <td className="py-2 pr-3 tabular-nums text-zinc-300">{p.weight}</td>
+                <td className="py-2 pr-3 text-zinc-400">{(p.supportedMethods || []).map((m) => ({ alipay: '支付宝', wxpay: '微信' }[m] || m)).join(' / ')}</td>
                 <td className="py-2 pr-3">
                   <div className="flex gap-1">
                     <KeyBadge ok={p.hasPid} label="商户号" />
@@ -242,7 +250,14 @@ function ProviderForm({
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <Field label="名称"><input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inp} placeholder="如 易支付-主通道" /></Field>
         <Field label="类型">
-          <select value={form.type || 'easypay'} onChange={(e) => setForm({ ...form, type: e.target.value })} className={inp}>
+          <select
+            value={form.type || 'easypay'}
+            onChange={(e) => {
+              const nextType = e.target.value;
+              setForm({ ...form, type: nextType, supportedMethods: defaultMethods(nextType) });
+            }}
+            className={inp}
+          >
             {PROVIDER_TYPES.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
           </select>
         </Field>
@@ -253,6 +268,11 @@ function ProviderForm({
         <Field label="备注"><input value={form.remark || ''} onChange={(e) => setForm({ ...form, remark: e.target.value })} className={inp} placeholder="可选" /></Field>
         <ToggleField label="启用" value={!!form.enabled} onChange={(v) => setForm({ ...form, enabled: v })} />
         <ToggleField label="允许退款" value={!!form.allowRefund} onChange={(v) => setForm({ ...form, allowRefund: v })} />
+        <MethodToggleField
+          methods={form.supportedMethods || defaultMethods(form.type || 'easypay')}
+          type={form.type || 'easypay'}
+          onChange={(v) => setForm({ ...form, supportedMethods: v })}
+        />
       </div>
 
       <div className="mt-3 rounded-2xl border border-zinc-800/70 bg-zinc-900/40 p-3">
@@ -321,4 +341,38 @@ function ToggleField({ label, value, onChange }: { label: string; value: boolean
 }
 function num(e: ChangeEvent<HTMLInputElement>) {
   return Math.floor(Number(e.target.value) || 0);
+}
+function MethodToggleField({ methods, type, onChange }: { methods: string[]; type: string; onChange: (v: string[]) => void }) {
+  const locked = type === 'alipay' ? ['alipay'] : type === 'wxpay' ? ['wxpay'] : type === 'stripe' ? ['card'] : null;
+  const opts = [
+    { key: 'alipay', label: '支付宝' },
+    { key: 'wxpay', label: '微信支付' },
+  ];
+  const vals = locked || methods.filter((m) => ['alipay', 'wxpay'].includes(m));
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[11px] text-zinc-500">支持支付方式{locked ? '（由类型锁定）' : ''}</span>
+      <div className="flex gap-2">
+        {opts.map((o) => {
+          const active = vals.includes(o.key);
+          const disabled = !!locked;
+          return (
+            <button
+              key={o.key}
+              type="button"
+              disabled={disabled}
+              onClick={() => {
+                if (disabled) return;
+                const next = active ? vals.filter((m) => m !== o.key) : [...vals, o.key];
+                onChange(next.length ? next : [o.key]); // 至少保留一个
+              }}
+              className={`flex h-9 flex-1 items-center justify-center gap-2 rounded-xl border px-3 text-sm ${active ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300' : 'border-zinc-800 text-zinc-500'} ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
+            >
+              {active ? <Check className="size-3.5" /> : <X className="size-3.5" />}{o.label}
+            </button>
+          );
+        })}
+      </div>
+    </label>
+  );
 }

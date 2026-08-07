@@ -6,6 +6,7 @@ import {
   apiCreateRechargeOrder,
   apiGetRechargeOrderStatus,
   apiPublicTopupPackages,
+  apiGetPaymentMethods,
   type RechargeOrder,
   type TopupPackage,
 } from '@/services/api';
@@ -17,7 +18,8 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
   const { user } = useAuth();
   const [amount, setAmount] = useState<number>(98);
   const [custom, setCustom] = useState('');
-  const [channel, setChannel] = useState<'wechat' | 'alipay'>('wechat');
+  const [channel, setChannel] = useState<string>('wxpay');
+  const [methods, setMethods] = useState<string[]>(['wxpay', 'alipay']);
   const [step, setStep] = useState<Step>('form');
   const [order, setOrder] = useState<RechargeOrder | null>(null);
   const [busy, setBusy] = useState(false);
@@ -38,6 +40,15 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
   // 充值套餐后管可配置：优先拉后端套餐，未配置时回退内置预设
   useEffect(() => {
     apiPublicTopupPackages().then((r) => setPackages(r.items)).catch(() => {});
+  }, []);
+
+  // 拉取后台实际启用的支付方式，按配置显隐微信/支付宝
+  useEffect(() => {
+    apiGetPaymentMethods().then((items) => {
+      const available = items.length ? items : ['wxpay', 'alipay'];
+      setMethods(available);
+      setChannel((prev) => (available.includes(prev) ? prev : available[0] || 'wxpay'));
+    }).catch(() => {});
   }, []);
 
   // paying 态：每秒刷新支付链接剩余有效时间（倒计时）
@@ -190,40 +201,44 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
                 />
               </div>
 
-              <div>
-                <div className="mb-2 text-sm text-zinc-400">支付方式</div>
-                <div className="grid grid-cols-2 gap-2">
-                  {([
-                    { key: 'wechat', label: '微信支付', icon: Smartphone },
-                    { key: 'alipay', label: '支付宝', icon: CreditCard },
-                  ] as const).map((c) => {
-                    const Icon = c.icon;
-                    const active = channel === c.key;
-                    return (
-                      <button
-                        key={c.key}
-                        onClick={() => setChannel(c.key)}
-                        className={`flex items-center gap-2 rounded-2xl border px-3 py-3 text-sm font-medium transition-all ${
-                          active
-                            ? 'border-emerald-500/50 bg-emerald-500/10 text-white'
-                            : 'border-zinc-800 bg-zinc-800/40 text-zinc-400 hover:border-zinc-700'
-                        }`}
-                      >
-                        <Icon className={`size-4 ${active ? 'text-emerald-400' : ''}`} />
-                        {c.label}
-                      </button>
-                    );
-                  })}
+              {methods.length > 0 && (
+                <div>
+                  <div className="mb-2 text-sm text-zinc-400">支付方式</div>
+                  <div className={`grid gap-2 ${methods.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                    {([
+                      { key: 'wxpay', label: '微信支付', icon: Smartphone },
+                      { key: 'alipay', label: '支付宝', icon: CreditCard },
+                    ] as const)
+                      .filter((c) => methods.includes(c.key))
+                      .map((c) => {
+                        const Icon = c.icon;
+                        const active = channel === c.key;
+                        return (
+                          <button
+                            key={c.key}
+                            onClick={() => setChannel(c.key)}
+                            className={`flex items-center gap-2 rounded-2xl border px-3 py-3 text-sm font-medium transition-all ${
+                              active
+                                ? 'border-emerald-500/50 bg-emerald-500/10 text-white'
+                                : 'border-zinc-800 bg-zinc-800/40 text-zinc-400 hover:border-zinc-700'
+                            }`}
+                          >
+                            <Icon className={`size-4 ${active ? 'text-emerald-400' : ''}`} />
+                            {c.label}
+                          </button>
+                        );
+                      })}
+                  </div>
                 </div>
-              </div>
+              )}
 
               <button
                 onClick={create}
-                disabled={!user || !valid || busy}
+                disabled={!user || !valid || busy || methods.length === 0}
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 py-3 text-sm font-bold text-zinc-900 transition-transform hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {busy ? <Loader2 className="size-4 animate-spin" /> : <Wallet className="size-4" />}
-                {user ? `创建订单并支付 ¥${valid ? finalAmount : 0}` : '请先登录后充值'}
+                {!user ? '请先登录后充值' : methods.length === 0 ? '支付通道未就绪' : `创建订单并支付 ¥${valid ? finalAmount : 0}`}
               </button>
             </div>
           )}

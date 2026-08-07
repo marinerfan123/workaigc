@@ -825,12 +825,22 @@ export interface PaymentProvider {
   apiBase: string;
   productNamePrefix: string;
   allowRefund: boolean;
+  supportedMethods: string[];
   remark: string;
   hasPid: boolean;
   hasPkey: boolean;
   hasWebhook: boolean;
   createdAt: string;
   updatedAt: string;
+}
+/** 当前可用的充值支付方式（由后台 payment_providers.supported_methods 并集决定） */
+export async function apiGetPaymentMethods(): Promise<string[]> {
+  try {
+    const r = await apiFetch<{ items: string[] }>('/api/credits/payment-methods');
+    return r?.items || [];
+  } catch {
+    return ['alipay', 'wxpay'];
+  }
 }
 export async function apiAdminPaymentSettings(): Promise<PaymentSettings | null> {
   try { return await apiFetch('/api/admin/finance/payment-settings'); } catch { return null; }

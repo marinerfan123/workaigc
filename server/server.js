@@ -399,6 +399,8 @@ async function initDB() {
         updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS ix_pp_enabled ON payment_providers(enabled, sort_order);
+      -- 支付服务商升级：支持配置该服务商可用的支付方式（alipay / wxpay / card）
+      ALTER TABLE payment_providers ADD COLUMN IF NOT EXISTS supported_methods JSONB DEFAULT '["alipay","wxpay"]'::jsonb;
 
       -- 充值订单升级：兼容旧 DEV 订单（channel 列保留），新增 provider/渠道流水/超时字段
       ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS provider_id      TEXT REFERENCES payment_providers(id) ON DELETE SET NULL;
@@ -1210,6 +1212,8 @@ async function handleAPI(req, res) {
   if (url === '/api/auth/refresh' && method === 'POST') return handleRefresh(req, res);
   // 公开：充值套餐（供充值弹窗预览，无需登录）
   if (url === '/api/finance/topup-packages' && method === 'GET') return finance.handlePublic(req, res, url.split('?')[0], method);
+  // 公开：当前可用的支付方式列表（由 payment_providers.supported_methods 并集决定）
+  if (url === '/api/credits/payment-methods' && method === 'GET') return payments.handlePayments(req, res, url, method);
   // 公开：等待区聚合状态（仅返回聚合数，不含逐账号明细）。供前台判断是否提示"资源不足"：
   // 所有资源不可用 且 等待区积压 > 阈值（阈值可调）。无需登录，避免未登录用户误刷请求。
   if (url === '/api/generate/queue-status' && method === 'GET') {
