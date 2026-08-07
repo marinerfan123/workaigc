@@ -1855,9 +1855,18 @@ async function handleAPI(req, res) {
   }
   if (url === '/api/settings' && method === 'PUT') {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
-    const data = await parseBody(req);
-    if (pgPool) { await pgPool.query("INSERT INTO settings (key,value) VALUES ('app',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [JSON.stringify(data || {})]); return sendJSON(res, 200, { ok: true }); }
-    writeJSON('settings', data || {});
+    const data = await parseBody(req) || {};
+    // 合并写入：只更新传入字段，保留 settings.app 中其它键（如 signupBonusCredits / maxThreads /
+    // promptOptimizeModel），避免前端局部保存（生成默认参数等）整值覆盖把后台配置误删。
+    if (pgPool) {
+      const existing = (await pgPool.query("SELECT value FROM settings WHERE key='app'")).rows[0]?.value || {};
+      const merged = { ...existing, ...data };
+      await pgPool.query("INSERT INTO settings (key,value) VALUES ('app',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [JSON.stringify(merged)]);
+      return sendJSON(res, 200, { ok: true });
+    }
+    let cur = {};
+    try { cur = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'settings.json'), 'utf-8')); } catch {}
+    writeJSON('settings', { ...cur, ...data });
     return sendJSON(res, 200, { ok: true });
   }
 
