@@ -103,16 +103,36 @@ async function imageGenerate(provider, model, opts) {
   const apiKey = provider.api_key;
   if (!apiKey) return { images: [], status: 'error', error: '服务商未配置 API Key' };
 
-  const size = bumpSize(RATIO_TO_SIZE[ratio] || '1024x1024', resolution);
+  const isAgnes = /agnes-ai\.cn/i.test(baseUrl || '');
+  const de = provider.default_endpoint || {};
+  const me = (model && model.endpoint) || {};
+  const sizeFormat = me.sizeFormat || de.sizeFormat || (isAgnes ? 'agnes' : 'openai');
+  const img2imgInExtraBody = (me.img2imgInExtraBody != null ? me.img2imgInExtraBody
+    : (de.img2imgInExtraBody != null ? de.img2imgInExtraBody : isAgnes));
+
+  const hasImages = Array.isArray(referenceImages) && referenceImages.length > 0;
+  const size = sizeFormat === 'agnes'
+    ? String(resolution || '1k').toUpperCase()
+    : bumpSize(RATIO_TO_SIZE[ratio] || '1024x1024', resolution);
+
   const vars = {
     model: model.model_id,
     prompt,
     n: Math.max(1, Math.min(4, count || 1)),
     size,
     ratio,
-    resolution,
-    images: referenceImages || [],
   };
+  if (sizeFormat !== 'agnes') {
+    vars.resolution = resolution;
+  }
+  // 图生图/多图合成：Agnes 等要求把参考图放到 extra_body.image；
+  // 同时保留顶层 images 兼容 relay / 自定义端点。
+  if (hasImages) {
+    vars.images = referenceImages;
+    if (img2imgInExtraBody) {
+      vars.extra_body = { image: referenceImages, response_format: 'url' };
+    }
+  }
 
   const { protocol, endpoint } = resolveEndpoint(provider, model, 'generate');
   try {
