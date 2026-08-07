@@ -54,7 +54,7 @@ export default function StudioListPage() {
               <span className="text-xs text-zinc-500">
                 当前阶段：<span className="text-zinc-300">{STAGE_LABEL[p.stage]}</span>
               </span>
-              <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400">进入 →</span>
+              <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400">进入 →</span>
             </div>
           </button>
         ))}
