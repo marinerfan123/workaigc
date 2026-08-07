@@ -526,7 +526,7 @@ export default function LibraryPage() {
         </div>
 
         {/* 已上传列表 */}
-        <div className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="flex-1 overflow-y-auto px-6 py-6 lux-scrollbar">
           {filtered.length > 0 && (
             <>
               <div className="mb-3 flex items-center justify-between">
@@ -690,7 +690,7 @@ export default function LibraryPage() {
       )}
 
       {/* 素材网格 */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-6 lux-scrollbar">
         {filtered.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center py-20">
             <div className="mb-4 flex h-20 w-20 items-center justify-center rounded-[2rem] bg-zinc-900 text-zinc-600">

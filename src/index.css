@@ -81,3 +81,28 @@ button[disabled],
 .scrollbar-hidden::-webkit-scrollbar {
   display: none;
 }
+
+/* 主内容区精致滚动条：细圆角、半透明、hover 高亮，无布局跳动 */
+.lux-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+.lux-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.lux-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 9999px;
+}
+.lux-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 9999px;
+  transition: background 0.2s ease;
+}
+.lux-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+.lux-scrollbar:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.35) transparent;
+}
