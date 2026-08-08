@@ -22,6 +22,36 @@ const DEFAULT_PROVIDERS = [
     capacity_model: 'limited',
     cooldown_ms: 60000,
   },
+  {
+    // MiniMax H3 视频 V2：适配器在 base_url 上拼 /video_generation，故 base_url 必须含 /v2
+    id: 'prov-minimax',
+    name: 'MiniMax 视频（H3）',
+    type: 'official',
+    base_url: 'https://api.minimaxi.com/v2',
+    api_key: '',
+    supported_types: ['video'],
+    enabled: false,
+    protocol: 'custom',
+    remark: 'MiniMax H3 视频 V2：768P/2K，文生/图生首末帧/参考生视频。填 Key 后启用（base_url 含 /v2）。',
+    default_endpoint: {},
+    capacity_model: 'limited',
+    cooldown_ms: 60000,
+  },
+  {
+    // 火山方舟 Seedance：适配器在 base_url 上拼 /contents/generations/tasks，故 base_url 必须含 /api/v3
+    id: 'prov-volcano',
+    name: '火山方舟（Seedance）',
+    type: 'official',
+    base_url: 'https://ark.cn-beijing.volces.com/api/v3',
+    api_key: '',
+    supported_types: ['video'],
+    enabled: false,
+    protocol: 'custom',
+    remark: '火山方舟 Seedance 2.5：480p/720p，文生/图生首末帧/参考生视频。填 Key 后启用（base_url 含 /api/v3）。',
+    default_endpoint: {},
+    capacity_model: 'limited',
+    cooldown_ms: 60000,
+  },
 ];
 
 // 常用图像模型（挂到 prov-demo；provider 无 Key，默认 enabled=false）
@@ -59,6 +89,54 @@ const DEFAULT_MODELS = [
     capabilities: {},
     endpoint: {},
   },
+  {
+    // MiniMax H3：videoModes 声明后前台点亮「模式选择器」
+    id: 'model-minimax-h3',
+    model_id: 'MiniMax-H3',
+    display_name: 'MiniMax H3',
+    type: 'video',
+    provider_id: 'prov-minimax',
+    enabled: false,
+    supported_resolutions: [],
+    capabilities: { imageInput: true },
+    endpoint: {},
+    param_template: {
+      videoResolutionsEnabled: true,
+      videoResolutions: ['768P', '2K'],
+      videoModes: ['t2v', 'i2v_first', 'i2v_first_last', 'reference_image'],
+      durations: [4, 6, 8, 10],
+      allowCount: false,
+      supportsReference: true,
+      rules: [
+        { label: '2K 直出', description: 'H3 支持 2K 直出；文生视频需指定比例（非自适应），图生/参考视频由首帧自适应。' },
+        { label: '参考图上限', description: '参考生视频最多 9 张图（可含参考视频/音频），前台默认至多 4 张。' },
+      ],
+    },
+  },
+  {
+    // 火山方舟 Seedance 2.5：videoModes 声明后前台点亮「模式选择器」
+    id: 'model-volcano-seedance-25',
+    model_id: 'doubao-seedance-2-5',
+    display_name: 'Seedance 2.5',
+    type: 'video',
+    provider_id: 'prov-volcano',
+    enabled: false,
+    supported_resolutions: [],
+    capabilities: { imageInput: true },
+    endpoint: {},
+    param_template: {
+      videoResolutionsEnabled: true,
+      videoResolutions: ['480p', '720p'],
+      videoModes: ['t2v', 'i2v_first', 'i2v_first_last', 'reference_image'],
+      durations: [4, 6, 8, 10],
+      allowCount: false,
+      supportsReference: true,
+      rules: [
+        { label: '时长智能', description: 'Seedance 2.5 duration 默认 -1（智能选时长），也可指定 4–30s；前台档位 4/6/8/10s。' },
+        { label: '参考图上限', description: '多模态参考生视频支持 1–30 张图，前台默认至多 4 张。' },
+      ],
+    },
+  },
 ];
 
 async function seedDefaults(pool) {
@@ -78,12 +156,13 @@ async function seedDefaults(pool) {
     }
     for (const m of DEFAULT_MODELS) {
       await pool.query(
-        `INSERT INTO models (id, model_id, display_name, type, provider_id, enabled, supported_resolutions, capabilities, endpoint)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        `INSERT INTO models (id, model_id, display_name, type, provider_id, enabled, supported_resolutions, capabilities, endpoint, param_template)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          ON CONFLICT (id) DO NOTHING`,
         [
           m.id, m.model_id, m.display_name, m.type, m.provider_id, m.enabled,
           m.supported_resolutions, JSON.stringify(m.capabilities), JSON.stringify(m.endpoint),
+          JSON.stringify(m.param_template || {}),
         ]
       );
     }
