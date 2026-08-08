@@ -33,12 +33,13 @@ const payments = {
     // POST /api/credits/orders — 创建充值订单（真实支付通道；无通道一律 503，无模拟回退）
     async function loadPaymentSettings() {
       const pg = getPg();
-      const def = { enabled: true, defaultExpiresMin: 15, minAmount: 1, maxAmount: 10000000, dailyLimit: 10000000, maxOpenOrders: 5 };
-      if (!pg) return def;
+      // 无 DB / 读取失败 / 设置行缺失 → 一律返回 null，交由 createOrder 以 503 拒绝（fails-closed）。
+      // 绝不降级为「默认开启 + 宽松限额」放行，否则与支付体系其它处的 fails-closed 铁律相悖。
+      if (!pg) return null;
       try {
         const r = await pg.query(
           'SELECT enabled, default_expires_min, min_amount, max_amount, daily_limit, max_open_orders FROM payment_settings WHERE id=1');
-        if (!r.rows.length) return def;
+        if (!r.rows.length) return null; // 设置缺失 → fails-closed
         const x = r.rows[0];
         return {
           enabled: x.enabled !== false,
@@ -49,7 +50,7 @@ const payments = {
           maxOpenOrders: Number(x.max_open_orders) || 5,
         };
       } catch (e) {
-        return def;
+        return null; // 读取失败 → fails-closed（绝不默认开启放行）
       }
     }
 
@@ -93,6 +94,8 @@ const payments = {
 
       // ── 支付全局设置校验（防滥用：总开关 / 金额区间 / 单用户日限额 / 最大待付数）──
       const settings = await loadPaymentSettings();
+      // fails-closed：设置读不出（DB 异常 / 行缺失）→ 一律拒绝，不降级默认开启
+      if (!settings) return sendJSON(res, 503, { error: '支付设置暂时不可用，请稍后重试' });
       if (!settings.enabled) return sendJSON(res, 503, { error: '支付功能已关闭' });
       if (amount < settings.minAmount) {
         return sendJSON(res, 400, { error: `单笔充值不得低于 ¥${(settings.minAmount / 100).toFixed(0)}` });
