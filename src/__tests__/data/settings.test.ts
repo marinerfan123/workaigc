@@ -72,9 +72,9 @@ describe('data/settings.ts', () => {
         ratio: '9:16',
         model: 'Kling',
         count: 1,
-        videoMode: 'clip',
+        videoMode: 'i2v_first',
       };
-      assert.strictEqual(settings.videoMode, 'clip');
+      assert.strictEqual(settings.videoMode, 'i2v_first');
     });
   });
 });

@@ -414,6 +414,7 @@ export async function apiGenerate(payload: {
   pendingIds?: string[]; // 把前端的 pending 占位 id 告诉后端，便于刷新恢复
   negative?: string;     // 反向提示词（正负向搭配刚需，随生图请求透传）
   duration?: number;     // 视频时长（秒），仅 contentType='video' 时生效
+  videoMode?: 't2v' | 'i2v_first' | 'i2v_first_last' | 'reference_image'; // 视频模式，仅 contentType='video' 时生效
   idempotencyKey?: string; // 幂等键：每次生成请求一个 UUID，防网络抖动双扣（后端必需）
   sync?: boolean;         // 兼容旧测试：传 true 后端一次性返回结果
 }): Promise<GenerateResponse> {

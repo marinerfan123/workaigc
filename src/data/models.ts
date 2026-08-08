@@ -1,5 +1,7 @@
 // EXPORTS: IModelProvider, IAiModel, MOCK_PROVIDERS, MOCK_MODELS, PROVIDER_TEMPLATES
 
+import type { VideoMode } from './settings';
+
 export type ModelType = 'image' | 'video' | 'text';
 export type ProviderType = 'official' | 'relay' | 'custom';
 export type ProtocolType = 'openai-compatible' | 'custom';
@@ -30,10 +32,16 @@ export interface IModelParamTemplate {
   ratios?: string[];
   /** 图片分辨率档位（image 专用；缺省 model.supportedResolutions） */
   resolutions?: Resolution[];
-  /** 视频分辨率档位开关：后台开启才给前台 1K/2K/3K/4K 选项（缺省 false） */
+  /** 视频分辨率档位开关：后台开启才给前台真实枚举选项（缺省 false） */
   videoResolutionsEnabled?: boolean;
-  /** 视频分辨率档位选项（缺省 ['1k','2k','3k','4k']；默认每设置智能用 1k） */
-  videoResolutions?: ('1k' | '2k' | '3k' | '4k')[];
+  /**
+   * 视频分辨率真实枚举（各家不同，直接存线格式，不再抽象 1k/2k/3k/4k）。
+   * 例：MiniMax H3 → ['768P','2K']；火山 Seedance → ['480p','720p','1080p','4k']；
+   *     Agnes（开放档）仍可用 ['1k','2k','4k']（后端适配器按档映射）。缺省 ['1k','2k','3k','4k']。
+   */
+  videoResolutions?: string[];
+  /** 视频模式白名单（仅 contentType='video' 生效）。声明后前台显示模式选择器；不声明则后端按参考图数量推导 */
+  videoModes?: VideoMode[];
   /** 视频时长档位（video 专用；缺省 [4,6,8,10]） */
   durations?: (4 | 6 | 8 | 10)[];
   /** 数量选择：image 默认 true（显示 1–4）；video 默认 false（固定 1，不显示） */

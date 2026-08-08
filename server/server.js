@@ -2279,6 +2279,7 @@ async function handleAPI(req, res) {
       pendingIds: body.pendingIds || [],
       negative: (body.negative || '').toString().trim(),
       durationSec: Number(body.duration) || 6,
+      videoMode: body.videoMode || undefined,
       user_id: realUser.id,
       idempotencyKey: idemKey,
       cost,

@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const billing = require('./billing.cjs'); // Phase A 计费（reserve/commit/release）
 const accounting = require('./accounting.cjs'); // 全局双边账务：generate 真实消耗走账
+const videoRouter = require('./providers/video/index.cjs'); // 视频 provider 适配层（agnes/minimax/volcano/generic 路由）
 // 负责：按 model_id 找到所有已启用的「模型行 × 服务商」组合，
 // 在「全局最大并发 maxThreads」+「每家服务商 max_concurrent」约束下，
 // round-robin 把 N 个生成请求均衡分配到不同服务商。
@@ -107,27 +108,6 @@ function bumpSize(size, res) {
   return `${w * mul}x${h * mul}`;
 }
 
-// Agnes Video 按画幅方向给分辨率（Agnes 会再自动标准化，方向正确即可）
-// resolution 为视频分辨率档位（1k/2k/3k/4k）：1k≈1024 基准，向上按比例放大
-const VIDEO_TIER_SCALE = { '1k': 1, '2k': 1.5, '3k': 2, '4k': 2.5 };
-function agnesVideoSize(ratio, resolution) {
-  const base = (() => {
-    switch (ratio) {
-      case '16:9': return { width: 1152, height: 648 };
-      case '9:16': return { width: 648, height: 1152 };
-      case '4:3': return { width: 1024, height: 768 };
-      case '3:4': return { width: 768, height: 1024 };
-      case '1:1': return { width: 1024, height: 1024 };
-      default: return { width: 1024, height: 1024 };
-    }
-  })();
-  const scale = VIDEO_TIER_SCALE[String(resolution || '1k').toLowerCase()] || 1;
-  return {
-    width: Math.round(base.width * scale),
-    height: Math.round(base.height * scale),
-  };
-}
-
 async function imageGenerate(provider, model, opts) {
   const { prompt, ratio, resolution, count, referenceImages, negative } = opts;
   const baseUrl = provider.base_url;
@@ -199,58 +179,31 @@ async function imageGenerate(provider, model, opts) {
 }
 
 // ─── 视频生成（异步 submit + poll 模式）───
+// 路由：非 generic 供应商（agnes/minimax/volcano）走统一 provider 适配层（server/providers/video）；
+//      generic（openai-compatible / custom bodyTemplate 视频端点）走下方内联实现（保持历史行为）。
 async function videoGenerate(provider, model, opts) {
+  const key = videoRouter.resolveKey(provider, model);
+  if (key !== 'generic') {
+    return videoRouter.submitAndPoll(provider, model, opts);
+  }
+
   const { prompt, ratio, durationSec, referenceImages, negative, resolution } = opts;
   const baseUrl = provider.base_url;
   const apiKey = provider.api_key;
   if (!apiKey) return { videoUrl: '', status: 'error', error: '服务商未配置 API Key' };
 
-  // Agnes Video V2.0 字段与通用视频端点不同：用 num_frames/frame_rate 控制时长（非 duration），
-  // height/width 控制分辨率，image+mode=ti2vid 做图生视频，extra_body.image+mode=keyframes 做关键帧动画。
-  const isAgnesVideo = /agnes-ai\.cn/i.test(baseUrl || '') && /video/i.test(model.model_id || '');
-  let vars;
-  if (isAgnesVideo) {
-    const hasImages = Array.isArray(referenceImages) && referenceImages.length > 0;
-    const frameRate = 25;
-    // num_frames 必须 ≤441 且 = 8n+1
-    let numFrames = Math.round((Number(durationSec) || 6) * frameRate);
-    numFrames = Math.min(441, Math.max(9, numFrames));
-    numFrames = Math.floor((numFrames - 1) / 8) * 8 + 1;
-    const { width, height } = agnesVideoSize(ratio, resolution);
-    vars = {
-      model: model.model_id,
-      prompt,
-      height,
-      width,
-      num_frames: numFrames,
-      frame_rate: frameRate,
-    };
-    if (negative) vars.negative_prompt = negative;
-    if (hasImages) {
-      if (referenceImages.length >= 2) {
-        // 关键帧动画：多图进 extra_body.image
-        vars.mode = 'keyframes';
-        vars.extra_body = { image: referenceImages, mode: 'keyframes' };
-      } else {
-        // 图生视频
-        vars.image = referenceImages[0];
-        vars.mode = 'ti2vid';
-      }
-    }
-  } else {
-    vars = {
-      model: model.model_id,
-      prompt,
-      ratio,
-      resolution: resolution || '1k',
-      duration: durationSec || 6,
-      firstFrame: referenceImages && referenceImages[0] ? referenceImages[0] : '',
-      images: referenceImages || [],
-    };
-    // 反向提示词：custom 端点经 fillTemplate 的 {{negative}}/{{negative_prompt}} 占位替换生效；
-    // 标准视频端点忽略未知字段。最终仍写入 generation_tasks.payload 与 media，UI 完整展示。
-    if (negative) { vars.negative = negative; vars.negative_prompt = negative; }
-  }
+  const vars = {
+    model: model.model_id,
+    prompt,
+    ratio,
+    resolution: resolution || '1k',
+    duration: durationSec || 6,
+    firstFrame: referenceImages && referenceImages[0] ? referenceImages[0] : '',
+    images: referenceImages || [],
+  };
+  // 反向提示词：custom 端点经 fillTemplate 的 {{negative}}/{{negative_prompt}} 占位替换生效；
+  // 标准视频端点忽略未知字段。最终仍写入 generation_tasks.payload 与 media，UI 完整展示。
+  if (negative) { vars.negative = negative; vars.negative_prompt = negative; }
 
   const { protocol, endpoint } = resolveEndpoint(provider, model, 'generate');
   const isAsync = !!(provider.default_endpoint && provider.default_endpoint.async) ||
@@ -442,7 +395,7 @@ async function dispatchOne(pairs, tier, input, contentType) {
 
 // ─── 主入口 ────────────────────────────────────────
 async function generate(pgPool, opts) {
-  const { model, prompt, ratio, resolution, count, contentType, referenceImages, negative, durationSec } = opts;
+  const { model, prompt, ratio, resolution, count, contentType, referenceImages, negative, durationSec, videoMode } = opts;
   // 分辨率 → 桶档位：video 走 video 档（cost=20，与 4k 同权重）；8k 按 4k 计；未知按 1k
   const tier = contentType === 'video' ? 'video'
     : (['1k', '2k', '4k'].includes(resolution) ? resolution
@@ -492,7 +445,7 @@ async function generate(pgPool, opts) {
   const tasks = [];
   for (let i = 0; i < total; i++) {
     tasks.push((async () => {
-      const input = { prompt, ratio, resolution, count: 1, referenceImages, negative, durationSec };
+      const input = { prompt, ratio, resolution, count: 1, referenceImages, negative, durationSec, videoMode };
       return dispatchOne(pairs, tier, input, contentType);
     })());
   }

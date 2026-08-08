@@ -18,13 +18,15 @@ import { useModelHub, getModelDisplayNameByDisplayName, getModelCreditCostByDisp
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
 import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, apiProxyFetch, ensureApi, stripBlobItems, apiGetReferenceStyles } from '@/services/api';
-import type { Ratio, Quality } from '@/data/settings';
+import type { Ratio, Quality, VideoMode } from '@/data/settings';
 import type { ReferenceStyle } from '@/services/api';
 
 interface IGenerationSettings {
   contentType: 'image' | 'video';
+  /** 视频模式（仅 contentType='video' 生效）；缺省由后端按参考图数量推导 */
+  videoMode?: VideoMode;
   ratio: Ratio;
-  resolution: '1k' | '2k' | '4k' | '8k';
+  resolution: string;
   quality: Quality;
   model: string;
   count: 1 | 2 | 3 | 4;
@@ -75,8 +77,17 @@ export default function WorkspacePage() {
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [activeCharacter, setActiveCharacter] = useState<ICharacter | null>(null);
 
-  // 参考图上限：视频通常只能带 1 张参考；图片最多 4 张，避免用户/后端误解
-  const MAX_REF_IMAGES = useMemo(() => (settings.contentType === 'video' ? 1 : 4), [settings.contentType]);
+  // 参考图上限：按视频模式动态控制（文生 0 / 图生首帧 1 / 图生首末帧 2 / 参考图 4）；图片最多 4 张
+  const MAX_REF_IMAGES = useMemo(() => {
+    if (settings.contentType !== 'video') return 4;
+    switch (settings.videoMode) {
+      case 't2v': return 0;
+      case 'i2v_first': return 1;
+      case 'i2v_first_last': return 2;
+      case 'reference_image': return 4;
+      default: return 1; // 未定模式兜底（GenerationBar 的默认化 effect 会立即纠正）
+    }
+  }, [settings.contentType, settings.videoMode]);
 
   const setReferenceImagesCapped = useCallback(
     (urls: string[]) => {
@@ -130,7 +141,12 @@ export default function WorkspacePage() {
         if (defaultModel && !parsed.model) {
           parsed.model = defaultModel;
         }
-        setSettings({ ...DEFAULT_SETTINGS, ...parsed, count: validCount });
+        const loaded: IGenerationSettings = { ...DEFAULT_SETTINGS, ...parsed, count: validCount };
+        // 视频模式兜底：旧存档可能没有 videoMode，统一默认文生视频（t2v）
+        if (loaded.contentType === 'video' && !loaded.videoMode) {
+          loaded.videoMode = 't2v';
+        }
+        setSettings(loaded);
       } else {
         const defaultModel = getDefaultModel('image');
         if (defaultModel) {
@@ -209,7 +225,7 @@ export default function WorkspacePage() {
       if (next.contentType !== 'image' || supported.length === 0) {
         // 视频/文本/空支持列表 → 保留默认 1k 但前端按钮组不显示
         next = { ...next, resolution: '1k' };
-      } else if (!supported.includes(next.resolution)) {
+      } else if (!(supported as string[]).includes(next.resolution)) {
         next = { ...next, resolution: supported[0] };
       }
     }

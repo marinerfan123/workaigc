@@ -38,7 +38,7 @@ import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus, type ReferenceStyle } from '@/services/api';
 import { refreshUser, setAuthModalOpen, useAuth } from '@/services/authStore';
 import { ALL_RESOLUTIONS, type Resolution, type IAiModel, type IModelParamTemplate, getEffectiveModelName } from '@/data/models';
-import type { Ratio, Quality } from '@/data/settings';
+import type { Ratio, Quality, VideoMode } from '@/data/settings';
 // 注意：原 probeImageLoad(persistentUrl) 在 OSS 失败分支探测 provider URL，因 CORS 不可靠
 // 会把生成成功的图误判为 failed，已在本文件 processResultImages 中移除该探测（信任 server 200）。
 import {
@@ -80,6 +80,7 @@ function resolveTemplate(model: IAiModel | undefined, contentType: 'image' | 'vi
       durations: t.durations && t.durations.length ? t.durations : DEFAULT_DURATIONS,
       videoResolutionsEnabled: !!t.videoResolutionsEnabled,
       videoResolutions: t.videoResolutions && t.videoResolutions.length ? t.videoResolutions : VIDEO_RESOLUTIONS,
+      videoModes: t.videoModes && t.videoModes.length ? t.videoModes : undefined,
       allowCount: false,
       supportsNegative: t.supportsNegative !== false,
       supportsReference: t.supportsReference !== false,
@@ -107,8 +108,33 @@ function resolveTemplate(model: IAiModel | undefined, contentType: 'image' | 'vi
   };
 }
 
-// 比例显示：auto → "智能"
-const formatRatio = (r: Ratio) => (r === 'auto' ? '智能' : r);
+// 比例显示：auto → "智能"，adaptive → "适配"
+const formatRatio = (r: Ratio) => (r === 'auto' ? '智能' : r === 'adaptive' ? '适配' : r);
+
+// 视频模式中文标签 / 说明（与后端 videoMode 枚举一一对应）
+const VIDEO_MODE_LABEL: Record<VideoMode, string> = {
+  t2v: '文生视频',
+  i2v_first: '图生首帧',
+  i2v_first_last: '图生首末帧',
+  reference_image: '参考图生视频',
+};
+const VIDEO_MODE_DESC: Record<VideoMode, string> = {
+  t2v: '仅用提示词生成，无需参考图',
+  i2v_first: '上传 1 张首帧图，其余由提示词驱动',
+  i2v_first_last: '上传首帧 + 末帧各 1 张',
+  reference_image: '上传 1+ 张参考图作为风格 / 主体',
+};
+
+/** 视频模式允许的参考图上限（image 走父级 MAX_REF_IMAGES，这里仅算视频） */
+function allowedRefCount(mode: VideoMode | undefined): number {
+  switch (mode) {
+    case 't2v': return 0;
+    case 'i2v_first': return 1;
+    case 'i2v_first_last': return 2;
+    case 'reference_image': return 4;
+    default: return 1; // 未定模式兜底
+  }
+}
 
 /**
  * 把后端/服务商原始错误友好化为中文提示。
@@ -169,8 +195,10 @@ function balanceLimitInfo(code: string | undefined): { title: string; message: s
 
 interface IGenerationSettings {
   contentType: 'image' | 'video';
+  /** 视频模式（仅 contentType='video' 生效）；缺省由后端按参考图数量推导 */
+  videoMode?: VideoMode;
   ratio: Ratio;
-  resolution: '1k' | '2k' | '3k' | '4k' | '8k';
+  resolution: string;
   quality: Quality;
   model: string;
   count: 1 | 2 | 3 | 4;
@@ -670,11 +698,53 @@ function GenerationBar({
   );
   const availableResolutions: Resolution[] =
     settings.contentType === 'image' ? (template.resolutions || []) : [];
-  // 视频分辨率档位（后台开关开启才给选项，默认智能 1k）
-  const videoTiers: ('1k' | '2k' | '3k' | '4k')[] = template.videoResolutionsEnabled
+  // 视频分辨率档位（后台开关开启才给真实枚举选项，如 768P/2K、480p/720p/1080p/4k）
+  const videoTiers: string[] = template.videoResolutionsEnabled
     ? (template.videoResolutions || [])
     : [];
   const showCount = settings.contentType === 'image' && template.allowCount !== false;
+
+  // 是否启用「视频模式选择系统」：后台声明 videoModes 才启用（旧视频模型如 Agnes 不声明 → 走旧推导逻辑）
+  const modeSystemOn = !!(template.videoModes && template.videoModes.length);
+  // 视频模式：启用系统且未显式选择时用模板第一个；旧模型（未启用系统）用 i2v_first 仅用于参考图上限兼容（实际不锁定）
+  const effectiveVideoMode: VideoMode = modeSystemOn
+    ? (settings.videoMode || template.videoModes![0])
+    : 'i2v_first';
+  // 视频参考图是否已达模式上限（仅启用模式系统时锁定「+添加参考图」按钮；旧模型交给父级 MAX_REF_IMAGES=1）
+  const videoRefAtCap =
+    modeSystemOn &&
+    settings.contentType === 'video' &&
+    referenceImages.length >= allowedRefCount(effectiveVideoMode);
+
+  // 视频模式 / 分辨率默认化：切换模型或类型时确保有合法 videoMode 与 resolution（避免 UI 空选 + 后端错位）
+  useEffect(() => {
+    if (settings.contentType !== 'video') return;
+    const modes = template.videoModes;
+    const tiers = template.videoResolutionsEnabled ? (template.videoResolutions || []) : [];
+    let patch: Partial<IGenerationSettings> | null = null;
+    if (modes && modes.length && (!settings.videoMode || !modes.includes(settings.videoMode))) {
+      patch = { ...(patch || {}), videoMode: modes[0] };
+    }
+    if (tiers.length) {
+      if (!settings.resolution || !tiers.includes(settings.resolution)) {
+        patch = { ...(patch || {}), resolution: tiers[0] };
+      }
+    }
+    if (patch) onSettingsChange({ ...settings, ...patch });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelKey, settings.contentType, template, settings.videoMode, settings.resolution]);
+
+  // 切换视频模式：按模式裁剪参考图数量，并把 ratio 置为 adaptive（图生/参考视频画幅随参考图）
+  const changeVideoMode = (mode: VideoMode) => {
+    const allowed = allowedRefCount(mode);
+    const trimmed = referenceImages.slice(0, allowed);
+    if (trimmed.length !== referenceImages.length) onSetReferenceImages?.(trimmed);
+    const nextRatio: Ratio =
+      mode === 't2v'
+        ? (template.ratios && template.ratios.includes(settings.ratio) ? settings.ratio : (template.ratios?.[0] || '16:9'))
+        : 'adaptive';
+    onSettingsChange({ ...settings, videoMode: mode, ratio: nextRatio });
+  };
 
   // 当前模型所属服务商对「当前分辨率档」配置的每分钟上限（用于 UI 提示 + 错误兜底）
   const currentProvider = currentModel ? providers.find((p) => p.id === currentModel.providerId) : undefined;
@@ -953,6 +1023,7 @@ function GenerationBar({
           pendingIds,
           negative: negativePromptText.trim() || undefined,
           duration: settings.contentType === 'video' ? (settings.duration || 6) : undefined,
+          videoMode: settings.contentType === 'video' ? settings.videoMode : undefined,
           idempotencyKey,
         });
 
@@ -1438,28 +1509,68 @@ function GenerationBar({
                         <div className="border-t border-zinc-800" />
                       </>
                     )}
-                    {/* 图片尺寸 / 视频画幅（比例来自模板） */}
-                    <div className="p-3">
-                      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                        {settings.contentType === 'video' ? '画幅' : '图片尺寸'}
+                    {/* 视频模式选择器（后台声明 videoModes 才显示） */}
+                    {settings.contentType === 'video' && template.videoModes && template.videoModes.length > 0 && (
+                      <>
+                        <div className="border-t border-zinc-800" />
+                        <div className="p-3">
+                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            视频模式
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {template.videoModes.map((m) => (
+                              <button
+                                key={m}
+                                onClick={() => changeVideoMode(m)}
+                                className={`rounded-xl px-2 py-2 text-[11px] font-medium transition-all duration-200 ${
+                                  effectiveVideoMode === m
+                                    ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
+                                    : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
+                                }`}
+                              >
+                                {VIDEO_MODE_LABEL[m] || m}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="mt-1.5 text-[10px] text-zinc-500">
+                            {VIDEO_MODE_DESC[effectiveVideoMode]}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                    {/* 图片尺寸 / 视频画幅（比例来自模板）；视频非文生模式画幅随参考图自适应 */}
+                    {settings.contentType === 'video' && modeSystemOn && effectiveVideoMode !== 't2v' ? (
+                      <div className="p-3">
+                        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                          画幅
+                        </div>
+                        <div className="rounded-xl bg-zinc-800/40 px-3 py-2 text-xs text-zinc-400">
+                          随参考图自适应（{VIDEO_MODE_LABEL[effectiveVideoMode]} 的画幅由首帧 / 参考图决定）
+                        </div>
                       </div>
-                      <div className="grid grid-cols-4 gap-1.5">
-                        {(template.ratios || []).map((r) => (
-                          <button
-                            key={r}
-                            onClick={() => onSettingsChange({ ...settings, ratio: r as Ratio })}
-                            className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
-                              settings.ratio === r
-                                ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
-                                : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
-                            }`}
-                          >
-                            {formatRatio(r as Ratio)}
-                          </button>
-                        ))}
+                    ) : (
+                      <div className="p-3">
+                        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                          {settings.contentType === 'video' ? '画幅' : '图片尺寸'}
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {(template.ratios || []).map((r) => (
+                            <button
+                              key={r}
+                              onClick={() => onSettingsChange({ ...settings, ratio: r as Ratio })}
+                              className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
+                                settings.ratio === r
+                                  ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
+                                  : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
+                              }`}
+                            >
+                              {formatRatio(r as Ratio)}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                    {/* 视频分辨率档位（后台开关开启才显示，默认智能 1k） */}
+                    )}
+                    {/* 视频分辨率档位（后台开关开启才显示，直接渲染各家真实枚举，默认选第一项） */}
                     {videoTiers.length > 0 && (
                       <>
                         <div className="border-t border-zinc-800" />
@@ -1468,21 +1579,26 @@ function GenerationBar({
                             分辨率档位
                           </div>
                           <div className="grid grid-cols-4 gap-1.5">
-                            {videoTiers.map((res) => (
-                              <button
-                                key={res}
-                                onClick={() => onSettingsChange({ ...settings, resolution: res })}
-                                className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
-                                  (settings.resolution || '1k') === res
-                                    ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
-                                    : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
-                                }`}
-                              >
-                                {res}
-                              </button>
-                            ))}
+                            {videoTiers.map((res) => {
+                              const activeRes = settings.resolution || videoTiers[0];
+                              return (
+                                <button
+                                  key={res}
+                                  onClick={() => onSettingsChange({ ...settings, resolution: res })}
+                                  className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
+                                    activeRes === res
+                                      ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
+                                      : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
+                                  }`}
+                                >
+                                  {res}
+                                </button>
+                              );
+                            })}
                           </div>
-                          <div className="mt-1.5 text-[10px] text-zinc-500">默认智能使用 1K</div>
+                          <div className="mt-1.5 text-[10px] text-zinc-500">
+                            默认 {videoTiers[0]}{settings.resolution && settings.resolution !== videoTiers[0] ? `（已选 ${settings.resolution}）` : ''}
+                          </div>
                         </div>
                       </>
                     )}
@@ -1753,10 +1869,16 @@ function GenerationBar({
             ))}
             <button
               onClick={onAddReference}
-              className="flex h-12 w-12 items-center justify-center rounded-xl border border-dashed border-zinc-700 text-zinc-500 hover:border-emerald-500/50 hover:text-emerald-400 transition-colors"
+              disabled={videoRefAtCap}
+              className={`flex h-12 w-12 items-center justify-center rounded-xl border border-dashed transition-colors ${
+                videoRefAtCap
+                  ? 'border-zinc-800 text-zinc-700 cursor-not-allowed'
+                  : 'border-zinc-700 text-zinc-500 hover:border-emerald-500/50 hover:text-emerald-400'
+              }`}
             >
               <Plus className="size-4" />
             </button>
+            {!(modeSystemOn && settings.contentType === 'video' && allowedRefCount(effectiveVideoMode) === 0) && (
             <button
               onClick={() => setStyleSelectorOpen(true)}
               className="flex items-center gap-1.5 rounded-full bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
@@ -1765,6 +1887,7 @@ function GenerationBar({
               <Palette className="size-3.5" />
               <span>参考样式</span>
             </button>
+            )}
             {attributedStyle && (
               <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs text-emerald-300 ring-1 ring-emerald-500/30">
                 <Palette className="size-3" />
@@ -1786,6 +1909,7 @@ function GenerationBar({
           </div>
         ) : lastReferenceImages.length > 0 ? (
           <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2.5">
+            {!(modeSystemOn && settings.contentType === 'video' && allowedRefCount(effectiveVideoMode) === 0) && (
             <button
               onClick={() => setStyleSelectorOpen(true)}
               className="flex items-center gap-1.5 rounded-full bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
@@ -1794,6 +1918,7 @@ function GenerationBar({
               <Palette className="size-3.5" />
               <span>参考样式</span>
             </button>
+            )}
             {attributedStyle && (
               <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs text-emerald-300 ring-1 ring-emerald-500/30">
                 <Palette className="size-3" />
@@ -1812,6 +1937,7 @@ function GenerationBar({
                 </button>
               </span>
             )}
+            {!(modeSystemOn && settings.contentType === 'video' && allowedRefCount(effectiveVideoMode) === 0) && (
             <button
               onClick={() => onSetReferenceImages?.(lastReferenceImages)}
               className="flex items-center gap-1.5 rounded-full bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
@@ -1823,6 +1949,7 @@ function GenerationBar({
                 <span className="text-zinc-500">({lastReferenceImages.length})</span>
               )}
             </button>
+            )}
             <div className="flex -space-x-1.5">
               {lastReferenceImages.slice(0, 3).map((url) => (
                 <div key={url} className="h-7 w-7 overflow-hidden rounded-lg border border-zinc-700">
@@ -1928,8 +2055,13 @@ function GenerationBar({
             <button
               type="button"
               onClick={onAddReference}
-              className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-800 hover:text-white pointer-events-auto transition-colors"
-              title="添加图片"
+              disabled={videoRefAtCap}
+              className={`relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-full pointer-events-auto transition-colors ${
+                videoRefAtCap
+                  ? 'text-zinc-700 cursor-not-allowed'
+                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-white'
+              }`}
+              title={videoRefAtCap ? '当前视频模式已达参考图上限' : '添加图片'}
             >
               <Plus className="size-4" />
             </button>
