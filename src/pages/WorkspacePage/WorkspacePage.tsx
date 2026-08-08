@@ -17,8 +17,9 @@ import { ICharacter } from '@/data/characters';
 import { useModelHub, getModelDisplayNameByDisplayName, getModelCreditCostByDisplayName } from '@/hooks/useModelHub';
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
-import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, apiProxyFetch, ensureApi, stripBlobItems, apiGetReferenceStyles } from '@/services/api';
 import type { Ratio, Quality } from '@/data/settings';
+import type { ReferenceStyle } from '@/services/api';
 
 interface IGenerationSettings {
   contentType: 'image' | 'video';
@@ -27,6 +28,7 @@ interface IGenerationSettings {
   quality: Quality;
   model: string;
   count: 1 | 2 | 3 | 4;
+  duration?: 4 | 6 | 8 | 10;
 }
 
 const DEFAULT_SETTINGS: IGenerationSettings = {
@@ -36,6 +38,7 @@ const DEFAULT_SETTINGS: IGenerationSettings = {
   quality: 'standard',
   model: '', // 初次加载由 GenerationBar 的 useEffect 自动选第一个可用后台模型；没有则保持空显示"无"
   count: 1,
+  duration: 6,
 };
 
 function WsThumb({ item }: { item: IMediaItem }) {
@@ -76,6 +79,9 @@ export default function WorkspacePage() {
   const [viewerIndex, setViewerIndex] = useState(0);
   const { getDefaultModel, models } = useModelHub();
   const { config: ossConfig, uploadFile: uploadToOss } = useOssConfig();
+
+  // 强制推行的参考样式（工作台示例墙：仅 is_promoted 的样式出现在这里）
+  const [promotedStyles, setPromotedStyles] = useState<ReferenceStyle[]>([]);
 
   // 初始化数据（唯一来源：后端 API）
   useEffect(() => {
@@ -119,6 +125,20 @@ export default function WorkspacePage() {
       }
     })();
 
+    return () => { cancelled = true; };
+  }, []);
+
+  // 拉取「强制推行」的参考样式，作为工作台示例墙的精选内容
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await apiGetReferenceStyles({ promoted: true, limit: 24 });
+        if (!cancelled) setPromotedStyles(r.items || []);
+      } catch {
+        // 推广样式加载失败不应阻断主流程
+      }
+    })();
     return () => { cancelled = true; };
   }, []);
 
@@ -364,6 +384,18 @@ export default function WorkspacePage() {
     setViewerOpen(false);
   };
 
+  // T3 推广样式一键创作：把推广样式当参考图 + 归因到样式设计者（用于分成）
+  const handleUsePromotedStyle = (style: ReferenceStyle) => {
+    generationBarRef.current?.generate({
+      prompt: style.prompt || '',
+      model: style.modelId || settings.model,
+      ratio: style.ratio || settings.ratio,
+      referenceImages: style.previewUrl ? [style.previewUrl] : [],
+      referenceStyle: style,
+      auto: true,
+    });
+  };
+
   const gridCols = gridSize === 'S' ? 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6' :
     gridSize === 'M' ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5' :
     'grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4';
@@ -392,6 +424,49 @@ export default function WorkspacePage() {
           />
 
           <div className="relative flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-5 pb-6 pt-3">
+            {/* 精选推广样式墙：仅「强制推行」的参考样式出现在这里 */}
+            {promotedStyles.length > 0 && (
+              <section className="mb-7">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-amber-500/20 to-emerald-500/10 px-3 py-1 text-xs font-semibold text-amber-300 ring-1 ring-amber-500/30">
+                    <Sparkles className="size-3.5" /> 精选推广样式
+                  </span>
+                  <span className="text-xs text-zinc-500">由社区设计者创作，点按即可一键生成并给设计者分成</span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                  {promotedStyles.map((style) => (
+                    <div
+                      key={style.id}
+                      className="group relative flex flex-col overflow-hidden rounded-2xl border border-amber-500/20 bg-gradient-to-b from-amber-500/[0.06] to-zinc-900/40 transition-all duration-200 hover:border-amber-500/40"
+                    >
+                      <div className="relative aspect-square w-full overflow-hidden bg-zinc-950">
+                        {style.previewUrl ? (
+                          <Image src={style.previewUrl} alt={style.name} className="h-full w-full object-cover" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-zinc-600">
+                            <Sparkles className="size-8" />
+                          </div>
+                        )}
+                        <span className="absolute left-2 top-2 rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-black">
+                          推广
+                        </span>
+                      </div>
+                      <div className="flex flex-1 flex-col p-2.5">
+                        <p className="truncate text-xs font-medium text-zinc-200">{style.name || '未命名样式'}</p>
+                        <p className="mt-0.5 truncate text-[10px] text-zinc-500">by {style.userDisplayName || style.userEmail || '匿名设计者'}</p>
+                        <button
+                          onClick={() => handleUsePromotedStyle(style)}
+                          className="mt-2 inline-flex items-center justify-center gap-1 rounded-lg bg-amber-500/90 px-2 py-1.5 text-[11px] font-semibold text-black transition-all duration-200 hover:bg-amber-400 active:scale-95"
+                        >
+                          <Sparkles className="size-3" /> 用此样式创作
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {filtered.length === 0 ? (
               searchQuery ? (
                 <div className="flex h-full flex-col items-center justify-center py-20">
@@ -546,6 +621,7 @@ export default function WorkspacePage() {
           onIndexChange={handleViewerIndexChange}
           onUseRecipe={handleUseRecipe}
           onRemix={handleRemix}
+          allowSubmitReferenceStyle={true}
         />
       )}
     </div>

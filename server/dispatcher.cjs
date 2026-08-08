@@ -57,10 +57,20 @@ function sleep(ms) {
 
 // ─── HTTP 调用 ──────────────────────────────────────
 async function callEndpoint(baseUrl, endpoint, apiKey, vars) {
-  const url = `${baseUrl.replace(/\/+$/, '')}${endpoint.path.startsWith('/') ? endpoint.path : '/' + endpoint.path}`;
+  // 允许端点单独覆盖 baseUrl（如 Agnes 视频轮询在根域 /agnesapi，而提交在 /v1 下）
+  const effBase = (endpoint && endpoint.baseUrl) || baseUrl;
+  let url = `${effBase.replace(/\/+$/, '')}${endpoint.path.startsWith('/') ? endpoint.path : '/' + endpoint.path}`;
   const method = endpoint.method || 'POST';
   const headers = { 'Content-Type': 'application/json', ...(endpoint.headers || {}) };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+  // GET/DELETE：把 vars 作为查询参数拼到 URL（轮询类端点常用，如 video_id=xxx）
+  if ((method === 'GET' || method === 'DELETE') && vars && typeof vars === 'object') {
+    const qs = Object.entries(vars)
+      .filter(([, v]) => v !== undefined && v !== null && v !== '')
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+      .join('&');
+    if (qs) url += (url.includes('?') ? '&' : '?') + qs;
+  }
   let body;
   if (endpoint.bodyTemplate) body = fillTemplate(endpoint.bodyTemplate, { ...vars, apiKey });
   else if (method !== 'GET' && method !== 'DELETE') body = JSON.stringify(vars);
@@ -95,6 +105,18 @@ function bumpSize(size, res) {
   if (mul === 1) return size;
   const [w, h] = size.split('x').map(Number);
   return `${w * mul}x${h * mul}`;
+}
+
+// Agnes Video 按画幅方向给分辨率（Agnes 会再自动标准化，方向正确即可）
+function agnesVideoSize(ratio) {
+  switch (ratio) {
+    case '16:9': return { width: 1152, height: 648 };
+    case '9:16': return { width: 648, height: 1152 };
+    case '4:3': return { width: 1024, height: 768 };
+    case '3:4': return { width: 768, height: 1024 };
+    case '1:1': return { width: 1024, height: 1024 };
+    default: return { width: 1024, height: 1024 };
+  }
 }
 
 async function imageGenerate(provider, model, opts) {
@@ -174,17 +196,51 @@ async function videoGenerate(provider, model, opts) {
   const apiKey = provider.api_key;
   if (!apiKey) return { videoUrl: '', status: 'error', error: '服务商未配置 API Key' };
 
-  const vars = {
-    model: model.model_id,
-    prompt,
-    ratio,
-    duration: durationSec || 6,
-    firstFrame: referenceImages && referenceImages[0] ? referenceImages[0] : '',
-    images: referenceImages || [],
-  };
-  // 反向提示词：custom 端点经 fillTemplate 的 {{negative}}/{{negative_prompt}} 占位替换生效；
-  // 标准视频端点忽略未知字段。最终仍写入 generation_tasks.payload 与 media，UI 完整展示。
-  if (negative) { vars.negative = negative; vars.negative_prompt = negative; }
+  // Agnes Video V2.0 字段与通用视频端点不同：用 num_frames/frame_rate 控制时长（非 duration），
+  // height/width 控制分辨率，image+mode=ti2vid 做图生视频，extra_body.image+mode=keyframes 做关键帧动画。
+  const isAgnesVideo = /agnes-ai\.cn/i.test(baseUrl || '') && /video/i.test(model.model_id || '');
+  let vars;
+  if (isAgnesVideo) {
+    const hasImages = Array.isArray(referenceImages) && referenceImages.length > 0;
+    const frameRate = 25;
+    // num_frames 必须 ≤441 且 = 8n+1
+    let numFrames = Math.round((Number(durationSec) || 6) * frameRate);
+    numFrames = Math.min(441, Math.max(9, numFrames));
+    numFrames = Math.floor((numFrames - 1) / 8) * 8 + 1;
+    const { width, height } = agnesVideoSize(ratio);
+    vars = {
+      model: model.model_id,
+      prompt,
+      height,
+      width,
+      num_frames: numFrames,
+      frame_rate: frameRate,
+    };
+    if (negative) vars.negative_prompt = negative;
+    if (hasImages) {
+      if (referenceImages.length >= 2) {
+        // 关键帧动画：多图进 extra_body.image
+        vars.mode = 'keyframes';
+        vars.extra_body = { image: referenceImages, mode: 'keyframes' };
+      } else {
+        // 图生视频
+        vars.image = referenceImages[0];
+        vars.mode = 'ti2vid';
+      }
+    }
+  } else {
+    vars = {
+      model: model.model_id,
+      prompt,
+      ratio,
+      duration: durationSec || 6,
+      firstFrame: referenceImages && referenceImages[0] ? referenceImages[0] : '',
+      images: referenceImages || [],
+    };
+    // 反向提示词：custom 端点经 fillTemplate 的 {{negative}}/{{negative_prompt}} 占位替换生效；
+    // 标准视频端点忽略未知字段。最终仍写入 generation_tasks.payload 与 media，UI 完整展示。
+    if (negative) { vars.negative = negative; vars.negative_prompt = negative; }
+  }
 
   const { protocol, endpoint } = resolveEndpoint(provider, model, 'generate');
   const isAsync = !!(provider.default_endpoint && provider.default_endpoint.async) ||
@@ -198,10 +254,12 @@ async function videoGenerate(provider, model, opts) {
       if (!taskId) return { videoUrl: '', status: 'error', error: '未返回任务 ID（taskIdPath 配置？）' };
       const pollEp = resolveEndpoint(provider, model, 'poll').endpoint;
       if (!pollEp) return { videoUrl: '', status: 'error', error: '未配置 poll 端点（异步任务需轮询）' };
+      // 轮询查询参数名可配置（Agnes 用 video_id，通用用 task_id）
+      const pollQueryParam = (pollEp && pollEp.taskQueryParam) || 'task_id';
       const deadline = Date.now() + 5 * 60 * 1000;
       while (Date.now() < deadline) {
-        await sleep(3000);
-        const r = await callEndpoint(baseUrl, pollEp, apiKey, { task_id: taskId, ...vars });
+        await sleep((pollEp && pollEp.taskPollIntervalMs) || 3000);
+        const r = await callEndpoint(baseUrl, pollEp, apiKey, { [pollQueryParam]: taskId });
         const st = String(getByPath(r.body, pollEp.taskStatusPath || 'data.status') ?? '').toLowerCase();
         const okVals = (pollEp.taskSuccessValues || ['succeeded', 'success', 'done', 'completed']).map((s) => s.toLowerCase());
         if (okVals.includes(st)) {
@@ -374,7 +432,7 @@ async function dispatchOne(pairs, tier, input, contentType) {
 
 // ─── 主入口 ────────────────────────────────────────
 async function generate(pgPool, opts) {
-  const { model, prompt, ratio, resolution, count, contentType, referenceImages, negative } = opts;
+  const { model, prompt, ratio, resolution, count, contentType, referenceImages, negative, durationSec } = opts;
   // 分辨率 → 桶档位：video 走 video 档（cost=20，与 4k 同权重）；8k 按 4k 计；未知按 1k
   const tier = contentType === 'video' ? 'video'
     : (['1k', '2k', '4k'].includes(resolution) ? resolution
@@ -423,13 +481,14 @@ async function generate(pgPool, opts) {
   const tasks = [];
   for (let i = 0; i < total; i++) {
     tasks.push((async () => {
-      const input = { prompt, ratio, resolution, count: 1, referenceImages, negative };
+      const input = { prompt, ratio, resolution, count: 1, referenceImages, negative, durationSec };
       return dispatchOne(pairs, tier, input, contentType);
     })());
   }
 
   const results = await Promise.all(tasks);
   const images = [];
+  const videos = [];        // 视频 URL 单独收集（与 images 通道并列，便于上层按 contentType 区分）
   const errors = [];
   const usedProviders = [];
   const consumption = [];   // 双边记账聚合：每组 (providerId, modelId, modelType) 的产出资产数
@@ -440,15 +499,21 @@ async function generate(pgPool, opts) {
       consumption.push({ providerId: r.providerId, modelId: r.modelId, modelType: r.modelType, units: r.units });
     }
     if (r.status === 'throttled') { throttled = true; if (r.error) errors.push(r.error); continue; }
-    if (r.images && r.images.length) {
-      images.push(r.images[0]);
+    if (r.status === 'success') {
+      if (r.images && r.images.length) {
+        images.push(r.images[0]);
+      } else if (r.videoUrl) {
+        // 视频：videoUrl 单独通道；同时并入 images 以兼容上层 images.length 成功判定
+        videos.push(r.videoUrl);
+        images.push(r.videoUrl);
+      }
     } else if (r.error) {
       errors.push(r.error);
     }
   }
   const usedProvidersUniq = [...new Set(usedProviders)];
   if (images.length > 0) {
-    return { status: 'success', images, source: 'provider', errors: errors.length ? errors : undefined, usedProviders: usedProvidersUniq, consumption };
+    return { status: 'success', images, videoUrl: videos[0], source: 'provider', errors: errors.length ? errors : undefined, usedProviders: usedProvidersUniq, consumption };
   }
   if (throttled) {
     return { status: 'throttled', retryAfter: DEFAULT_COOLDOWN_MS, error: errors[0] || '资源紧张，请稍候重试', images: [], usedProviders: usedProvidersUniq };

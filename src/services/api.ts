@@ -320,6 +320,74 @@ export async function apiPushSamples() {
   return apiFetch('/api/admin/samples/push', { method: 'POST' });
 }
 
+// ─── 参考样式库（用户投稿 + AI 预审 + 人工终审） ───
+export interface ReferenceStyle {
+  id: string;
+  userId?: string;
+  name: string;
+  description?: string;
+  previewUrl: string;
+  fullUrl?: string;
+  prompt?: string;
+  negativePrompt?: string;
+  modelId?: string;
+  ratio?: string;
+  tags?: string[];
+  status?: 'pending' | 'ai_passed' | 'ai_flagged' | 'approved' | 'rejected';
+  aiReason?: string;
+  rejectReason?: string;
+  sourceMediaId?: string;
+  reviewedBy?: string;
+  reviewedAt?: string;
+  createdAt?: string;
+  userDisplayName?: string;
+  userEmail?: string;
+  isPromoted?: boolean; // 是否强制推行（额外出现在客户工作台示例墙）
+  commissionRate?: number; // 设计者分成比例（%）
+}
+
+export async function apiGetReferenceStyles(params: { tag?: string; q?: string; limit?: number; offset?: number; promoted?: boolean } = {}): Promise<{ items: ReferenceStyle[]; total: number }> {
+  const sp = new URLSearchParams();
+  if (params.tag) sp.set('tag', params.tag);
+  if (params.q) sp.set('q', params.q);
+  if (params.limit) sp.set('limit', String(params.limit));
+  if (params.offset) sp.set('offset', String(params.offset));
+  if (params.promoted) sp.set('promoted', '1');
+  try { return await apiFetch(`/api/reference-styles?${sp.toString()}`); }
+  catch { return { items: [], total: 0 }; }
+}
+
+export async function apiSubmitReferenceStyle(payload: { mediaId: string; name?: string; description?: string; tags?: string[] }): Promise<{ id?: string; status?: string; message?: string; error?: string }> {
+  try { return await apiFetch('/api/reference-styles', { method: 'POST', body: JSON.stringify(payload) }); }
+  catch (e: any) { return { error: e?.message || '投稿失败' }; }
+}
+
+export async function apiDeleteReferenceStyle(id: string): Promise<{ ok: boolean }> {
+  try { await apiFetch(`/api/reference-styles/${id}`, { method: 'DELETE' }); return { ok: true }; }
+  catch { return { ok: false }; }
+}
+
+export async function apiAdminGetReferenceStyles(params: { status?: string; q?: string; limit?: number; offset?: number } = {}): Promise<{ items: ReferenceStyle[]; total: number }> {
+  const sp = new URLSearchParams();
+  if (params.status) sp.set('status', params.status);
+  if (params.q) sp.set('q', params.q);
+  if (params.limit) sp.set('limit', String(params.limit));
+  if (params.offset) sp.set('offset', String(params.offset));
+  try { return await apiFetch(`/api/admin/reference-styles?${sp.toString()}`); }
+  catch { return { items: [], total: 0 }; }
+}
+
+export async function apiAdminReviewReferenceStyle(id: string, decision: 'approve' | 'reject', reason?: string, opts?: { isPromoted?: boolean; commissionRate?: number }): Promise<{ ok: boolean; status?: string; message?: string; error?: string }> {
+  try { return await apiFetch(`/api/admin/reference-styles/${id}/review`, { method: 'POST', body: JSON.stringify({ decision, reason, isPromoted: opts?.isPromoted, commissionRate: opts?.commissionRate }) }); }
+  catch (e: any) { return { ok: false, error: e?.message || '审核失败' }; }
+}
+
+/** 管理端设置「强制推行 / 分成比例」（审核通过后可独立调整） */
+export async function apiAdminPromoteReferenceStyle(id: string, body: { isPromoted?: boolean; commissionRate?: number }): Promise<{ ok: boolean; error?: string }> {
+  try { return await apiFetch(`/api/admin/reference-styles/${id}/promote`, { method: 'POST', body: JSON.stringify(body) }); }
+  catch (e: any) { return { ok: false, error: e?.message || '操作失败' }; }
+}
+
 /** 过滤掉刷新后失效的 blob URL 临时项（本地上传的临时文件不持久化） */
 export function stripBlobItems<T extends { thumbnail?: string }>(items: T[]): T[] {
   return items.filter((m) => !m.thumbnail?.startsWith('blob:'));
@@ -345,6 +413,7 @@ export async function apiGenerate(payload: {
   referenceImages?: string[];
   pendingIds?: string[]; // 把前端的 pending 占位 id 告诉后端，便于刷新恢复
   negative?: string;     // 反向提示词（正负向搭配刚需，随生图请求透传）
+  duration?: number;     // 视频时长（秒），仅 contentType='video' 时生效
   idempotencyKey?: string; // 幂等键：每次生成请求一个 UUID，防网络抖动双扣（后端必需）
   sync?: boolean;         // 兼容旧测试：传 true 后端一次性返回结果
 }): Promise<GenerateResponse> {

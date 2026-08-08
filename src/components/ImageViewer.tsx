@@ -12,11 +12,15 @@ import {
   HardDrive,
   Sparkles,
   Wand2,
+  Palette,
+  Loader2,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
 import { useMediaUrl } from '@/hooks/useMediaUrl';
 import { getModelDisplayNameByDisplayName } from '@/hooks/useModelHub';
+import { apiSubmitReferenceStyle } from '@/services/api';
 
 // 把字节数格式化为「1.2 MB / 345 KB / 678 B」
 function formatBytes(b?: number): string | null {
@@ -43,6 +47,8 @@ interface ImageViewerProps {
   onUseRecipe?: (item: IMediaItem) => void;
   /** 示例变体生成（T2）：把当前图当参考图生成同源变体 */
   onRemix?: (item: IMediaItem) => void;
+  /** 是否允许投稿为参考样式（仅在自己素材场景开启） */
+  allowSubmitReferenceStyle?: boolean;
 }
 
 export default function ImageViewer({
@@ -52,6 +58,7 @@ export default function ImageViewer({
   onIndexChange,
   onUseRecipe,
   onRemix,
+  allowSubmitReferenceStyle,
 }: ImageViewerProps) {
   const [scale, setScale] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
@@ -61,6 +68,13 @@ export default function ImageViewer({
   const imgRef = useRef<HTMLDivElement>(null);
   // 当前图片的像素尺寸（来自 naturalWidth/Height，可能为空直到 onLoad 触发）
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
+
+  // 投稿为参考样式
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const [submitName, setSubmitName] = useState('');
+  const [submitDescription, setSubmitDescription] = useState('');
+  const [submitTags, setSubmitTags] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   const current = items[currentIndex];
   const viewUrl = useMediaUrl(current);
@@ -192,6 +206,35 @@ export default function ImageViewer({
     }
   };
 
+  // 投稿为公开参考样式（AI 预审 + 人工审核后上线）
+  const handleSubmitStyle = async () => {
+    if (!current?.id) return;
+    setSubmitting(true);
+    try {
+      const tags = submitTags
+        .split(/[,，;；]/)
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .slice(0, 10);
+      const r = await apiSubmitReferenceStyle({
+        mediaId: current.id,
+        name: submitName.trim() || undefined,
+        description: submitDescription.trim() || undefined,
+        tags,
+      });
+      if (r.error) {
+        toast.error('投稿失败：' + r.error);
+      } else {
+        toast.success('投稿成功！将经过 AI 预审与人工审核后公开');
+        setSubmitOpen(false);
+      }
+    } catch (e: any) {
+      toast.error('投稿失败：' + (e?.message || e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   // 禁止 body 滚动
   useEffect(() => {
     const prevOverflow = document.body.style.overflow;
@@ -289,6 +332,22 @@ export default function ImageViewer({
             >
               <Wand2 className="size-4" />
               <span className="text-xs">变体</span>
+            </button>
+          )}
+          {allowSubmitReferenceStyle && current && (
+            <button
+              type="button"
+              onClick={() => {
+                setSubmitName(current.prompt?.trim().slice(0, 20) || '未命名样式');
+                setSubmitDescription('');
+                setSubmitTags((current.tags || []).join(', '));
+                setSubmitOpen(true);
+              }}
+              className="flex h-9 items-center gap-1.5 rounded-full bg-zinc-800/60 px-3 text-zinc-300 hover:bg-emerald-500/20 hover:text-emerald-300 transition-colors"
+              title="投稿为公开参考样式（经 AI 预审 + 人工审核后上线）"
+            >
+              <Palette className="size-4" />
+              <span className="text-xs">投稿样式</span>
             </button>
           )}
 
@@ -420,6 +479,85 @@ export default function ImageViewer({
           </span>
         </div>
       </div>
+
+      {/* 投稿为参考样式弹窗 */}
+      {submitOpen && (
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/80 backdrop-blur-sm"
+          onClick={(e) => { if (e.target === e.currentTarget) setSubmitOpen(false); }}
+        >
+          <div className="relative z-10 w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-base font-medium text-zinc-100">投稿为参考样式</h3>
+              <button
+                onClick={() => setSubmitOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-800 hover:text-white transition-colors"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+
+            <div className="mb-4 flex items-center gap-3 rounded-xl bg-zinc-900/70 p-3">
+              <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-zinc-800">
+                {current?.thumbnail || current?.ossUrl || current?.fullUrl ? (
+                  <Image src={current.thumbnail || current.ossUrl || current.fullUrl || ''} alt="" className="h-full w-full object-cover" />
+                ) : null}
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs text-zinc-400">将作为公开样式被其他用户用作参考图</p>
+                <p className="mt-1 text-[11px] text-zinc-600">提交后需通过 AI 预审 + 人工审核</p>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs text-zinc-400">样式名称</label>
+                <input
+                  value={submitName}
+                  onChange={(e) => setSubmitName(e.target.value)}
+                  placeholder="给这个风格起个名字"
+                  className="w-full rounded-xl bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none ring-1 ring-zinc-800 focus:ring-emerald-500/50"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-zinc-400">风格描述（可选）</label>
+                <textarea
+                  value={submitDescription}
+                  onChange={(e) => setSubmitDescription(e.target.value)}
+                  placeholder="描述这个风格的特点、适用场景…"
+                  className="min-h-[70px] w-full rounded-xl bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none ring-1 ring-zinc-800 focus:ring-emerald-500/50"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-zinc-400">标签（逗号分隔，可选）</label>
+                <input
+                  value={submitTags}
+                  onChange={(e) => setSubmitTags(e.target.value)}
+                  placeholder="古风, 人像, 电影感"
+                  className="w-full rounded-xl bg-zinc-900 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 outline-none ring-1 ring-zinc-800 focus:ring-emerald-500/50"
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setSubmitOpen(false)}
+                className="rounded-xl bg-zinc-800 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
+              >
+                取消
+              </button>
+              <button
+                disabled={submitting}
+                onClick={handleSubmitStyle}
+                className="flex items-center gap-1.5 rounded-xl bg-emerald-500 px-4 py-2 text-sm font-medium text-black hover:bg-emerald-400 disabled:opacity-50"
+              >
+                {submitting ? <Loader2 className="size-4 animate-spin" /> : <Palette className="size-4" />}
+                提交投稿
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

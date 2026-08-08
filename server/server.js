@@ -52,6 +52,8 @@ import logbusMod from './logbus.cjs';   // 后台「实时日志 · 数据库/Re
 import syslogMod from './syslog.cjs';    // 核心错误持久化 + 进程级异常兜底(system_error_logs)
 import financeMod from './finance.cjs';  // Phase 4 后台账务系统（底层：总览/对账/账本/套餐）
 import meMod from './me.cjs';            // 用户侧账务（积分流水 / 充值订单 / 概览）
+import referenceStylesMod from './reference-styles.cjs'; // 参考样式库：用户投稿 + AI 预审 + 人工终审
+import referenceStyleAudit from './reference-style-audit.cjs'; // 参考样式 AI 预审
 import seedDefaultsMod from './seed-defaults.cjs'; // 首次部署兜底种子（占位服务商 + 常用模型）
 
 // 初始化向导限流（同一进程内 ≤20 次/10min；真正防护靠"建好即锁定"）
@@ -287,6 +289,54 @@ async function initDB() {
       ALTER TABLE media ADD COLUMN IF NOT EXISTS default_key TEXT;
       ALTER TABLE media ADD COLUMN IF NOT EXISTS tags JSONB DEFAULT '[]'::jsonb;
       CREATE INDEX IF NOT EXISTS ix_media_default ON media(user_id, default_key) WHERE default_key IS NOT NULL;
+
+      -- === Phase C：参考样式库（用户投稿 + AI 预审 + 人工终审）===
+      CREATE TABLE IF NOT EXISTS reference_styles (
+        id            TEXT PRIMARY KEY DEFAULT 'rs-' || gen_random_uuid()::text,
+        user_id       TEXT REFERENCES users(id) ON DELETE SET NULL,
+        name          TEXT NOT NULL DEFAULT '',
+        description   TEXT DEFAULT '',
+        preview_url   TEXT NOT NULL DEFAULT '',
+        full_url      TEXT DEFAULT '',
+        prompt        TEXT DEFAULT '',
+        negative_prompt TEXT DEFAULT '',
+        model_id      TEXT DEFAULT '',
+        ratio         TEXT DEFAULT '1:1',
+        tags          JSONB DEFAULT '[]'::jsonb,
+        status        TEXT NOT NULL DEFAULT 'pending', -- pending | ai_passed | ai_flagged | approved | rejected
+        ai_reason     TEXT DEFAULT '',
+        reject_reason TEXT DEFAULT '',
+        source_media_id TEXT REFERENCES media(id) ON DELETE SET NULL,
+        reviewed_by   TEXT DEFAULT '',
+        reviewed_at   TIMESTAMPTZ,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        is_promoted   BOOLEAN DEFAULT FALSE,          -- 是否强制推行（额外出现在客户工作台示例墙）
+        commission_rate INT DEFAULT 0                  -- 设计者分成比例（%）：客户付费时返给设计者的百分比
+      );
+      CREATE INDEX IF NOT EXISTS ix_reference_styles_status ON reference_styles(status);
+      CREATE INDEX IF NOT EXISTS ix_reference_styles_user ON reference_styles(user_id);
+      CREATE INDEX IF NOT EXISTS ix_reference_styles_tags ON reference_styles USING GIN(tags);
+      CREATE INDEX IF NOT EXISTS ix_reference_styles_created ON reference_styles(created_at DESC);
+      -- 已存在的库补列（IF NOT EXISTS 幂等）
+      ALTER TABLE reference_styles ADD COLUMN IF NOT EXISTS is_promoted BOOLEAN DEFAULT FALSE;
+      ALTER TABLE reference_styles ADD COLUMN IF NOT EXISTS commission_rate INT DEFAULT 0;
+      -- 媒体表归属参考样式（用于生成时给设计者分成 + 客户端展示来源）
+      ALTER TABLE media ADD COLUMN IF NOT EXISTS reference_style_id TEXT REFERENCES reference_styles(id) ON DELETE SET NULL;
+      CREATE INDEX IF NOT EXISTS ix_media_style ON media(reference_style_id) WHERE reference_style_id IS NOT NULL;
+      -- 设计者分成记账表
+      CREATE TABLE IF NOT EXISTS style_earnings (
+        id                 TEXT PRIMARY KEY DEFAULT 'se-' || gen_random_uuid()::text,
+        reference_style_id TEXT REFERENCES reference_styles(id) ON DELETE SET NULL,
+        designer_id        TEXT,
+        customer_id        TEXT,
+        media_id           TEXT,
+        charge_credits     INT DEFAULT 0,   -- 该次生成客户实际支付的积分（基准）
+        commission_credits INT DEFAULT 0,   -- 实际返给设计者的积分
+        created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_style_earnings_style ON style_earnings(reference_style_id);
+      CREATE INDEX IF NOT EXISTS ix_style_earnings_designer ON style_earnings(designer_id);
     `);
 
     console.log('[DB] PostgreSQL 连接成功');
@@ -709,6 +759,11 @@ const SNAKE_MAP = {
   reward_credits:'rewardCredits', recharge_credits:'rechargeCredits',
   target_url:'targetUrl',
   supports_reward_balance:'supportsRewardBalance', reward_credits_required:'rewardCreditsRequired',
+  // ── 参考样式库扩展 ──
+  preview_url:'previewUrl', negative_prompt:'negativePrompt', source_media_id:'sourceMediaId',
+  ai_reason:'aiReason', reject_reason:'rejectReason', reviewed_by:'reviewedBy', reviewed_at:'reviewedAt',
+  user_display_name:'userDisplayName', user_email:'userEmail',
+  is_promoted:'isPromoted', commission_rate:'commissionRate', reference_style_id:'referenceStyleId',
   // ── 多 OSS 槽位扩展 ──
   provider_type:'providerType', display_name:'displayName',
   app_id:'appId', active_id:'activeId',
@@ -1021,6 +1076,15 @@ const admin = adminMod.createAdmin({
   syslog: syslogMod,                          // 注入 syslog：核心错误历史查询/清理用(/api/admin/errors)
 });
 
+const referenceStyles = referenceStylesMod.createReferenceStyles({
+  getPg: () => pgPool,
+  session,
+  sendJSON,
+  fromSnake,
+  parseBody,
+  auditStyle: (styleId, actorId) => referenceStyleAudit.auditStyle(pgPool, styleId, actorId),
+});
+
 // ── Phase 5 电商模块（AI 市集）── 注入依赖；pgPool 经 getter 取最新值；内部自行鉴权
 const shop = shopMod.createShop({
   getPg: () => pgPool,
@@ -1095,6 +1159,55 @@ async function resolveSignupBonus() {
     } catch {}
   }
   return SIGNUP_BONUS_CREDITS;
+}
+
+// 解析参考样式设计者分成比例（%）：settings.app.styleCommissionRate，默认 30。
+// 某样式自身 commission_rate>0 时优先用自身的；否则用全局默认。
+async function resolveStyleCommissionRate() {
+  if (pgPool) {
+    try {
+      const r = await pgPool.query("SELECT value FROM settings WHERE key='app'");
+      const v = (r.rows[0] && r.rows[0].value) || {};
+      if (v && Number(v.styleCommissionRate) > 0) return Math.floor(Number(v.styleCommissionRate));
+    } catch {}
+  }
+  return 30;
+}
+
+// 参考样式分成：客户用某样式生图 → 按分成比例返积分给设计者（进奖励池）。
+// 设计者==客户自身时跳过（不自我分成）；幂等（同 media_id 已记则跳过）；异常绝不影响主链路。
+async function creditStyleDesigner(pg, { referenceStyleId, customerId, mediaId, chargeCredits }) {
+  if (!referenceStyleId || !pg) return;
+  try {
+    // 幂等：同一 media 已分成则跳过（媒体 POST 是 upsert，重试可能重复调用）
+    if (mediaId) {
+      const ex = await pg.query('SELECT 1 FROM style_earnings WHERE media_id=$1 LIMIT 1', [mediaId]);
+      if (ex.rows.length) return;
+    }
+    const sr = await pg.query(
+      'SELECT id, user_id, status, commission_rate FROM reference_styles WHERE id=$1',
+      [referenceStyleId],
+    );
+    if (!sr.rows.length) return;
+    const style = sr.rows[0];
+    if (style.status !== 'approved') return; // 仅已审核通过的样式才分成
+    const designerId = style.user_id;
+    if (!designerId || designerId === customerId) return; // 设计者自己用自己样式不分成
+    const rate = Number(style.commission_rate) > 0 ? Number(style.commission_rate) : await resolveStyleCommissionRate();
+    const base = Number(chargeCredits) > 0 ? Number(chargeCredits) : 0;
+    if (base <= 0) return;
+    const commission = Math.max(1, Math.round((base * rate) / 100));
+    if (commission <= 0) return;
+    // 进设计者奖励池（平台发放 → reward_credits）
+    await pg.query('UPDATE users SET reward_credits = COALESCE(reward_credits,0) + $1 WHERE id=$2', [commission, designerId]);
+    await pg.query(
+      `INSERT INTO style_earnings (id, reference_style_id, designer_id, customer_id, media_id, charge_credits, commission_credits)
+       VALUES ('se-' || gen_random_uuid(), $1, $2, $3, $4, $5, $6)`,
+      [referenceStyleId, designerId, customerId || null, mediaId || null, base, commission],
+    );
+  } catch (e) {
+    console.warn('[style-commission] 分成失败（已忽略）:', e.message);
+  }
 }
 
 async function handleRegister(req, res) {
@@ -1361,6 +1474,11 @@ async function handleAPI(req, res) {
   if (url === '/api/setup/status' && method === 'GET') return handleSetupStatus(req, res);
   if (url === '/api/setup/init' && method === 'POST') return handleSetupInit(req, res);
 
+  // 参考样式公开列表：无需登录（投稿/删除仍需登录，留在下方 appGateway 之后处理）
+  if (url === '/api/reference-styles' && method === 'GET') {
+    if (await referenceStyles.handle(req, res, url, method)) return;
+  }
+
   // 应用网关：API_TOKEN 或 用户会话 cookie 任一通过
   if (!appGateway(req)) return sendJSON(res, 401, { error: 'Unauthorized' });
 
@@ -1369,6 +1487,17 @@ async function handleAPI(req, res) {
   if (url === '/api/auth/logout' && method === 'POST') return handleLogout(req, res);
   // ── 用户侧账务（积分流水 / 充值订单 / 概览）── 需登录
   if (url.startsWith('/api/me/') && method !== 'OPTIONS') return me.handleMeRoutes(req, res, url.split('?')[0], method);
+
+  // ── 参考样式库（用户投稿 + AI 预审 + 人工终审）── 需登录
+  if (url.startsWith('/api/reference-styles') && method !== 'OPTIONS') {
+    try {
+      const hit = await referenceStyles.handle(req, res, url.split('?')[0], method);
+      if (hit) return;
+    } catch (e) {
+      if (!res.headersSent) sendJSON(res, 500, { error: '参考样式处理异常：' + (e?.message || e) });
+      return;
+    }
+  }
 
   // ── 管理后台（M3 总控台 / M4 智能体层）──
   if (url === '/api/admin/console/stream' && method === 'GET') return admin.streamConsole(req, res);
@@ -1397,6 +1526,17 @@ async function handleAPI(req, res) {
       return sendJSON(res, 200, { ok: true, rows: r.rows });
     } catch (e) { return sendJSON(res, 500, { error: e.message }); }
   }
+  // ── 参考样式库审核后台（AI 预审 + 人工终审）──
+  if (url.startsWith('/api/admin/reference-styles') && method !== 'OPTIONS') {
+    try {
+      const hit = await referenceStyles.handleAdmin(req, res, url.split('?')[0], method);
+      if (hit) return;
+    } catch (e) {
+      if (!res.headersSent) sendJSON(res, 500, { error: '参考样式审核处理异常：' + (e?.message || e) });
+      return;
+    }
+  }
+
   if (url.startsWith('/api/admin/') && method !== 'OPTIONS') return admin.handleAdmin(req, res, url.split('?')[0], method);
 
   // ── 电商模块（AI 市集 / 技能注册表 / 试用台）── 命中即处理（内部自行鉴权：目录/商品公开，试用/获取/我的技能需登录）
@@ -1654,9 +1794,14 @@ async function handleAPI(req, res) {
         // 真实文件大小：前端已带则直接用；否则落库后由服务端异步回探（不受浏览器缓存/CORS 影响）
         const fileSize = (typeof it.fileSize === 'number' && it.fileSize > 0) ? it.fileSize : null;
         await pgPool.query(
-          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,file_size,created_at,user_id,character_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,full_url=EXCLUDED.full_url,thumbnail=EXCLUDED.thumbnail,oss_url=EXCLUDED.oss_url,oss_object_key=EXCLUDED.oss_object_key,oss_uploaded=EXCLUDED.oss_uploaded,is_deleted=EXCLUDED.is_deleted,status=EXCLUDED.status,error_message=EXCLUDED.error_message,failed_at=EXCLUDED.failed_at,file_size=COALESCE(EXCLUDED.file_size, media.file_size),user_id=EXCLUDED.user_id,character_id=EXCLUDED.character_id`,
-          [s.id, s.title, s.type, s.thumbnail, s.full_url, s.prompt, s.model, s.ratio, s.source, s.is_favorite || false, s.is_deleted || false, s.oss_url, s.oss_object_key, s.oss_uploaded || false, s.category || 'generated', s.status || 'success', s.error_message || '', s.failed_at || null, fileSize, s.created_at || new Date().toISOString(), ownerId, s.character_id || null]
+          `INSERT INTO media (id,title,type,thumbnail,full_url,prompt,model,ratio,source,is_favorite,is_deleted,oss_url,oss_object_key,oss_uploaded,category,status,error_message,failed_at,file_size,created_at,user_id,character_id,reference_style_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,full_url=EXCLUDED.full_url,thumbnail=EXCLUDED.thumbnail,oss_url=EXCLUDED.oss_url,oss_object_key=EXCLUDED.oss_object_key,oss_uploaded=EXCLUDED.oss_uploaded,is_deleted=EXCLUDED.is_deleted,status=EXCLUDED.status,error_message=EXCLUDED.error_message,failed_at=EXCLUDED.failed_at,file_size=COALESCE(EXCLUDED.file_size, media.file_size),user_id=EXCLUDED.user_id,character_id=EXCLUDED.character_id,reference_style_id=EXCLUDED.reference_style_id`,
+          [s.id, s.title, s.type, s.thumbnail, s.full_url, s.prompt, s.model, s.ratio, s.source, s.is_favorite || false, s.is_deleted || false, s.oss_url, s.oss_object_key, s.oss_uploaded || false, s.category || 'generated', s.status || 'success', s.error_message || '', s.failed_at || null, fileSize, s.created_at || new Date().toISOString(), ownerId, s.character_id || null, s.reference_style_id || null]
         );
+        // 参考样式分成：客户用样式生图 → 返积分给设计者（奖励池）；幂等且不阻塞主链路
+        const chargeCredits = Number(s.credit_cost) || 0;
+        if (s.reference_style_id) {
+          creditStyleDesigner(pgPool, { referenceStyleId: s.reference_style_id, customerId: ownerId, mediaId: s.id, chargeCredits }).catch(() => {});
+        }
         // 异步回探真实字节数（仅当本次没有显式 fileSize 时）
         if (!fileSize) {
           const probeUrl = it.ossUrl || it.fullUrl || s.oss_url || s.full_url;
@@ -2072,6 +2217,7 @@ async function handleAPI(req, res) {
       referenceImages: body.referenceImages || [],
       pendingIds: body.pendingIds || [],
       negative: (body.negative || '').toString().trim(),
+      durationSec: Number(body.duration) || 6,
       user_id: realUser.id,
       idempotencyKey: idemKey,
       cost,
@@ -2081,6 +2227,7 @@ async function handleAPI(req, res) {
         ratio: body.ratio || '1:1',
         resolution: body.resolution || '1k',
         contentType: body.contentType || 'image',
+        duration: Number(body.duration) || 6,
         negative: (body.negative || '').toString().trim(),
       },
     };

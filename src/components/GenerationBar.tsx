@@ -25,15 +25,17 @@ import {
   Loader2,
   SlidersHorizontal,
   AlertTriangle,
+  History,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { capabilityClient, logger } from '@/services/client-capabilities';
 import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
+import { ReferenceStyleSelector } from '@/components/ReferenceStyleSelector';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
-import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus } from '@/services/api';
+import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus, type ReferenceStyle } from '@/services/api';
 import { refreshUser, setAuthModalOpen, useAuth } from '@/services/authStore';
 import { ALL_RESOLUTIONS, type Resolution, type IAiModel, getEffectiveModelName } from '@/data/models';
 import type { Ratio, Quality } from '@/data/settings';
@@ -170,6 +172,8 @@ export interface GenerationPayload {
   referenceImages?: string[];
   /** 是否立即触发生成（默认 true：一键复刻 / 一键变体） */
   auto?: boolean;
+  /** 归因到某个参考样式设计者（用于分成；工作台「用推广样式创作」专用） */
+  referenceStyle?: ReferenceStyle | null;
 }
 
 /** 父级通过 ref 触发重试 / 配方 / 变体的 imperative handle */
@@ -214,6 +218,13 @@ function GenerationBar({
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
   // 尺寸设置弹窗（质量/清晰度/比例 —— 向上弹窗，一次选择）
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 提交后参考图会被清空，记住最近一套用于一键复用
+  const [lastReferenceImages, setLastReferenceImages] = useState<string[]>([]);
+
+  // ── 参考样式选择器 ──
+  const [styleSelectorOpen, setStyleSelectorOpen] = useState(false);
+  // 当前被选中的「归属参考样式」：本次生成将归因到该样式设计者（用于分成）
+  const [attributedStyle, setAttributedStyle] = useState<ReferenceStyle | null>(null);
 
   // ── 限制对话窗口：余额/奖励不支持时的拦截弹窗（双池账务核心 UX）──
   const [limitDialog, setLimitDialog] = useState<{
@@ -303,7 +314,7 @@ function GenerationBar({
   const processResultImages = async (
     resultImages: string[],
     pendingIds: string[],
-    ctx: { prompt: string; model: string; ratio: string; contentType: 'image' | 'video'; createdAt: number },
+    ctx: { prompt: string; model: string; ratio: string; contentType: 'image' | 'video'; createdAt: number; referenceStyleId?: string | null; creditCost?: number },
   ): Promise<{ success: number; failed: number }> => {
     let success = 0;
     for (let i = 0; i < resultImages.length && i < pendingIds.length; i++) {
@@ -377,6 +388,8 @@ function GenerationBar({
         ossUploaded,
         progress: 100,
         characterId: characterIdRef.current,
+        referenceStyleId: ctx.referenceStyleId || undefined,
+        creditCost: typeof ctx.creditCost === 'number' ? ctx.creditCost : undefined,
       };
       // finalItem.status 默认 'success'——server 已返图就是成功。
       // 显示层由 useMediaUrlStatus 处理：OSS 链接直接展示，provider 兜底链接失效时由 useImageProbe 提示。
@@ -407,8 +420,32 @@ function GenerationBar({
         if (imgs.length > 0) {
           await processResultImages(imgs, pendingIds, ctx);
           toast.success(`生成完成 · ${imgs.length} 张`, { duration: 2500 });
+        } else if (ctx.contentType === 'video' && (st.result as { videoUrl?: string }).videoUrl) {
+          // 视频：直接以服务商 URL 落库（视频不重传 OSS，按存储铁律只存地址索引）—— 与图片流程对等
+          const videoUrl = (st.result as { videoUrl?: string }).videoUrl as string;
+          const finalItem: IMediaItem = {
+            id: pendingIds[0],
+            title: ctx.prompt.slice(0, 20) || '视频生成',
+            type: 'video',
+            thumbnail: videoUrl,
+            fullUrl: videoUrl,
+            prompt: ctx.prompt,
+            model: ctx.model,
+            ratio: ctx.ratio,
+            createdAt: new Date().toISOString(),
+            isFavorite: false,
+            isDeleted: false,
+            source: 'user',
+            ossUploaded: false,
+            progress: 100,
+            characterId: characterIdRef.current,
+            referenceStyleId: ctx.referenceStyleId || undefined,
+            creditCost: typeof ctx.creditCost === 'number' ? ctx.creditCost : undefined,
+          };
+          onGenerate(finalItem);
+          toast.success('视频生成完成', { duration: 2500 });
         } else {
-          // 任务完成但无图：按失败处理
+          // 任务完成但无结果：按失败处理
           markPendingAsFailed(pendingIds, st.error || '生成结果为空');
         }
         removePersistedTask(taskId);
@@ -479,9 +516,16 @@ function GenerationBar({
       if (payload.referenceImages && payload.referenceImages.length > 0) {
         onSetReferenceImagesRef.current?.(payload.referenceImages);
       }
+      // 归因样式：工作台「用推广样式创作」时携带，记为本次生成归属（用于给设计者分成）
+      if (payload.referenceStyle !== undefined) {
+        setAttributedStyle(payload.referenceStyle || null);
+      }
       setTimeout(() => {
         // auto=false 时只预填不生成；否则立即生成（一键复刻 / 一键变体）
-        handleGenerateRef.current(payload.auto === false ? undefined : { referenceImages: payload.referenceImages });
+        handleGenerateRef.current(payload.auto === false ? undefined : {
+          referenceImages: payload.referenceImages,
+          attributedStyle: payload.referenceStyle || null,
+        });
       }, 120);
     },
   }), []);
@@ -702,14 +746,22 @@ function GenerationBar({
     };
   };
 
-  const handleGenerate = async (overrides?: { referenceImages?: string[] }) => {
+  const handleGenerate = async (overrides?: { referenceImages?: string[]; attributedStyle?: ReferenceStyle | null }) => {
     // 自我注册到 ref（避免在组件顶层读未初始化的 const，绕过 TDZ）
     handleGenerateRef.current = handleGenerate;
 
+    // 归因样式：优先用外部传入（工作台推广样式一键创作），否则用顶部选择器选中的
+    const activeStyle = overrides?.attributedStyle !== undefined ? overrides.attributedStyle : attributedStyle;
     // 变体 Remix：优先用外部传入的参考图（示例缩略图），否则用当前参考图 state
-    const effectiveRefs = overrides?.referenceImages?.length
+    let effectiveRefs = overrides?.referenceImages?.length
       ? overrides.referenceImages
       : referenceImages;
+    // 确保被选中的「归属参考样式」URL 实际进入本次生成的参考图（否则只记归因、实则未用图）
+    const attributedStyleId = activeStyle?.id || null;
+    if (activeStyle?.previewUrl && !effectiveRefs.includes(activeStyle.previewUrl)) {
+      effectiveRefs = [...effectiveRefs, activeStyle.previewUrl];
+    }
+    const chargeCredits = typeof currentModel?.creditCost === 'number' ? currentModel.creditCost : 0;
 
     if (!promptText.trim()) {
       toast.error('请先输入提示词', { duration: 3000 });
@@ -733,6 +785,12 @@ function GenerationBar({
     if (bal.reason === 'FALLBACK') {
       toast.info(bal.message || '奖励余额不足，将使用充值余额抵扣', { duration: 3500 });
     }
+
+    // 提交后清空当前参考图，但保留最近一套用于一键复用
+    if (effectiveRefs.length > 0) {
+      setLastReferenceImages(effectiveRefs);
+    }
+    onSetReferenceImages?.([]);
 
     // ── 立即释放按钮：用户可以继续编辑 prompt 或立刻再次提交 ──
     setGenerating(false);
@@ -797,6 +855,7 @@ function GenerationBar({
           referenceImages: effectiveRefs.length > 0 ? effectiveRefs : undefined,
           pendingIds,
           negative: negativePromptText.trim() || undefined,
+          duration: settings.contentType === 'video' ? (settings.duration || 6) : undefined,
           idempotencyKey,
         });
 
@@ -842,7 +901,7 @@ function GenerationBar({
           await pollTaskUntilDone(
             r.taskId,
             pendingIds,
-            { prompt: promptText, model: settings.model, ratio: settings.ratio, contentType: settings.contentType, createdAt: now },
+            { prompt: promptText, model: settings.model, ratio: settings.ratio, contentType: settings.contentType, createdAt: now, referenceStyleId: attributedStyleId, creditCost: chargeCredits },
             null,
           );
           return;
@@ -857,6 +916,8 @@ function GenerationBar({
             ratio: settings.ratio,
             contentType: settings.contentType,
             createdAt: now,
+            referenceStyleId: attributedStyleId,
+            creditCost: chargeCredits,
           });
           toast.success(`生成完成 · ${resultImages.length} 张`, { duration: 2500 });
         } else {
@@ -1283,6 +1344,32 @@ function GenerationBar({
                         ))}
                       </div>
                     </div>
+                    {/* 视频时长（仅视频模式） */}
+                    {settings.contentType === 'video' && (
+                      <>
+                        <div className="border-t border-zinc-800" />
+                        <div className="p-3">
+                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            视频时长
+                          </div>
+                          <div className="grid grid-cols-4 gap-1.5">
+                            {([4, 6, 8, 10] as const).map((d) => (
+                              <button
+                                key={d}
+                                onClick={() => onSettingsChange({ ...settings, duration: d })}
+                                className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
+                                  (settings.duration || 6) === d
+                                    ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
+                                    : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
+                                }`}
+                              >
+                                {d}s
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </>,
                 document.body,
@@ -1504,8 +1591,8 @@ function GenerationBar({
           </div>
         </div>
 
-        {/* 参考图缩略图行 */}
-        {referenceImages.length > 0 && (
+        {/* 参考图缩略图行：当前有图展示缩略图；当前无图但有上次记录时展示一键复用 */}
+        {referenceImages.length > 0 ? (
           <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2.5">
             {referenceImages.map((url) => (
               <div key={url} className="relative">
@@ -1526,8 +1613,86 @@ function GenerationBar({
             >
               <Plus className="size-4" />
             </button>
+            <button
+              onClick={() => setStyleSelectorOpen(true)}
+              className="flex items-center gap-1.5 rounded-full bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
+              title="从公开参考样式库挑选"
+            >
+              <Palette className="size-3.5" />
+              <span>参考样式</span>
+            </button>
+            {attributedStyle && (
+              <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs text-emerald-300 ring-1 ring-emerald-500/30">
+                <Palette className="size-3" />
+                <span className="max-w-[120px] truncate">{attributedStyle.name || '未命名'}</span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAttributedStyle(null);
+                    if (attributedStyle.previewUrl) onSetReferenceImages?.(referenceImages.filter((u) => u !== attributedStyle.previewUrl));
+                  }}
+                  className="flex h-4 w-4 items-center justify-center rounded-full text-emerald-300/70 hover:bg-emerald-500/20 hover:text-white"
+                  title="取消归属此样式"
+                >
+                  <X className="size-2.5" />
+                </button>
+              </span>
+            )}
           </div>
-        )}
+        ) : lastReferenceImages.length > 0 ? (
+          <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-2.5">
+            <button
+              onClick={() => setStyleSelectorOpen(true)}
+              className="flex items-center gap-1.5 rounded-full bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
+              title="从公开参考样式库挑选"
+            >
+              <Palette className="size-3.5" />
+              <span>参考样式</span>
+            </button>
+            {attributedStyle && (
+              <span className="flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs text-emerald-300 ring-1 ring-emerald-500/30">
+                <Palette className="size-3" />
+                <span className="max-w-[120px] truncate">{attributedStyle.name || '未命名'}</span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setAttributedStyle(null);
+                    if (attributedStyle.previewUrl) onSetReferenceImages?.(referenceImages.filter((u) => u !== attributedStyle.previewUrl));
+                  }}
+                  className="flex h-4 w-4 items-center justify-center rounded-full text-emerald-300/70 hover:bg-emerald-500/20 hover:text-white"
+                  title="取消归属此样式"
+                >
+                  <X className="size-2.5" />
+                </button>
+              </span>
+            )}
+            <button
+              onClick={() => onSetReferenceImages?.(lastReferenceImages)}
+              className="flex items-center gap-1.5 rounded-full bg-zinc-800/60 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
+              title="复用上次提交的图片"
+            >
+              <History className="size-3.5" />
+              <span>复用上次图片</span>
+              {lastReferenceImages.length > 1 && (
+                <span className="text-zinc-500">({lastReferenceImages.length})</span>
+              )}
+            </button>
+            <div className="flex -space-x-1.5">
+              {lastReferenceImages.slice(0, 3).map((url) => (
+                <div key={url} className="h-7 w-7 overflow-hidden rounded-lg border border-zinc-700">
+                  <Image src={url} alt="" className="h-full w-full object-cover" />
+                </div>
+              ))}
+              {lastReferenceImages.length > 3 && (
+                <div className="flex h-7 w-7 items-center justify-center rounded-lg border border-zinc-700 bg-zinc-800 text-[10px] text-zinc-400">
+                  +{lastReferenceImages.length - 3}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
 
         {/* 输入区 */}
         <div className="flex items-end gap-2 px-4 py-3">
@@ -1794,6 +1959,23 @@ function GenerationBar({
             </div>
           </DialogContent>
         </Dialog>
+
+        <ReferenceStyleSelector
+          open={styleSelectorOpen}
+          onClose={() => setStyleSelectorOpen(false)}
+          selectedUrls={referenceImages}
+          onSelect={(style) => {
+            const url = style.previewUrl;
+            if (!url) return;
+            if (referenceImages.includes(url)) {
+              toast.info('该样式已在参考图中');
+              return;
+            }
+            onSetReferenceImages?.([...referenceImages, url]);
+            setAttributedStyle(style); // 记为本次生成的归属样式（用于给设计者分成）
+            toast.success(`已添加参考样式：${style.name || '未命名'}`);
+          }}
+        />
       </div>
     </div>
   );

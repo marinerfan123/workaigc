@@ -31,4 +31,5 @@ export const DEFAULT_SETTINGS: IGenerationSettings = {
   quality: 'standard',
   model: 'Nano Banana 2 Lite',
   count: 1,
+  duration: 6,
 };

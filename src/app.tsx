@@ -22,6 +22,7 @@ import ConsolePage from '@/pages/Admin/ConsolePage';
 import AgentsPage from '@/pages/Admin/AgentsPage';
 import UsersPage from '@/pages/Admin/UsersPage';
 import SamplesPage from '@/pages/Admin/SamplesPage';
+import ReferenceStylesReviewPage from '@/pages/Admin/ReferenceStylesReviewPage';
 import TransactionsPage from '@/pages/Admin/TransactionsPage';
 import SkillsPage from '@/pages/Admin/SkillsPage';
 import EcommerceAdminPage from '@/pages/Admin/EcommerceAdminPage';
@@ -116,6 +117,7 @@ export default function App() {
           <Route path="agents" element={<AgentsPage />} />
           <Route path="users" element={<UsersPage />} />
           <Route path="samples" element={<SamplesPage />} />
+          <Route path="reference-styles" element={<ReferenceStylesReviewPage />} />
           <Route path="models" element={<ModelHubPage />} />
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="skills" element={<SkillsPage />} />
