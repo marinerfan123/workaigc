@@ -24,7 +24,8 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
   const [order, setOrder] = useState<RechargeOrder | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
-  const [packages, setPackages] = useState<TopupPackage[]>([]);
+  const [packages, setPackages] = useState<(TopupPackage & { _preset?: boolean })[]>([]);
+  const [selectedPackageId, setSelectedPackageId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [remaining, setRemaining] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -129,7 +130,7 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
     }
     setBusy(true);
     setMsg('');
-    const r = await apiCreateRechargeOrder({ amount: finalAmount, channel });
+    const r = await apiCreateRechargeOrder({ amount: finalAmount, channel, packageId: selectedPackageId });
     setBusy(false);
     if (r.ok && r.order) {
       setOrder(r.order);
@@ -170,14 +171,14 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
                 <div className="grid grid-cols-3 gap-2">
                   {(packages.length
                     ? packages
-                    : PRESETS.map((p) => ({ id: `p${p}`, price: p, credits: p, bonus: 0, name: '' }))
+                    : PRESETS.map((p) => ({ id: `p${p}`, price: p, credits: p, bonus: 0, name: '', _preset: true }))
                   ).map((pkg) => {
                     const active = !custom && amount === pkg.price;
                     const totalCredits = pkg.credits + (pkg.bonus || 0);
                     return (
                       <button
                         key={pkg.id}
-                        onClick={() => { setAmount(pkg.price); setCustom(''); }}
+                        onClick={() => { setAmount(pkg.price); setCustom(''); setSelectedPackageId(pkg._preset ? null : pkg.id); }}
                         className={`flex flex-col items-center rounded-2xl border px-2 py-2.5 text-sm font-semibold transition-all ${
                           active
                             ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
@@ -195,7 +196,7 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
                 <input
                   value={custom}
                   inputMode="numeric"
-                  onChange={(e) => setCustom(e.target.value.replace(/[^0-9]/g, ''))}
+                  onChange={(e) => { setCustom(e.target.value.replace(/[^0-9]/g, '')); setSelectedPackageId(null); }}
                   placeholder="自定义金额（元）"
                   className="mt-2 w-full rounded-2xl border border-zinc-800 bg-zinc-800/40 px-4 py-2.5 text-sm text-white placeholder-zinc-600 outline-none focus:border-emerald-500/50"
                 />

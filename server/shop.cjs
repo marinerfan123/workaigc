@@ -48,6 +48,15 @@ function createShop(ctx) {
   }
   function uuid() { return crypto.randomUUID(); }
 
+  // 商城双池扣费：赠送优先，不足回退充值池（按用户拍板「双池都可用（赠送优先）」）。
+  // 返回 { pool, amount } 供 reserve/commit/release 三阶段共用同一池与金额，保证幂等安全。
+  async function reserveDual(user, cost, ref) {
+    if (!cost || cost <= 0) return { pool: 'recharge', amount: 0 };
+    const pay = await billing.resolvePayment(pg(), user.id, { supportsReward: true, rewardRequired: cost, creditCost: cost });
+    await billing.reserveCredits(pg(), user.id, pay.amount, ref, pay.pool);
+    return pay;
+  }
+
   // ───────────── 文本推理模型三层优先级选择（复刻 /api/agent/optimize-prompt 逻辑）─────────────
   async function pickTextModel(agentKey) {
     const COLS = "m.id AS m_id, m.model_id, m.display_name, m.credit_cost, p.id AS p_id, p.base_url, p.api_key, p.protocol ";
@@ -123,10 +132,11 @@ function createShop(ctx) {
 
     // 三段式：reserve（扣余额）→ run → commit（记账）/ release（失败补回）
     const ref = `skill-run:${skillKey}:${user.id}:${body.idempotencyKey || Date.now()}`;
+    let pay;
     try {
-      await billing.reserveCredits(pg(), user.id, cost, ref);
+      pay = await reserveDual(user, cost, ref);
     } catch (e) {
-      return { error: e.message || '积分不足', status: 402 };
+      return { error: e.message || '积分不足', status: 402, code: e.code || 'INSUFFICIENT' };
     }
 
     try {
@@ -145,12 +155,12 @@ function createShop(ctx) {
       } else if (skill.adapter === 'text_gen') {
         systemPrompt = params.systemPrompt || '你是一个有用的 AI 助手，请根据用户需求生成高质量文本。';
       } else {
-        await billing.releaseCredits(pg(), user.id, cost, ref);
+        await billing.releaseCredits(pg(), user.id, pay.amount, ref, pay.pool);
         return { error: `未知 adapter：${skill.adapter}`, status: 400 };
       }
       const model = await pickTextModel(skill.adapter === 'prompt_optimize' ? 'prompt_optimizer' : null);
       if (!model) {
-        await billing.releaseCredits(pg(), user.id, cost, ref);
+        await billing.releaseCredits(pg(), user.id, pay.amount, ref, pay.pool);
         return { error: '未配置启用的文本推理模型，请到「模型 Hub」添加 type=text 的模型', status: 400, code: 'NO_REASONING_MODEL' };
       }
       const result = await callChatCompletion(model, systemPrompt, (body && body.input) || '', {
@@ -158,10 +168,10 @@ function createShop(ctx) {
         temperature: typeof params.temperature === 'number' ? params.temperature : 0.7,
       });
       if (result.error) {
-        await billing.releaseCredits(pg(), user.id, cost, ref);
+        await billing.releaseCredits(pg(), user.id, pay.amount, ref, pay.pool);
         return { error: result.error, status: 502 };
       }
-      await billing.commitCredits(pg(), user.id, cost, ref);
+      await billing.commitCredits(pg(), user.id, pay.amount, ref, pay.pool);
       // 双边记账：无论 LLM 是否返回 usage，都记录后台量 vs 客户量（系统用量算量基础）
       try {
         const u = result.usage || null;
@@ -175,7 +185,7 @@ function createShop(ctx) {
       } catch (e) { console.warn('[accounting skill-run]', e.message); }
       return { ok: true, skillKey, adapter: skill.adapter, content: result.content, modelUsed: result.modelUsed, costCredits: cost };
     } catch (e) {
-      await billing.releaseCredits(pg(), user.id, cost, ref);
+      await billing.releaseCredits(pg(), user.id, pay.amount, ref, pay.pool);
       return { error: '执行异常：' + (e.message || '未知错误'), status: 500 };
     }
   }
@@ -230,10 +240,11 @@ function createShop(ctx) {
       }
       if (creditCost > 0) {
         const ref = `acquire:${id}:${user.id}`;
-        try { await billing.reserveCredits(pg(), user.id, creditCost, ref); }
-        catch (e) { return { error: e.message || '积分不足', status: 402 }; }
-        try { await billing.commitCredits(pg(), user.id, creditCost, ref); }
-        catch (e) { await billing.releaseCredits(pg(), user.id, creditCost, ref); return { error: '记账失败', status: 500 }; }
+        let pay;
+        try { pay = await reserveDual(user, creditCost, ref); }
+        catch (e) { return { error: e.message || '积分不足', status: 402, code: e.code || 'INSUFFICIENT' }; }
+        try { await billing.commitCredits(pg(), user.id, pay.amount, ref, pay.pool); }
+        catch (e) { await billing.releaseCredits(pg(), user.id, pay.amount, ref, pay.pool); return { error: '记账失败', status: 500 }; }
       }
       // 安装授权（upsert，幂等）
       await pg().query(

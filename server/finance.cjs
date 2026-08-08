@@ -37,6 +37,13 @@ function createFinance(ctx) {
     const granted = await p.query("SELECT COALESCE(SUM(amount),0) AS s FROM credit_transactions WHERE kind='grant'");
     const adjusted = await p.query("SELECT COALESCE(SUM(amount),0) AS s FROM credit_transactions WHERE kind='adjust'");
 
+    // 池维度：当前双池总余额 + 按池的发放/消费汇总（账务铁律要求双边可视）
+    const poolBalances = await p.query('SELECT COALESCE(SUM(reward_credits),0) AS r, COALESCE(SUM(recharge_credits),0) AS c FROM users');
+    const grantByPool = await p.query("SELECT pool, COALESCE(SUM(amount),0) AS s FROM credit_transactions WHERE kind='grant' GROUP BY pool");
+    const commitByPool = await p.query("SELECT pool, COALESCE(SUM(amount),0) AS s FROM credit_transactions WHERE kind='commit' GROUP BY pool");
+    const grantMap = {}; for (const x of grantByPool.rows) grantMap[x.pool] = Number(x.s);
+    const commitMap = {}; for (const x of commitByPool.rows) commitMap[x.pool] = Number(x.s);
+
     // 近 30 天分时序：充值到账 / 真实消费 / 发放
     const series = await p.query(`
       SELECT d::date AS day,
@@ -59,6 +66,11 @@ function createFinance(ctx) {
       totalConsumed: Number(consumed.rows[0].s),
       totalGranted: Number(granted.rows[0].s),
       totalAdjusted: Number(adjusted.rows[0].s),
+      // 池维度（双边账务可视）
+      rewardBalance: Number(poolBalances.rows[0].r),
+      rechargeBalance: Number(poolBalances.rows[0].c),
+      grantedByPool: { reward: grantMap.reward || 0, recharge: grantMap.recharge || 0 },
+      consumedByPool: { reward: commitMap.reward || 0, recharge: commitMap.recharge || 0 },
       series: series.rows.map((r) => ({
         day: r.day,
         rechargePaid: Number(r.recharge_paid),

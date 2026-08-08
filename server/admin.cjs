@@ -106,7 +106,7 @@ function createAdmin(ctx) {
     const countR = await pg().query(`SELECT COUNT(*) FROM credit_transactions WHERE ${where}`, params);
     const total = parseInt(countR.rows[0].count, 10);
     const r = await pg().query(
-      `SELECT t.id, t.user_id, u.display_name AS user, t.kind, t.amount, t.balance_after, t.ref, t.created_at
+      `SELECT t.id, t.user_id, u.display_name AS user, t.kind, t.amount, t.balance_after, t.ref, t.created_at, t.pool
        FROM credit_transactions t LEFT JOIN users u ON u.id=t.user_id
        WHERE ${where} ORDER BY t.id DESC LIMIT $${i} OFFSET $${i + 1}`,
       [...params, limit, offset],
@@ -116,6 +116,7 @@ function createAdmin(ctx) {
       userId: x.user_id,
       user: x.user || '系统',
       kind: x.kind,
+      pool: x.pool || 'recharge',
       amount: Number(x.amount),
       balanceAfter: x.balance_after != null ? Number(x.balance_after) : null,
       ref: x.ref,

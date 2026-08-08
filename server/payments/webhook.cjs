@@ -132,24 +132,41 @@ function createWebhook(ctx) {
          WHERE pay_order_no=$3`,
         [channelTradeNo, JSON.stringify({ trade_no: channelTradeNo, money: amount / 100 }), outTradeNo],
       );
+      // 本金入账（充值余额）
       const bal = await client.query(
         'UPDATE users SET recharge_credits=recharge_credits+$1 WHERE id=$2 RETURNING credits',
         [o.amount, o.user_id],
       );
-      const newBal = bal.rows[0] ? Number(bal.rows[0].credits) : null;
+      const newBalPrincipal = bal.rows[0] ? Number(bal.rows[0].credits) : null;
       await client.query(
         `INSERT INTO credit_transactions (user_id, kind, amount, ref, pool, balance_after)
          VALUES ($1,'grant',$2,$3,'recharge',$4)`,
-        [o.user_id, o.amount, o.id, newBal],
+        [o.user_id, o.amount, o.id, newBalPrincipal],
       );
+      // 套餐赠送积分入账（按用户拍板：赠送积分一并发放到充值余额，全模型可用）
+      const bonus = Number(o.bonus) || 0;
+      let newBal = newBalPrincipal;
+      if (bonus > 0) {
+        const bal2 = await client.query(
+          'UPDATE users SET recharge_credits=recharge_credits+$1 WHERE id=$2 RETURNING credits',
+          [bonus, o.user_id],
+        );
+        const newBalBonus = bal2.rows[0] ? Number(bal2.rows[0].credits) : null;
+        newBal = newBalBonus;
+        await client.query(
+          `INSERT INTO credit_transactions (user_id, kind, amount, ref, pool, balance_after)
+           VALUES ($1,'grant',$2,$3,'recharge',$4)`,
+          [o.user_id, bonus, `${o.id}:bonus`, newBalBonus],
+        );
+      }
       await client.query(
         `INSERT INTO payment_audit (event_type, provider_id, order_id, user_id, detail)
          VALUES ('paid',$1,$2,$3,$4)`,
-        [entry.id, o.id, o.user_id, { amount: o.amount, channelTradeNo, newBal }],
+        [entry.id, o.id, o.user_id, { amount: o.amount, bonus, channelTradeNo, newBal }],
       );
 
       await client.query('COMMIT');
-      return sendJSON(res, 200, { ok: true, credits: newBal });
+      return sendJSON(res, 200, { ok: true, credits: newBal, bonus });
     } catch (e) {
       await client.query('ROLLBACK').catch(() => {});
       await pg.query(

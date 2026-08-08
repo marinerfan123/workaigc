@@ -113,6 +113,17 @@ export default function FinancePage() {
           <Kpi icon={TrendingUp} label="手动调整净额" value={overview?.totalAdjusted ?? 0} sub="adjust 流水" />
         </div>
 
+        {/* 双池余额（赠送 / 充值） */}
+        <div className="mb-6 rounded-3xl border border-zinc-800 bg-zinc-900/40 p-6 backdrop-blur-md">
+          <h2 className="mb-4 text-sm font-semibold tracking-wide text-zinc-200">双池余额（赠送积分 / 充值积分）</h2>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <Kpi icon={Gift} label="赠送池总余额" value={overview?.rewardBalance ?? 0} accent sub="reward" />
+            <Kpi icon={Wallet} label="充值池总余额" value={overview?.rechargeBalance ?? 0} sub="recharge" />
+            <Kpi icon={Gift} label="累计赠送发放" value={overview?.grantedByPool?.reward ?? 0} sub="grant·reward" />
+            <Kpi icon={Wallet} label="累计充值到账" value={overview?.grantedByPool?.recharge ?? 0} sub="grant·recharge" />
+          </div>
+        </div>
+
         {/* 近 30 天时序 */}
         {overview?.series && (
           <div className="mb-6 rounded-3xl border border-zinc-800 bg-zinc-900/40 p-6 backdrop-blur-md">

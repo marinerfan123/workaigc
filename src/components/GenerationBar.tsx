@@ -161,7 +161,7 @@ function friendlyGenerateError(raw: string, fallbackRpm?: number): string {
 
 /**
  * 从 apiFetch 抛出的 "API 402: {...}" 错误文本里提取后端返回的 code
- * （NEED_RECHARGE=不支持奖励且充值不足 / INSUFFICIENT=支持奖励但双池皆不足）。
+ * （NEED_RECHARGE=不支持赠送且充值不足 / INSUFFICIENT=支持赠送但双池皆不足）。
  */
 function extractGenerateCode(msg: string): string | undefined {
   const m = msg.match(/^API \d+:\s*(\{[\s\S]*\})\s*$/);
@@ -171,23 +171,23 @@ function extractGenerateCode(msg: string): string | undefined {
 
 /**
  * 余额类拦截的统一文案（限制对话窗口 + pending 失败占位共用）：
- * - NEED_RECHARGE  → 该模型不支持奖励余额，且充值余额不足
- * - INSUFFICIENT   → 支持奖励余额，但奖励余额与充值余额都不足
+ * - NEED_RECHARGE  → 该模型不支持赠送余额，且充值余额不足
+ * - INSUFFICIENT   → 支持赠送余额，但赠送余额与充值余额都不足
  * - 其他           → 通用积分不足
  */
 function balanceLimitInfo(code: string | undefined): { title: string; message: string; friendly: string } {
   if (code === 'NEED_RECHARGE') {
     return {
-      title: '该模型不支持奖励余额',
+      title: '该模型不支持赠送余额',
       message: '当前模型仅可使用充值余额支付，而您的充值余额不足。\n请前往账户充值后再生成。',
-      friendly: '该模型不支持奖励余额，且充值余额不足',
+      friendly: '该模型不支持赠送余额，且充值余额不足',
     };
   }
   if (code === 'INSUFFICIENT') {
     return {
       title: '积分不足',
-      message: '当前模型支持奖励余额：奖励余额与充值余额均不足以支付本次生成。\n请充值，或等待平台奖励到账后再试。',
-      friendly: '奖励余额与充值余额均不足',
+      message: '当前模型支持赠送余额：赠送余额与充值余额均不足以支付本次生成。\n请充值，或等待平台赠送到账后再试。',
+      friendly: '赠送余额与充值余额均不足',
     };
   }
   return { title: '积分不足', message: '本次生成所需积分不足，请充值后重试。', friendly: '积分不足' };
@@ -301,7 +301,7 @@ function GenerationBar({
   // 当前被选中的「归属参考样式」：本次生成将归因到该样式设计者（用于分成）
   const [attributedStyle, setAttributedStyle] = useState<ReferenceStyle | null>(null);
 
-  // ── 限制对话窗口：余额/奖励不支持时的拦截弹窗（双池账务核心 UX）──
+  // ── 限制对话窗口：余额/赠送不支持时的拦截弹窗（双池账务核心 UX）──
   const [limitDialog, setLimitDialog] = useState<{
     open: boolean;
     title: string;
@@ -687,9 +687,9 @@ function GenerationBar({
 
   // 顶栏展示名：优先映射名
   const currentModelLabel = getEffectiveModelName(currentModel) || settings.model || '无';
-  // 模型是否支持奖励余额（缺省视为支持）
+  // 模型是否支持赠送余额（缺省视为支持）
   const modelSupportsReward = (m?: IAiModel | null) => (m ? m.supportsRewardBalance !== false : false);
-  // 模型奖励价（支持奖励时所需奖励积分；缺省回退充值价）
+  // 模型赠送价（支持赠送时所需赠送积分；缺省回退充值价）
   const modelRewardPrice = (m?: IAiModel | null) =>
     m && typeof m.rewardCreditsRequired === 'number' && m.rewardCreditsRequired > 0
       ? m.rewardCreditsRequired
@@ -870,10 +870,10 @@ function GenerationBar({
   /**
    * 双池余额前置校验（纯前端预判，后端 402 为安全网）：
    * - 未登录            → NO_LOGIN（弹登录框）
-   * - 支持奖励且奖励够   → ok（优先扣奖励）
-   * - 支持奖励但奖励不足、充值够 → ok + FALLBACK（回退充值，toast 提示）
-   * - 支持奖励但双池不足 → INSUFFICIENT（拦截 + 限制对话窗口）
-   * - 不支持奖励：充值够 → ok；充值不足 → NEED_RECHARGE（拦截）
+   * - 支持赠送且赠送够   → ok（优先扣赠送）
+   * - 支持赠送但赠送不足、充值够 → ok + FALLBACK（回退充值，toast 提示）
+   * - 支持赠送但双池不足 → INSUFFICIENT（拦截 + 限制对话窗口）
+   * - 不支持赠送：充值够 → ok；充值不足 → NEED_RECHARGE（拦截）
    */
   const checkBalance = (): {
     ok: boolean;
@@ -881,7 +881,7 @@ function GenerationBar({
     title?: string;
     message?: string;
   } => {
-    if (!user) return { ok: false, reason: 'NO_LOGIN', title: '请先登录', message: '登录后即可使用奖励/充值积分生成作品。' };
+    if (!user) return { ok: false, reason: 'NO_LOGIN', title: '请先登录', message: '登录后即可使用赠送/充值积分生成作品。' };
     const cost = typeof currentModel?.creditCost === 'number' ? currentModel.creditCost : 0;
     const supportsReward = modelSupportsReward(currentModel);
     const rewardRequired = modelRewardPrice(currentModel);
@@ -893,23 +893,23 @@ function GenerationBar({
         return {
           ok: true,
           reason: 'FALLBACK',
-          title: '奖励余额不足，将使用充值余额',
-          message: `当前模型支持奖励余额：奖励余额需 ${rewardRequired}，您现有奖励 ${reward} 不足，将自动使用充值余额（${recharge}）抵扣 ${cost} 积分。`,
+          title: '赠送余额不足，将使用充值余额',
+          message: `当前模型支持赠送余额：赠送余额需 ${rewardRequired}，您现有赠送 ${reward} 不足，将自动使用充值余额（${recharge}）抵扣 ${cost} 积分。`,
         };
       }
       return {
         ok: false,
         reason: 'INSUFFICIENT',
         title: '积分不足',
-        message: `当前模型支持奖励余额：奖励余额需 ${rewardRequired}，充值余额需 ${cost}。\n您现有 奖励 ${reward} · 充值 ${recharge}，均不足以支付本次生成。`,
+        message: `当前模型支持赠送余额：赠送余额需 ${rewardRequired}，充值余额需 ${cost}。\n您现有 赠送 ${reward} · 充值 ${recharge}，均不足以支付本次生成。`,
       };
     }
-    // 不支持奖励：只能走充值
+    // 不支持赠送：只能走充值
     if (recharge >= cost && cost > 0) return { ok: true };
     return {
       ok: false,
       reason: 'NEED_RECHARGE',
-      title: '该模型不支持奖励余额',
+      title: '该模型不支持赠送余额',
       message: `此模型仅可用充值余额支付 ${cost} 积分，您当前充值余额 ${recharge} 不足，请先充值。`,
     };
   };
@@ -937,7 +937,7 @@ function GenerationBar({
       return;
     }
 
-    // ── 双池余额前置校验（全局优先扣奖励，不足回退充值，都不够拦截）──
+    // ── 双池余额前置校验（全局优先扣赠送，不足回退充值，都不够拦截）──
     // 在创建 pending 占位之前拦截，避免产生幽灵占位 / 误走 mock 兜底。
     const bal = checkBalance();
     if (!bal.ok) {
@@ -949,9 +949,9 @@ function GenerationBar({
       }
       return;
     }
-    // 奖励不足但充值够（回退充值）：提示但不拦截
+    // 赠送不足但充值够（回退充值）：提示但不拦截
     if (bal.reason === 'FALLBACK') {
-      toast.info(bal.message || '奖励余额不足，将使用充值余额抵扣', { duration: 3500 });
+      toast.info(bal.message || '赠送余额不足，将使用充值余额抵扣', { duration: 3500 });
     }
 
     // 提交后清空当前参考图，但保留最近一套用于一键复用
@@ -1692,13 +1692,13 @@ function GenerationBar({
                 <span className="max-w-[140px] truncate font-medium">
                   {currentModelLabel}
                 </span>
-                {/* 奖励价徽章：支持奖励余额的模型额外显示（emerald），直观告知"可用奖励积分" */}
+                {/* 赠送价徽章：支持赠送余额的模型额外显示（emerald），直观告知"可用赠送积分" */}
                 {currentModel && modelSupportsReward(currentModel) && (
                   <span
                     className="shrink-0 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold"
-                    title={`支持奖励余额：单次生成需 ${modelRewardPrice(currentModel)} 奖励积分（全局优先扣奖励）`}
+                    title={`支持赠送余额：单次生成需 ${modelRewardPrice(currentModel)} 赠送积分（全局优先扣赠送）`}
                   >
-                    奖 {modelRewardPrice(currentModel)}
+                    赠 {modelRewardPrice(currentModel)}
                   </span>
                 )}
                 {/* 充值价徽章：始终显示，0 时显示「免费」灰色徽章, >0 时显示 amber 徽章 */}
@@ -1816,12 +1816,12 @@ function GenerationBar({
                               }`}
                             >
                               <span className="flex-1 truncate">{getEffectiveModelName(g) || g.displayName}</span>
-                              {/* 奖励价徽章：支持奖励余额的模型显示（emerald） */}
+                              {/* 赠送价徽章：支持赠送余额的模型显示（emerald） */}
                               {modelSupportsReward(g) && (
                                 <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
                                   active ? 'bg-emerald-400/15 text-emerald-300' : 'bg-emerald-500/10 text-emerald-400'
-                                }`} title={`支持奖励余额：需 ${modelRewardPrice(g)} 奖励积分`}>
-                                  奖 {modelRewardPrice(g)}
+                                }`} title={`支持赠送余额：需 ${modelRewardPrice(g)} 赠送积分`}>
+                                  赠 {modelRewardPrice(g)}
                                 </span>
                               )}
                               {/* 充值价徽章：始终显示（0 → 免费灰色, >0 → amber） */}
@@ -1878,15 +1878,15 @@ function GenerationBar({
             </div>
             )}
 
-            {/* 双池余额指示：奖励（平台赠送，限定模型，优先扣）+ 充值（真钱，全部可用）；点击前往充值 */}
+            {/* 双池余额指示：赠送（平台赠送，限定模型，优先扣）+ 充值（真钱，全部可用）；点击前往充值 */}
             {user && (
               <button
                 type="button"
                 onClick={() => navigate('/account')}
-                title="奖励余额（平台赠送/活动发放，限定模型可用，优先扣减）· 充值余额（真钱充值，全部模型可用）。点击前往账户充值"
+                title="赠送余额（平台赠送/活动发放，限定模型可用，优先扣减）· 充值余额（真钱充值，全部模型可用）。点击前往账户充值"
                 className="flex shrink-0 items-center gap-1.5 rounded-full bg-zinc-800/50 px-2 py-1 text-[10px] font-semibold tabular-nums hover:bg-zinc-800 transition-colors"
               >
-                <span className="text-emerald-400" title="奖励余额">奖励 {user.rewardCredits || 0}</span>
+                <span className="text-emerald-400" title="赠送余额">赠送 {user.rewardCredits || 0}</span>
                 <span className="text-zinc-600">·</span>
                 <span className="text-amber-400" title="充值余额">充值 {user.rechargeCredits || 0}</span>
               </button>
@@ -2258,7 +2258,7 @@ function GenerationBar({
           </DialogContent>
         </Dialog>
 
-        {/* ── 限制对话窗口：余额/奖励不支持时的拦截说明 ── */}
+        {/* ── 限制对话窗口：余额/赠送不支持时的拦截说明 ── */}
         <Dialog open={limitDialog.open} onOpenChange={(o) => setLimitDialog((d) => ({ ...d, open: o }))}>
           <DialogContent className="max-w-md bg-zinc-900 border-zinc-800">
             <DialogHeader>

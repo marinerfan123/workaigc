@@ -184,10 +184,10 @@ export interface IAiModel {
   /** 单次生成消耗的积分数（0 = 不扣；后台编辑；前台展示在模型名旁）。
    *  旧版本未设置时默认为 1。该值为「充值价」——所有模型都可用充值余额抵扣。 */
   creditCost?: number;
-  /** 是否支持奖励余额支付（true=该模型可用奖励积分；平台赠送/活动奖励仅在支持时可用）。
-   *  默认 true。奖励余额全局优先扣减，不支持时回退充值余额。 */
+  /** 是否支持赠送余额支付（true=该模型可用赠送积分；平台赠送/活动赠送仅在支持时可用）。
+   *  默认 true。赠送余额全局优先扣减，不支持时回退充值余额。 */
   supportsRewardBalance?: boolean;
-  /** 支持奖励余额时，单次生成所需的奖励积分数（必须 > 0）。缺省回退到 creditCost。 */
+  /** 支持赠送余额时，单次生成所需的赠送积分数（必须 > 0）。缺省回退到 creditCost。 */
   rewardCreditsRequired?: number;
   /** 预估生成耗时（秒）；卡片展示 ≈Xs；未设置时按 type 取兜底值。 */
   estimatedSeconds?: number;

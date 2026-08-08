@@ -472,6 +472,7 @@ async function initDB() {
       ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS expired_at       TIMESTAMPTZ;
       ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS fail_reason      TEXT;
       ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS package_id       TEXT;
+      ALTER TABLE recharge_orders ADD COLUMN IF NOT EXISTS bonus           INT NOT NULL DEFAULT 0;  -- 套餐赠送积分（随本金一并入账到充值余额）
       CREATE INDEX IF NOT EXISTS ix_ro_provider ON recharge_orders(provider_id);
       CREATE INDEX IF NOT EXISTS ix_ro_ctrade  ON recharge_orders(channel_trade_no);
       CREATE INDEX IF NOT EXISTS ix_ro_status  ON recharge_orders(status, created_at DESC);

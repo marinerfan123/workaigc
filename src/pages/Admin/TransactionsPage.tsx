@@ -7,7 +7,7 @@ import { apiAdminTransactions, type AdminTx } from '@/services/api';
 
 const TYPE_OPTS = [
   { v: '', label: '全部类型' },
-  { v: 'grant', label: '赠送' },
+  { v: 'grant', label: '发放' },
   { v: 'reserve', label: '预占' },
   { v: 'commit', label: '确认' },
   { v: 'release', label: '释放' },
@@ -82,6 +82,9 @@ export default function TransactionsPage() {
                   <td className="py-2.5 pr-4 text-zinc-300">{t.user}</td>
                   <td className="py-2.5 pr-4">
                     <span className={cn('rounded-full px-2 py-0.5 text-xs', TYPE_STYLE[t.kind] || 'bg-white/10 text-zinc-300')}>{t.kind}</span>
+                    <span className={cn('ml-1 rounded-full px-1.5 py-0.5 text-[10px]', t.pool === 'reward' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400')}>
+                      {t.pool === 'reward' ? '赠送' : '充值'}
+                    </span>
                   </td>
                   <td className={cn('py-2.5 pr-4 font-medium', t.amount >= 0 ? 'text-emerald-300' : 'text-rose-300')}>
                     {t.amount >= 0 ? '+' : ''}{t.amount}

@@ -298,7 +298,7 @@ export default function AccountPage() {
           <SectionCard id="usage" icon={BarChart3} title="用量概览" subtitle="积分余额与创作资产统计">
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <StatTile
-                label="奖励余额"
+                label="赠送余额"
                 value={user?.rewardCredits ?? 0}
                 icon={Crown}
                 accent="emerald"

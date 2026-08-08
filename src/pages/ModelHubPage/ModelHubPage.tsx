@@ -114,7 +114,7 @@ export default function ModelHubPage() {
   const [editDisplayName, setEditDisplayName] = useState('');
   const [editMappingName, setEditMappingName] = useState('');
   const [editCreditCost, setEditCreditCost] = useState<number>(0);
-  // 双池账务：是否支持奖励余额 + 支持时的奖励价（必须 > 0）
+  // 双池账务：是否支持赠送余额 + 支持时的赠送价（必须 > 0）
   const [editSupportsReward, setEditSupportsReward] = useState(true);
   const [editRewardCreditsRequired, setEditRewardCreditsRequired] = useState<number>(0);
 
@@ -139,7 +139,7 @@ export default function ModelHubPage() {
   // 全局调度设置（最大并发 + 等待区阈值）
   const [maxThreads, setMaxThreads] = useState(10);
   const [waitingAreaThreshold, setWaitingAreaThreshold] = useState(10);
-  // 新用户注册奖励（注册赠送积分，后台可视化设置）
+  // 新用户注册赠送（注册赠送积分，后台可视化设置）
   const [signupBonus, setSignupBonus] = useState(50);
   useEffect(() => {
     apiGetSettings().then((s) => {
@@ -164,7 +164,7 @@ export default function ModelHubPage() {
     const v = Math.max(0, Math.floor(Number(signupBonus) || 0));
     await apiSaveSettings({ ...cur, signupBonusCredits: v });
     setSignupBonus(v);
-    toast.success('注册奖励已保存');
+    toast.success('注册赠送已保存');
   };
 
   const filteredModels = useMemo(() => {
@@ -1004,11 +1004,11 @@ export default function ModelHubPage() {
               </div>
             </div>
 
-            {/* 新用户注册奖励 */}
+            {/* 新用户注册赠送 */}
             <div className="mb-4 rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">
               <div className="flex items-center gap-2 mb-3">
                 <Gift className="size-4 text-emerald-400" />
-                <h3 className="text-sm font-bold text-white">新用户注册奖励</h3>
+                <h3 className="text-sm font-bold text-white">新用户注册赠送</h3>
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                 <div className="flex-1">
@@ -1030,7 +1030,7 @@ export default function ModelHubPage() {
                   onClick={() => saveSignupBonus()}
                   className="rounded-2xl bg-emerald-500 px-5 py-2.5 text-sm font-semibold text-black hover:bg-emerald-400 transition-colors"
                 >
-                  保存注册奖励
+                  保存注册赠送
                 </button>
               </div>
             </div>
@@ -1273,7 +1273,7 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                   )}
                                   {group.supportsRewardBalance !== false && (
                                     <span
-                                      title={`支持奖励余额：单次需 ${typeof group.rewardCreditsRequired === 'number' && group.rewardCreditsRequired > 0 ? group.rewardCreditsRequired : (group.creditCost || 0)} 奖励积分（全局优先扣）`}
+                                      title={`支持赠送余额：单次需 ${typeof group.rewardCreditsRequired === 'number' && group.rewardCreditsRequired > 0 ? group.rewardCreditsRequired : (group.creditCost || 0)} 赠送积分（全局优先扣）`}
                                       className="ml-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle"
                                     >
                                       奖 {typeof group.rewardCreditsRequired === 'number' && group.rewardCreditsRequired > 0 ? group.rewardCreditsRequired : (group.creditCost || 0)}
@@ -1424,26 +1424,26 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                   前台下拉和详情会显示此值。同一 modelId 多供应商时，整组同步；提交 N 张请求时实际扣 N × 此值。
                                 </p>
                               </div>
-                              {/* 双池账务：支持奖励余额开关 + 奖励价（必须 > 0） */}
+                              {/* 双池账务：支持赠送余额开关 + 赠送价（必须 > 0） */}
                               <div>
                                 <label className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-zinc-500">
-                                  <span>支持奖励余额</span>
+                                  <span>支持赠送余额</span>
                                   <button
                                     type="button"
                                     onClick={() => setEditSupportsReward((v) => !v)}
                                     className={`relative h-5 w-9 rounded-full transition-colors ${editSupportsReward ? 'bg-emerald-500' : 'bg-zinc-700'}`}
-                                    title="开启后，该模型可用奖励积分支付（平台赠送/活动发放），全局优先扣奖励"
+                                    title="开启后，该模型可用赠送积分支付（平台赠送/活动发放），全局优先扣赠送"
                                   >
                                     <span className={`absolute top-0.5 size-4 rounded-full bg-white transition-all ${editSupportsReward ? 'left-[18px]' : 'left-0.5'}`} />
                                   </button>
                                 </label>
                                 <p className="mt-1 text-[10px] text-zinc-500">
-                                  开启：用户可用奖励积分支付（优先扣减）。关闭：只能用充值余额。
+                                  开启：用户可用赠送积分支付（优先扣减）。关闭：只能用充值余额。
                                 </p>
                               </div>
                               <div>
                                 <label className="mb-1 block text-[10px] uppercase tracking-wider text-zinc-500">
-                                  奖励积分（单次生成，必填 &gt; 0）
+                                  赠送积分（单次生成，必填 &gt; 0）
                                 </label>
                                 <div className="flex items-center gap-1.5">
                                   <input
@@ -1459,10 +1459,10 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                     placeholder="0"
                                     className="w-24 rounded-lg border border-zinc-700 bg-zinc-800/60 px-2 py-1.5 text-xs text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none disabled:opacity-40"
                                   />
-                                  <span className="text-[10px] text-zinc-500">奖励积分 / 张</span>
+                                  <span className="text-[10px] text-zinc-500">赠送积分 / 张</span>
                                 </div>
                                 <p className="mt-1 text-[10px] text-zinc-500">
-                                  支持奖励余额时必填且需大于 0；未填写将按充值价（{typeof group.creditCost === 'number' ? group.creditCost : 0}）兜底。
+                                  支持赠送余额时必填且需大于 0；未填写将按充值价（{typeof group.creditCost === 'number' ? group.creditCost : 0}）兜底。
                                 </p>
                               </div>
                               <div className="flex items-center justify-end gap-1.5 pt-1">
@@ -1481,9 +1481,9 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                     const newRewardRequired = newSupportsReward
                                       ? Math.max(1, Math.floor(Number(editRewardCreditsRequired) || 0))
                                       : 0;
-                                    // 必填校验：支持奖励余额时，奖励积分必须 > 0
+                                    // 必填校验：支持赠送余额时，赠送积分必须 > 0
                                     if (newSupportsReward && newRewardRequired <= 0) {
-                                      toast.error('支持奖励余额的模型必须填写奖励积分（且需大于 0）');
+                                      toast.error('支持赠送余额的模型必须填写赠送积分（且需大于 0）');
                                       return;
                                     }
                                     setModels((prev) =>

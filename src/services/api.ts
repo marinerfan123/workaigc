@@ -423,7 +423,7 @@ export async function apiGenerate(payload: {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     // 后端 402 会返回 {status:'failed',error,code}；apiFetch 抛 "API 402: {...}"，这里提取 code 透传，
-    // 供前端区分「不支持奖励且充值不足(NEED_RECHARGE)」与「支持奖励但双池皆不足(INSUFFICIENT)」。
+    // 供前端区分「不支持赠送且充值不足(NEED_RECHARGE)」与「支持赠送但双池皆不足(INSUFFICIENT)」。
     let code: string | undefined;
     const m = msg.match(/^API \d+:\s*(\{[\s\S]*\})\s*$/);
     if (m) { try { const b = JSON.parse(m[1]); if (b && b.code) code = b.code; } catch {} }
@@ -606,7 +606,7 @@ export interface AuthUser {
   email: string;
   displayName: string;
   credits: number;
-  /** 奖励余额：平台赠送/活动发放，仅支持奖励余额的模型可用，全局优先扣减 */
+  /** 赠送余额：平台赠送/活动发放，仅支持赠送余额的模型可用，全局优先扣减 */
   rewardCredits: number;
   /** 充值余额：真钱充值，所有模型可用 */
   rechargeCredits: number;
@@ -676,9 +676,11 @@ export interface RechargeOrder {
   paidAt?: string | null;
   expiresAt?: string | null;
   failReason?: string | null;
+  bonus?: number;
+  packageId?: string | null;
 }
 /** 创建充值订单（真实支付通道；无通道由后端返回 503，无模拟回退） */
-export async function apiCreateRechargeOrder(params: { amount: number; channel: string }): Promise<{ ok: boolean; order?: RechargeOrder; error?: string }> {
+export async function apiCreateRechargeOrder(params: { amount: number; channel: string; packageId?: string | null }): Promise<{ ok: boolean; order?: RechargeOrder; error?: string }> {
   try {
     return await apiFetch('/api/credits/orders', { method: 'POST', body: JSON.stringify(params) });
   } catch (e) {
@@ -730,6 +732,7 @@ export interface AdminTx {
   userId: string;
   user: string;
   kind: string;
+  pool: string;
   amount: number;
   balanceAfter: number | null;
   ref?: string;

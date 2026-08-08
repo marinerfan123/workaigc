@@ -32,7 +32,10 @@ export default function CheckoutPage() {
   useEffect(() => { load(); }, [load]);
 
   const total = items.reduce((s, i) => s + (i.subtotal || 0), 0);
-  const balance = user?.credits ?? 0;
+  // 双池口径：赠送积分 + 充值积分 合计可用（后端 shop.cjs 走 reserveDual，赠送优先、不足回退充值）
+  const reward = user?.rewardCredits ?? 0;
+  const recharge = user?.rechargeCredits ?? 0;
+  const balance = user?.credits ?? 0; // credits 为生成列 = reward + recharge，作为「合计可用」权威值
   const enough = balance >= total;
 
   async function submit() {
@@ -96,7 +99,7 @@ export default function CheckoutPage() {
 
             <div className="flex items-start gap-2 rounded-2xl border border-zinc-800/80 bg-zinc-900/30 p-4 text-xs text-zinc-400">
               <ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-400" />
-              <span>本商城以积分结算：提交订单即走「积分预扣 → 建单记账」完成支付，全程不接入第三方支付，无额外手续费、无泄露风险。</span>
+              <span>本商城以积分结算：提交订单即走「积分预扣 → 建单记账」完成支付，全程不接入第三方支付，无额外手续费、无泄露风险。结算优先扣减<span className="text-zinc-200">赠送积分</span>，不足部分自动回退<span className="text-zinc-200">充值积分</span>，两种积分均可支付。</span>
             </div>
           </div>
 
@@ -109,18 +112,28 @@ export default function CheckoutPage() {
               </div>
               <div className="flex justify-between text-zinc-400">
                 <span>支付方式</span>
-                <span className="text-white">积分</span>
+                <span className="text-white">赠送 / 充值积分（赠送优先）</span>
               </div>
             </div>
             <div className="mt-3 flex items-center justify-between border-t border-zinc-800 pt-3">
               <span className="text-sm text-zinc-400">应付</span>
               <span className="text-lg font-semibold text-emerald-400">{total} 积分</span>
             </div>
-            <div className="mt-2 flex items-center justify-between text-xs">
-              <span className="text-zinc-500">当前余额</span>
-              <span className={enough ? 'text-emerald-300' : 'text-red-400'}>{balance} 积分</span>
+            <div className="mt-3 space-y-1.5 border-t border-zinc-800 pt-3 text-xs">
+              <div className="flex items-center justify-between text-zinc-500">
+                <span>赠送积分余额</span>
+                <span className={reward > 0 ? 'text-emerald-300' : 'text-zinc-400'}>{reward}</span>
+              </div>
+              <div className="flex items-center justify-between text-zinc-500">
+                <span>充值积分余额</span>
+                <span className={recharge > 0 ? 'text-emerald-300' : 'text-zinc-400'}>{recharge}</span>
+              </div>
+              <div className="flex items-center justify-between text-zinc-400">
+                <span>合计可用</span>
+                <span className={enough ? 'text-emerald-300' : 'text-red-400'}>{balance} 积分</span>
+              </div>
             </div>
-            {!enough && <p className="mt-2 text-xs text-red-400">积分不足，还差 {total - balance} 积分</p>}
+            {!enough && <p className="mt-2 text-xs text-red-400">积分不足，还差 {total - balance} 积分（赠送 + 充值合计）</p>}
             <button
               onClick={submit}
               disabled={submitting || !enough}

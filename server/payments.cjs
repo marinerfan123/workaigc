@@ -56,13 +56,31 @@ const payments = {
     async function createOrder(req, res) {
       const u = await requireUser(req, res);
       if (!u) return;
-      const body = await parseBody(req).catch(() => ({}));
-      const amount = Math.floor(Number(body && body.amount)); // 单位：分
-      const channel = (body && body.channel) || 'wxpay';
-      if (!Number.isFinite(amount) || amount <= 0) return sendJSON(res, 400, { error: '充值金额必须大于 0' });
-      if (amount > 100000 * 100) return sendJSON(res, 400, { error: '单笔充值金额过大' });
       const pg = getPg();
       if (!pg) return sendJSON(res, 503, { error: '数据库不可用' });
+      const body = await parseBody(req).catch(() => ({}));
+      const channel = (body && body.channel) || 'wxpay';
+      const reqPackageId = (body && body.packageId) || null;
+
+      // 套餐解析：后端权威取值（price=本金积分，bonus=赠送积分），杜绝前端篡改赠送额度
+      let amount = null;
+      let bonus = 0;
+      let packageId = null;
+      if (reqPackageId) {
+        const pkgRes = await pg.query(
+          'SELECT id, price, bonus FROM topup_packages WHERE id=$1 AND enabled=TRUE',
+          [reqPackageId],
+        );
+        if (pkgRes.rows.length) {
+          const pkg = pkgRes.rows[0];
+          amount = Math.floor(Number(pkg.price) || 0);
+          bonus = Math.max(0, Math.floor(Number(pkg.bonus) || 0));
+          packageId = pkg.id;
+        }
+      }
+      if (amount === null) amount = Math.floor(Number(body && body.amount)); // 自定义金额（单位：分）
+      if (!Number.isFinite(amount) || amount <= 0) return sendJSON(res, 400, { error: '充值金额必须大于 0' });
+      if (amount > 100000 * 100) return sendJSON(res, 400, { error: '单笔充值金额过大' });
 
       // 通道可用性校验：无配置通道直接 503，绝不回退 DEV 模拟（防白嫖命门）
       const providerEntry = await loader.getDefault().catch(() => null);
@@ -112,9 +130,9 @@ const payments = {
       // 计算绝对过期时间（前端倒计时用），与 order-expiry worker 阈值保持一致
       const expiresAt = new Date(Date.now() + settings.defaultExpiresMin * 60000);
       await pg.query(
-        `INSERT INTO recharge_orders (id, user_id, channel, amount, status, pay_order_no, sign, expired_at)
-         VALUES ($1,$2,$3,$4,'pending',$5,$6,$7)`,
-        [id, u.id, channel, amount, payOrderNo, sign, expiresAt],
+        `INSERT INTO recharge_orders (id, user_id, channel, amount, status, pay_order_no, sign, expired_at, bonus, package_id)
+         VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,$8,$9)`,
+        [id, u.id, channel, amount, payOrderNo, sign, expiresAt, bonus, packageId],
       );
 
       // 向真实通道下单，拿回支付链接（无 payUrl 时前端显示安全提示，不再有 DEV 入口）
@@ -143,7 +161,7 @@ const payments = {
 
       return sendJSON(res, 200, {
         ok: true,
-        order: { id, payOrderNo, amount, channel, status: 'pending', payUrl, expiresAt: expiresAt.toISOString() },
+        order: { id, payOrderNo, amount, channel, status: 'pending', payUrl, expiresAt: expiresAt.toISOString(), bonus, packageId },
       });
     }
 
@@ -154,7 +172,7 @@ const payments = {
       const pg = getPg();
       if (!pg) return sendJSON(res, 503, { error: '数据库不可用' });
       const r = await pg.query(
-        `SELECT id, pay_order_no, amount, channel, status, created_at, paid_at
+        `SELECT id, pay_order_no, amount, channel, status, created_at, paid_at, bonus, package_id
            FROM recharge_orders WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`,
         [u.id],
       );
@@ -163,6 +181,7 @@ const payments = {
           id: x.id, payOrderNo: x.pay_order_no, amount: Number(x.amount),
           channel: x.channel, status: x.status,
           createdAt: x.created_at, paidAt: x.paid_at,
+          bonus: Number(x.bonus) || 0, packageId: x.package_id || null,
         })),
       });
     }
@@ -174,7 +193,7 @@ const payments = {
       const pg = getPg();
       if (!pg) return sendJSON(res, 503, { error: '数据库不可用' });
       const r = await pg.query(
-        'SELECT id, pay_order_no, amount, channel, status, created_at, paid_at, fail_reason FROM recharge_orders WHERE pay_order_no=$1 AND user_id=$2',
+        'SELECT id, pay_order_no, amount, channel, status, created_at, paid_at, fail_reason, bonus, package_id FROM recharge_orders WHERE pay_order_no=$1 AND user_id=$2',
         [payOrderNo, u.id],
       );
       if (!r.rows.length) return sendJSON(res, 404, { error: '订单不存在' });
@@ -188,6 +207,7 @@ const payments = {
           id: o.id, payOrderNo: o.pay_order_no, amount: Number(o.amount),
           channel: o.channel, status: o.status, createdAt: o.created_at, paidAt: o.paid_at,
           expiresAt, failReason: o.fail_reason || null,
+          bonus: Number(o.bonus) || 0, packageId: o.package_id || null,
         },
       });
     }
