@@ -344,6 +344,7 @@ export async function apiGenerate(payload: {
   contentType?: 'image' | 'video';
   referenceImages?: string[];
   pendingIds?: string[]; // 把前端的 pending 占位 id 告诉后端，便于刷新恢复
+  negative?: string;     // 反向提示词（正负向搭配刚需，随生图请求透传）
   idempotencyKey?: string; // 幂等键：每次生成请求一个 UUID，防网络抖动双扣（后端必需）
   sync?: boolean;         // 兼容旧测试：传 true 后端一次性返回结果
 }): Promise<GenerateResponse> {
@@ -431,9 +432,21 @@ export async function apiListActiveGenerations(): Promise<{
  *   - code='NO_REASONING_MODEL' → 提示用户去「模型 Hub」添加 text 类型模型
  *   - 其他 error → 通用错误消息
  */
-export async function apiOptimizePrompt(prompt: string): Promise<{
+export async function apiOptimizePrompt(
+  prompt: string,
+  opts?: { targetLang?: 'en' | 'zh' | 'both' },
+): Promise<{
   success: boolean;
-  content?: string;
+  /** 主语言正向提示词（en→英文 / zh→中文 / both→英文） */
+  positive?: string;
+  /** 主语言反向提示词 */
+  negative?: string;
+  /** 中文正向对照（供中英对照模式展示） */
+  positiveZh?: string;
+  /** 中文反向对照 */
+  negativeZh?: string;
+  /** 实际采用的语言 */
+  targetLang?: 'en' | 'zh' | 'both';
   error?: string;
   code?: 'NO_REASONING_MODEL' | string;
   modelUsed?: string;
@@ -444,7 +457,7 @@ export async function apiOptimizePrompt(prompt: string): Promise<{
   try {
     return await apiFetch('/api/agent/optimize-prompt', {
       method: 'POST',
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, targetLang: opts?.targetLang || 'en' }),
     });
   } catch (e) {
     return { success: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };

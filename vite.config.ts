@@ -22,7 +22,7 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist/build2',
-    emptyOutDir: true,
+    emptyOutDir: false,
     copyPublicDir: false,
   },
 })

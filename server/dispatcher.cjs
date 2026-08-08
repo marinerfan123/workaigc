@@ -98,7 +98,7 @@ function bumpSize(size, res) {
 }
 
 async function imageGenerate(provider, model, opts) {
-  const { prompt, ratio, resolution, count, referenceImages } = opts;
+  const { prompt, ratio, resolution, count, referenceImages, negative } = opts;
   const baseUrl = provider.base_url;
   const apiKey = provider.api_key;
   if (!apiKey) return { images: [], status: 'error', error: '服务商未配置 API Key' };
@@ -124,6 +124,11 @@ async function imageGenerate(provider, model, opts) {
   };
   if (sizeFormat !== 'agnes') {
     vars.resolution = resolution;
+  }
+  // 反向提示词（正负向搭配刚需）：SD/自定义端点支持 negative_prompt 字段；
+  // agnes 图像端点规范不含此字段，跳过以免其严格校验报错（negative 仍存库，UI 完整展示）。
+  if (sizeFormat !== 'agnes' && negative) {
+    vars.negative_prompt = negative;
   }
   // 图生图/多图合成：Agnes 等要求把参考图放到 extra_body.image；
   // 同时保留顶层 images 兼容 relay / 自定义端点。
@@ -164,7 +169,7 @@ async function imageGenerate(provider, model, opts) {
 
 // ─── 视频生成（异步 submit + poll 模式）───
 async function videoGenerate(provider, model, opts) {
-  const { prompt, ratio, durationSec, referenceImages } = opts;
+  const { prompt, ratio, durationSec, referenceImages, negative } = opts;
   const baseUrl = provider.base_url;
   const apiKey = provider.api_key;
   if (!apiKey) return { videoUrl: '', status: 'error', error: '服务商未配置 API Key' };
@@ -177,6 +182,9 @@ async function videoGenerate(provider, model, opts) {
     firstFrame: referenceImages && referenceImages[0] ? referenceImages[0] : '',
     images: referenceImages || [],
   };
+  // 反向提示词：custom 端点经 fillTemplate 的 {{negative}}/{{negative_prompt}} 占位替换生效；
+  // 标准视频端点忽略未知字段。最终仍写入 generation_tasks.payload 与 media，UI 完整展示。
+  if (negative) { vars.negative = negative; vars.negative_prompt = negative; }
 
   const { protocol, endpoint } = resolveEndpoint(provider, model, 'generate');
   const isAsync = !!(provider.default_endpoint && provider.default_endpoint.async) ||
@@ -366,7 +374,7 @@ async function dispatchOne(pairs, tier, input, contentType) {
 
 // ─── 主入口 ────────────────────────────────────────
 async function generate(pgPool, opts) {
-  const { model, prompt, ratio, resolution, count, contentType, referenceImages } = opts;
+  const { model, prompt, ratio, resolution, count, contentType, referenceImages, negative } = opts;
   // 分辨率 → 桶档位：video 走 video 档（cost=20，与 4k 同权重）；8k 按 4k 计；未知按 1k
   const tier = contentType === 'video' ? 'video'
     : (['1k', '2k', '4k'].includes(resolution) ? resolution
@@ -415,7 +423,7 @@ async function generate(pgPool, opts) {
   const tasks = [];
   for (let i = 0; i < total; i++) {
     tasks.push((async () => {
-      const input = { prompt, ratio, resolution, count: 1, referenceImages };
+      const input = { prompt, ratio, resolution, count: 1, referenceImages, negative };
       return dispatchOne(pairs, tier, input, contentType);
     })());
   }

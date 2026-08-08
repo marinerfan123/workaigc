@@ -68,6 +68,7 @@ export default function WorkspacePage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [settings, setSettings] = useState<IGenerationSettings>(DEFAULT_SETTINGS);
   const [prompt, setPrompt] = useState('');
+  const [negativePrompt, setNegativePrompt] = useState('');
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [activeCharacter, setActiveCharacter] = useState<ICharacter | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -506,6 +507,8 @@ export default function WorkspacePage() {
               setGenerating={setGenerating}
               prompt={prompt}
               onPromptChange={setPrompt}
+              negativePrompt={negativePrompt}
+              onNegativePromptChange={setNegativePrompt}
               characterId={activeCharacter?.id}
             />
           </div>

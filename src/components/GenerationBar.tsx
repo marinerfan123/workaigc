@@ -147,6 +147,9 @@ interface GenerationBarProps {
   setGenerating: (v: boolean) => void;
   prompt: string;
   onPromptChange: (v: string) => void;
+  /** 反向提示词（正负向搭配刚需），随生成请求透传 */
+  negativePrompt?: string;
+  onNegativePromptChange?: (v: string) => void;
   /** 由「用此角色创作」带入的角色 id：生成出的素材会自动归属到该角色，用于角色生成记录聚合 */
   characterId?: string;
 }
@@ -191,16 +194,23 @@ function GenerationBar({
   setGenerating,
   prompt,
   onPromptChange,
+  negativePrompt,
+  onNegativePromptChange,
   characterId,
   ref,
 }: GenerationBarProps & { ref?: React.Ref<GenerationBarHandle> }) {
   const characterIdRef = useRef(characterId);
   characterIdRef.current = characterId;
   const promptText = prompt ?? '';
+  const negativePromptText = negativePrompt ?? '';
   const [agentOpen, setAgentOpen] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
   const [optimizing, setOptimizing] = useState(false);
+  // 优化输出语言：en（英文，生图引擎需要）/ zh（中文，国内工具）/ both（英文主填 + 中文对照）
+  const [optLang, setOptLang] = useState<'en' | 'zh' | 'both'>('en');
+  // 中英对照模式下展示的中文正向对照（只读预览）
+  const [zhPreview, setZhPreview] = useState('');
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
   // 尺寸设置弹窗（质量/清晰度/比例 —— 向上弹窗，一次选择）
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -754,6 +764,8 @@ function GenerationBar({
 
     // 清空输入框，让用户立刻可以输入下一个 prompt
     onPromptChange('');
+    onNegativePromptChange?.('');
+    setZhPreview('');
 
     toast.info('已提交生成请求', {
       description: `模型 ${currentModelLabel} · ${count} 张 · 服务端按并发均衡分配给供应商`,
@@ -784,6 +796,7 @@ function GenerationBar({
           contentType: settings.contentType,
           referenceImages: effectiveRefs.length > 0 ? effectiveRefs : undefined,
           pendingIds,
+          negative: negativePromptText.trim() || undefined,
           idempotencyKey,
         });
 
@@ -990,16 +1003,19 @@ function GenerationBar({
     if (optimizing) return;
     setOptimizing(true);
     try {
-      const r = await apiOptimizePrompt(promptText);
-      if (r.success && r.content) {
-        onPromptChange(r.content);
+      const r = await apiOptimizePrompt(promptText, { targetLang: optLang });
+      if (r.success && r.positive) {
+        onPromptChange(r.positive);
+        if (onNegativePromptChange) onNegativePromptChange(r.negative || '');
+        setZhPreview(optLang === 'both' ? (r.positiveZh || '') : '');
+        const langLabel = optLang === 'zh' ? '中文' : optLang === 'both' ? '中英对照' : '英文';
         if (r.fallback) {
           toast.warning('AI 模型繁忙，已启用兜底翻译', {
             description: r.warning || '当前推理模型不可用，已使用本地关键词兜底。建议稍后重试，或到「模型 Hub」检查 text 模型状态。',
             duration: 5000,
           });
         } else {
-          toast.success(`已用「${r.modelUsed || '推理模型'}」优化提示词`, { duration: 2500 });
+          toast.success(`已用「${r.modelUsed || '推理模型'}」优化提示词（${langLabel}）`, { duration: 2500 });
         }
       } else if (r.code === 'NO_REASONING_MODEL') {
         toast.error('未配置文本推理模型', {
@@ -1622,7 +1638,7 @@ function GenerationBar({
 
         {/* 全屏编辑提示词弹窗 */}
         <Dialog open={promptEditorOpen} onOpenChange={setPromptEditorOpen}>
-          <DialogContent className="max-w-3xl bg-zinc-900 border-zinc-800">
+          <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto bg-zinc-900 border-zinc-800">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 text-white">
                 <span>编辑提示词</span>
@@ -1657,13 +1673,65 @@ function GenerationBar({
                 在此撰写详细的生成提示词（支持 Enter 直接换行，Shift+Enter 同）。提示词过短会导致优化失败，建议超过 60 字后再点击「AI 优化提示词」。
               </DialogDescription>
             </DialogHeader>
+
+            {/* 优化输出语言选择：让客户选，选一种另一种丢弃；中英对照则两者都给 */}
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-[11px] text-zinc-500">优化语言</span>
+              {(['en', 'zh', 'both'] as const).map((l) => (
+                <button
+                  key={l}
+                  type="button"
+                  onClick={() => setOptLang(l)}
+                  className={
+                    'rounded-full px-3 py-1 text-[11px] font-medium transition-colors ' +
+                    (optLang === l
+                      ? 'bg-emerald-500 text-black'
+                      : 'border border-zinc-700 text-zinc-300 hover:bg-zinc-800')
+                  }
+                >
+                  {l === 'en' ? '英文' : l === 'zh' ? '中文' : '中英对照'}
+                </button>
+              ))}
+            </div>
+
             <textarea
               value={promptText}
               onChange={(e) => onPromptChange(e.target.value)}
               placeholder="您希望创作什么内容？"
               disabled={optimizing}
-              className="mt-3 w-full min-h-[320px] resize-none rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-white placeholder:text-zinc-500 focus:border-emerald-500/50 focus:outline-none disabled:opacity-60"
+              className="mt-3 w-full min-h-[260px] resize-none rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-white placeholder:text-zinc-500 focus:border-emerald-500/50 focus:outline-none disabled:opacity-60"
             />
+
+            {/* 负向提示词（正负向搭配刚需）：可选，随生成请求透传 */}
+            <div className="mt-3">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-[11px] text-zinc-400">负向提示词（反向排除瑕疵，可选）</span>
+                {negativePromptText.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => onNegativePromptChange?.('')}
+                    className="text-[10px] text-zinc-500 hover:text-zinc-300"
+                  >
+                    清空
+                  </button>
+                )}
+              </div>
+              <textarea
+                value={negativePromptText}
+                onChange={(e) => onNegativePromptChange?.(e.target.value)}
+                placeholder="例如：watermark, text, logo, blurry, low quality, deformed, extra limbs"
+                disabled={optimizing}
+                className="w-full min-h-[72px] resize-none rounded-2xl border border-zinc-800 bg-zinc-950 p-3 text-xs text-white placeholder:text-zinc-600 focus:border-emerald-500/50 focus:outline-none disabled:opacity-60"
+              />
+            </div>
+
+            {/* 中英对照模式下展示中文正向对照（只读预览，生图用上方英文） */}
+            {optLang === 'both' && zhPreview && (
+              <div className="mt-3 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-3">
+                <div className="mb-1 text-[11px] text-zinc-400">中文对照（仅供理解，生图使用上方英文）</div>
+                <p className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-300">{zhPreview}</p>
+              </div>
+            )}
             <div className="mt-3 flex items-center justify-between text-[11px] text-zinc-500">
               <span>{promptText.length} 字符</span>
               <div className="flex gap-2">

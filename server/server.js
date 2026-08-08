@@ -867,6 +867,24 @@ function buildFallbackPrompt(userPrompt) {
   return `${base}, high quality, highly detailed, cinematic lighting, professional photography, 8K, ultra high resolution`;
 }
 
+// 从模型输出（content 或 reasoning_content，或两者拼接）中提取结构化提示词块：
+// [EN_POSITIVE] [EN_NEGATIVE] [ZH_POSITIVE] [ZH_NEGATIVE]
+// 返回 { enPos, enNeg, zhPos, zhNeg } 或 null（当两套正向都缺失时）
+function extractPromptBlocks(text) {
+  if (!text) return null;
+  const get = (tag) => {
+    const m = text.match(new RegExp(`\\[${tag}\\][\\s\\S]*?\\[\\/${tag}\\]`, 'i'));
+    if (!m) return '';
+    return m[0].replace(new RegExp(`\\[\\/?${tag}\\]`, 'gi'), '').trim();
+  };
+  const enPos = get('EN_POSITIVE');
+  const enNeg = get('EN_NEGATIVE');
+  const zhPos = get('ZH_POSITIVE');
+  const zhNeg = get('ZH_NEGATIVE');
+  if (!enPos && !zhPos) return null;
+  return { enPos, enNeg, zhPos, zhNeg };
+}
+
 // 服务端回探图片真实字节数（不受浏览器缓存/CORS 限制），写入 media.file_size。
 // 优先 HEAD content-length；失败再用 Range 部分 GET 读 content-range 的总大小；再失败静默忽略。
 async function enrichMediaFileSize(pg, id, url) {
@@ -2053,6 +2071,7 @@ async function handleAPI(req, res) {
       contentType: body.contentType || 'image',
       referenceImages: body.referenceImages || [],
       pendingIds: body.pendingIds || [],
+      negative: (body.negative || '').toString().trim(),
       user_id: realUser.id,
       idempotencyKey: idemKey,
       cost,
@@ -2062,6 +2081,7 @@ async function handleAPI(req, res) {
         ratio: body.ratio || '1:1',
         resolution: body.resolution || '1k',
         contentType: body.contentType || 'image',
+        negative: (body.negative || '').toString().trim(),
       },
     };
     // 兼容旧调用：sync=1 时直接返回完整结果（用于一次性同步测试/老客户端）——同样走计费（L9）
@@ -2129,6 +2149,8 @@ async function handleAPI(req, res) {
     const body = await parseBody(req);
     const userPrompt = ((body && body.prompt) || '').toString().trim();
     if (!userPrompt) return sendJSON(res, 200, { success: false, error: '提示词为空' });
+    // targetLang: 'en'（英文，默认，生图引擎需要）| 'zh'（中文，用于国内工具/对照）| 'both'（中英都给，主填英文+展示中文对照）
+    const targetLang = (body && body.targetLang) || 'en';
     let lastModel = null;
     let lastError = '';
     try {
@@ -2185,35 +2207,47 @@ async function handleAPI(req, res) {
       }
 
       // 提示词优化指令：融合《AI生图提示词优化全落地技能手册》方法论
-      // 角色定位 + 四大黄金原则 + 8 段式万能结构 + 避坑红线，并按本平台生图模型（类 SD 英文语法）做语法适配
+      // 角色定位 + 四大黄金原则 + 8 段式万能结构 + 避坑红线 + 正负向搭配（刚需），
+      // 并要求结构化输出 EN/ZH 两套正向+反向块，供前端按 targetLang 选择展示。
       const systemPrompt = [
         '你是一位顶级 AI 生图提示词优化专家，精通 Midjourney、Stable Diffusion、通义万相等所有主流生图模型的出图逻辑。',
-        '你的任务：把用户给的（可能简短、粗糙、含抽象词的）初步描述，改写成精准、具象、可直接出图的英文结构化提示词，实现「所想即所得」。',
+        '你的任务：把用户给的（可能简短、粗糙、含抽象词的）初步描述，改写成精准、具象、可直接出图的结构化提示词，实现「所想即所得」。',
         '',
         '【核心原则】',
         '1) 具象化：彻底剔除“好看/高级/氛围感/治愈”等抽象形容词，全部替换为 AI 可识别的具象描述（如“低饱和莫兰迪色调”“浅景深虚化”“柔和逆光”）。',
         '2) 优先级：画面主体 > 环境场景 > 光影色彩 > 镜头构图 > 画质细节 > 风格定义；关键词顺序即权重，最重要的主体放最前。',
-        '3) 适配性：按 Stable Diffusion / 通用英文生图模型语法输出——英文逗号分隔短语，细节独立成词，不做 Midjourney 式长句叙事。',
-        '4) 紧扣原意：只扩展与强化用户意图，不凭空添加用户未提及的主体或场景。',
+        '3) 紧扣原意：只扩展与强化用户意图，不凭空添加用户未提及的主体或场景。',
+        '4) 正负向搭配（刚需）：必须同时给出正向提示词与反向提示词——反向词用于排除畸形、模糊、水印、多余元素等瑕疵。',
         '',
-        '【8 段式结构（逐段填充，无遗漏不冗余）】',
+        '【8 段式结构（正向提示词逐段填充，无遗漏不冗余）】',
         '核心主体（唯一主角） + 细节特征（材质/动作/穿搭/神态） + 场景环境（具体地点背景） + 光线氛围（精准光影术语） + 镜头构图（视角/景深/取景） + 色彩色调（固定配色基调） + 画质参数（8K/超清/细节拉满） + 风格定义（写实摄影/插画等）',
         '',
         '【避坑红线】',
         '- 禁止堆砌超过约 18 个核心词（过多导致主体丢失、画面混乱）。',
         '- 禁止任何抽象形容词（高级、治愈、好看、氛围感——AI 无法精准识别）。',
         '- 禁止无构图无光影的随机描述（必须明确镜头与光线）。',
-        '- 禁止所有元素同一权重，主体必须前置突出。',
+        '- 反向提示词必须针对 SD/通用生图模型语法（逗号分隔短语），剔除：watermark, text, logo, blurry, low quality, deformed, extra limbs, bad anatomy, mutated, duplicate。',
         '',
-        '【输出要求】',
-        '- 直接用英文逗号分隔的关键词串输出优化后的正向提示词，不要任何解释、前缀、Markdown 代码块包裹。',
-        '- 长度控制在 60–160 个英文词之间，按“主体优先”顺序排列。',
-        '- 若用户原文已是完整英文结构化提示词，则仅补短板（光影/构图/画质/风格），不做大改。',
+        '【输出要求——严格使用下方 4 个标记块，块外不要任何解释或前缀】',
+        '无论用户原文是中文还是英文，都必须同时输出英文版与中文版（两者同义）：',
+        '[EN_POSITIVE]',
+        '<英文正向提示词：逗号分隔短语，60–160 词，主体优先，SD/通用生图语法>',
+        '[/EN_POSITIVE]',
+        '[EN_NEGATIVE]',
+        '<英文反向提示词：逗号分隔短语，10–20 词，剔除常见瑕疵>',
+        '[/EN_NEGATIVE]',
+        '[ZH_POSITIVE]',
+        '<中文正向提示词：逗号分隔短语，与英文同义，面向国内生图工具（通义万相/文心一格等）>',
+        '[/ZH_POSITIVE]',
+        '[ZH_NEGATIVE]',
+        '<中文反向提示词：逗号分隔短语，与英文同义>',
+        '[/ZH_NEGATIVE]',
+        '若用户原文已是完整结构化提示词，则仅补短板（光影/构图/画质/风格/反向词），不做大改。',
       ].join('\n');
 
       // 顺序尝试候选模型，直到拿到非空提示词
       let successModel = null;
-      let content = '';
+      let blocks = null;
       let usage = null;
       let rawSnapshots = [];
       for (const candidate of candidates.slice(0, 6)) {
@@ -2246,16 +2280,15 @@ async function handleAPI(req, res) {
             continue;
           }
           const msg = (data && data.choices && data.choices[0] && data.choices[0].message) || {};
-          content = (msg.content || '').toString().trim();
-          // 兼容深度思考模型把正文放在 reasoning_content 的情况（如 agnes-2.5-pro）
-          if (!content && msg.reasoning_content) {
-            content = extractPromptFromReasoning(msg.reasoning_content.toString().trim());
-          }
-          if (!content) {
-            lastError = `模型 ${candidate.display_name || candidate.model_id} 返回为空`;
-            rawSnapshots.push({ model: candidate.model_id, status: r.status, snippet: raw.slice(0, 400) });
+          // 兼容深度思考模型：content 可能为空，正文/结构化块藏在 reasoning_content；两者拼接后提取
+          const rawText = `${msg.content || ''}\n${msg.reasoning_content || ''}`.toString().trim();
+          const b = extractPromptBlocks(rawText);
+          if (!b) {
+            lastError = `模型 ${candidate.display_name || candidate.model_id} 未返回结构化提示词`;
+            rawSnapshots.push({ model: candidate.model_id, status: r.status, snippet: rawText.slice(0, 400) });
             continue;
           }
+          blocks = b;
           successModel = candidate;
           usage = (data && data.usage) || null;
           break;
@@ -2264,15 +2297,18 @@ async function handleAPI(req, res) {
         }
       }
 
-      if (!successModel || !content) {
-        // 兜底：如果所有推理模型都失败，尝试用简单规则把中文提示词直译为英文关键词串，保证可用性
+      if (!successModel || !blocks) {
+        // 兜底：如果所有推理模型都失败，用简单规则把提示词拆成关键词串，保证可用（中文原文作对照）
         const fallback = buildFallbackPrompt(userPrompt);
         if (fallback) {
-          // 记录失败，但返回兜底结果，不让用户卡死
           console.warn('[agent/optimize-prompt] 所有推理模型失败，返回兜底翻译。最后错误:', lastError, 'snapshots:', JSON.stringify(rawSnapshots));
           return sendJSON(res, 200, {
             success: true,
-            content: fallback,
+            positive: fallback,
+            negative: 'watermark, text, logo, blurry, low quality, distorted, extra limbs, deformed, mutated, bad anatomy, duplicate, signature',
+            positiveZh: userPrompt,
+            negativeZh: '水印, 文字, logo, 模糊, 低质量, 畸形, 多余肢体, 残缺, 比例失调, 重复元素',
+            targetLang,
             modelUsed: '本地兜底翻译',
             providerId: '',
             usage: null,
@@ -2283,6 +2319,11 @@ async function handleAPI(req, res) {
         console.error('[agent/optimize-prompt] 全部候选模型失败:', lastError, 'snapshots:', JSON.stringify(rawSnapshots));
         return sendJSON(res, 200, { success: false, error: `优化失败：${lastError || '所有推理模型均不可用'}` });
       }
+
+      // 按 targetLang 选主语言（默认英文，生图引擎需要英文）；中文对照始终带回，前端按选择展示
+      const primary = targetLang === 'zh'
+        ? { pos: blocks.zhPos || blocks.enPos, neg: blocks.zhNeg || blocks.enNeg }
+        : { pos: blocks.enPos || blocks.zhPos, neg: blocks.enNeg || blocks.zhNeg };
 
       // 双边记账：optimize-prompt 当前对客户免费（customerChargeCredits=0），后台成本照实记录 → 如实显示为平台成本
       try {
@@ -2297,7 +2338,11 @@ async function handleAPI(req, res) {
       } catch (e) { console.warn('[accounting optimize-prompt]', e.message); }
       return sendJSON(res, 200, {
         success: true,
-        content,
+        positive: primary.pos,
+        negative: primary.neg || '',
+        positiveZh: blocks.zhPos || '',
+        negativeZh: blocks.zhNeg || '',
+        targetLang,
         modelUsed: successModel.display_name,
         providerId: successModel.p_id,
         usage,
