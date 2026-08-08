@@ -1865,9 +1865,30 @@ async function handleAPI(req, res) {
     if (!items) return sendJSON(res, 400, { error: 'Invalid JSON' });
     const arr = Array.isArray(items) ? items : [items];
     if (pgPool) {
+      // OSS 命名空间隔离：加载 active 配置，用于校验 objectKey 归属 + 服务端重签下载 URL
+      const oss = await loadOssConfigs(pgPool);
+      const activeCfg = oss.list.find(c => c.id === oss.activeId);
       for (const it of arr) {
         const s = toSnake(it);
         const ownerId = realUser ? realUser.id : null; // G2 owner 归属：登录用户写入自己的素材
+        // ── OSS 命名空间隔离校验（防越权登记 / 防伪造下载 URL）──
+        if (s.oss_object_key) {
+          if (!realUser || !activeCfg || !oss.enabled) {
+            return sendJSON(res, 403, { error: 'OSS 资产登记需登录且 OSS 已启用并配置' });
+          }
+          const ns = userOssNamespace(activeCfg, realUser.id);
+          if (!s.oss_object_key.startsWith(ns)) {
+            ossLogger.warn('sign', `OSS 越权登记被拒：${s.oss_object_key} 不属于 ${ns}`, { userId: realUser.id });
+            return sendJSON(res, 403, { error: 'OSS 对象键越权：不属于当前用户命名空间' });
+          }
+          // 服务端重签下载 URL：不信任客户端传来的 oss_url，杜绝伪造/过期链接
+          try {
+            const { getUrl } = buildOssGetUrl(activeCfg, s.oss_object_key);
+            s.oss_url = getUrl;
+          } catch (e) {
+            return sendJSON(res, 200, { success: false, message: `OSS 下载签名失败：${String(e.message || '').slice(0, 80)}` });
+          }
+        }
         // 真实文件大小：前端已带则直接用；否则落库后由服务端异步回探（不受浏览器缓存/CORS 影响）
         const fileSize = (typeof it.fileSize === 'number' && it.fileSize > 0) ? it.fileSize : null;
         await pgPool.query(
@@ -1929,6 +1950,23 @@ async function handleAPI(req, res) {
         'oss_object_key', 'oss_uploaded', 'source', 'type',
       ]);
       const s = toSnake(body);
+      // ── OSS 命名空间隔离：非 admin 更新 objectKey 时校验归属 + 服务端重签下载 URL ──
+      if (s.oss_object_key && realUser.role !== 'admin') {
+        const oss = await loadOssConfigs(pgPool);
+        const ac = oss.list.find(c => c.id === oss.activeId);
+        if (!ac || !oss.enabled) return sendJSON(res, 403, { error: 'OSS 未配置' });
+        const ns = userOssNamespace(ac, realUser.id);
+        if (!s.oss_object_key.startsWith(ns)) {
+          ossLogger.warn('sign', `OSS 越权更新被拒：${s.oss_object_key} 不属于 ${ns}`, { userId: realUser.id });
+          return sendJSON(res, 403, { error: 'OSS 对象键越权：不属于当前用户命名空间' });
+        }
+        try {
+          const { getUrl } = buildOssGetUrl(ac, s.oss_object_key);
+          s.oss_url = getUrl;
+        } catch (e) {
+          return sendJSON(res, 200, { success: false, message: `OSS 下载签名失败：${String(e.message || '').slice(0, 80)}` });
+        }
+      }
       const fields = [];
       const vals = [];
       let i = 1;
@@ -3037,6 +3075,20 @@ async function handleAPI(req, res) {
     const putUrl = `${host}/${objectKey}?q-sign-algorithm=sha1&q-ak=${secretId}&q-sign-time=${qKeyTime}&q-key-time=${qKeyTime}&q-header-list=host&q-url-param-list=&q-signature=${signature}`;
     const { signedUrl, expires } = tencentCosSignUrl(cfg, objectKey);
     return { rawUrl: `${host}/${objectKey}`, putUrl, getUrl: signedUrl, expires, putExpires: Math.floor(Date.now() / 1000) + 3600 };
+  }
+  // 按 provider 重签 GET（下载）预签名 URL —— 供媒体登记时服务端签发，杜绝信任客户端传来的 oss_url
+  function buildOssGetUrl(cfg, objectKey) {
+    if (cfg.providerType === 'tencent-cos') {
+      const { signedUrl, expires } = tencentCosSignUrl(cfg, objectKey);
+      return { getUrl: signedUrl, expires };
+    }
+    const { signedUrl, expires } = aliyunBuildSignedUrls(cfg, objectKey);
+    return { getUrl: signedUrl, expires };
+  }
+  // 计算某用户的 OSS 命名空间前缀，用于隔离校验（与 sign-upload 的 objectKey 构造保持一致）
+  function userOssNamespace(cfg, userId) {
+    const prefix = (cfg?.pathPrefix || 'images/').replace(/^\/+|\/+$/g, '');
+    return `${prefix}/${userId}/`;
   }
   // 公共：从 oss_configs 拉所有（或单条）
   async function loadOssConfigs(pgPool) {
