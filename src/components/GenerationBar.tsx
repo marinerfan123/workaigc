@@ -874,54 +874,100 @@ function GenerationBar({
     })();
   };
 
-  // ── 刷新恢复：组件挂载时从 localStorage 读出未完成任务，续上轮询 ──
+  // ── 刷新/挂载恢复：双保险 ──
+  // 1) localStorage（含完整 pendingItems 元数据）—— 主恢复路径
+  // 2) /api/generate/active（服务端权威，含 prompt/model/ratio/createdAt）—— 兜底，
+  //    覆盖 localStorage 被清/不可用的情况；只恢复在途(running)任务，避免用过期
+  //    provider URL 覆盖已落库的好图。
   useEffect(() => {
-    const persisted = loadPersistedTasks();
-    if (persisted.length === 0) return;
-    // 立即清理：避免后续重复触发；同时启动异步恢复
-    savePersistedTasks([]);
-    (async () => {
-      for (const t of persisted) {
+    let cancelled = false;
+    const localTasks = loadPersistedTasks();
+    const localTaskIds = new Set(localTasks.map((t) => t.taskId));
+
+    // 主路径：localStorage（保留到每任务解决后才移除，避免中途崩溃丢任务）
+    const recoverLocal = async () => {
+      for (const t of localTasks) {
+        if (cancelled) return;
         try {
           // 先到后端查这个 task 真实状态（可能在挂载期间已经完成）
           const st = await apiGetGenerationStatus(t.taskId);
+          const pendingIds = t.pendingItems.map((p) => p.id);
+          const ctx = {
+            prompt: t.prompt,
+            model: t.model,
+            ratio: t.ratio,
+            contentType: t.contentType,
+            createdAt: new Date(t.createdAt).getTime(),
+          };
           if (st.status === 'done' && st.result?.images && st.result.images.length > 0) {
-            // 已经完成 → 回插 pending 占位（用保存的 pendingItems）+ 立刻替换为真图
-            const ctx = {
-              prompt: t.prompt,
-              model: t.model,
-              ratio: t.ratio,
-              contentType: t.contentType,
-              createdAt: new Date(t.createdAt).getTime(),
-            };
-            const pendingIds = t.pendingItems.map((p) => p.id);
+            // 已经完成 → 回插 pending 占位 + 立刻替换为真图（onGenerate 已是 upsert，绝不丢）
             await pollTaskUntilDone(t.taskId, pendingIds, ctx, t.pendingItems);
-            // 上一步已经把 pending 替换好
           } else if (st.status === 'failed') {
-            const pendingIds = t.pendingItems.map((p) => p.id);
             markPendingAsFailed(pendingIds, st.error || '生成失败');
           } else if (st.status === 'not_found') {
-            const pendingIds = t.pendingItems.map((p) => p.id);
             markPendingAsFailed(pendingIds, '任务已被服务端清理（重启或超期）');
           } else {
             // running/unknown：续上轮询
-            const pendingIds = t.pendingItems.map((p) => p.id);
-            const ctx = {
-              prompt: t.prompt,
-              model: t.model,
-              ratio: t.ratio,
-              contentType: t.contentType,
-              createdAt: new Date(t.createdAt).getTime(),
-            };
             await pollTaskUntilDone(t.taskId, pendingIds, ctx, t.pendingItems);
           }
         } catch (e) {
           // 恢复失败：标 failed，避免遗留"幽灵 pending"
-          const pendingIds = t.pendingItems.map((p) => p.id);
-          markPendingAsFailed(pendingIds, `恢复失败：${e instanceof Error ? e.message : String(e)}`);
+          markPendingAsFailed(
+            t.pendingItems.map((p) => p.id),
+            `恢复失败：${e instanceof Error ? e.message : String(e)}`,
+          );
+        } finally {
+          // 解决成功/失败后才从 localStorage 清除（取消挂载则保留，下次再试）
+          if (!cancelled) removePersistedTask(t.taskId);
         }
       }
-    })();
+    };
+
+    // 兜底路径：服务端在途任务（localStorage 未覆盖到的）
+    const recoverServer = async () => {
+      try {
+        const { tasks } = await apiListActiveGenerations();
+        for (const t of tasks || []) {
+          if (cancelled) return;
+          if (localTaskIds.has(t.taskId)) continue; // 已由 localStorage 处理
+          if (t.status !== 'running') continue; // 只恢复在途；done/failed 已由 localStorage 或已落库处理
+          const meta = (t.clientMeta || {}) as Record<string, unknown>;
+          const ratio = (typeof meta.ratio === 'string' && meta.ratio) || '1:1';
+          const contentType = (t.contentType || 'image') as 'image' | 'video';
+          const pendingItems: IMediaItem[] = (t.pendingIds || []).map((id: string, i: number) => ({
+            id,
+            title: (t.prompt || '').slice(0, 20) || '生成中...',
+            type: contentType,
+            thumbnail: '',
+            fullUrl: '',
+            prompt: t.prompt || '',
+            model: t.model || '',
+            ratio,
+            createdAt: new Date(t.createdAt || Date.now()).toISOString(),
+            isFavorite: false,
+            isDeleted: false,
+            source: 'user',
+            status: 'pending',
+          }));
+          if (pendingItems.length === 0) continue;
+          const pendingIds = pendingItems.map((p) => p.id);
+          const ctx = {
+            prompt: t.prompt || '',
+            model: t.model || '',
+            ratio,
+            contentType,
+            createdAt: new Date(t.createdAt || Date.now()).getTime(),
+          };
+          await pollTaskUntilDone(t.taskId, pendingIds, ctx, pendingItems);
+        }
+      } catch {
+        // 服务端恢复失败不阻塞主路径
+      }
+    };
+
+    void recoverLocal();
+    void recoverServer();
+    return () => { cancelled = true; };
   // 仅在挂载时跑一次
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

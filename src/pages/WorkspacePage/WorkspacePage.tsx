@@ -189,34 +189,10 @@ export default function WorkspacePage() {
     }
   }, [mediaList]);
 
-  // pending 超时保护：60s 未被替换视为任务失败，自动删除并 toast 提醒
-  const pendingTimeoutRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  useEffect(() => {
-    const ids = mediaList.filter((m) => m.status === 'pending').map((m) => m.id);
-    // 新增的 pending：注册 60s 超时
-    for (const id of ids) {
-      if (!pendingTimeoutRef.current.has(id)) {
-        pendingTimeoutRef.current.set(id, setTimeout(() => {
-          // 超时：删除该 pending 并提示
-          setMediaList((prev) => prev.filter((m) => m.id !== id));
-          pendingTimeoutRef.current.delete(id);
-          toast.error('生成超时，已自动取消', { duration: 4000 });
-        }, 60000));
-      }
-    }
-    // 不再 pending 的：清掉 timeout
-    for (const [id, tid] of pendingTimeoutRef.current.entries()) {
-      if (!ids.includes(id)) {
-        clearTimeout(tid);
-        pendingTimeoutRef.current.delete(id);
-      }
-    }
-  }, [mediaList]);
-  useEffect(() => () => {
-    // 卸载时清空所有 timeout
-    for (const tid of pendingTimeoutRef.current.values()) clearTimeout(tid);
-    pendingTimeoutRef.current.clear();
-  }, []);
+  // 注意：pending 占位的生命周期（超时/失败标记）由 GenerationBar 的轮询统一持有
+  // （其 pollTaskUntilDone 在 3 分钟无结果时标记 failed，不会直接删除占位导致真图丢失）。
+  // 这里不再做 60s 硬删除——否则慢生成（排队/限流 >60s）完成前占位被删，
+  // 后端 done 时 onGenerate 按 id 找不到占位会静默丢图（但积分已 commit）。
 
   // 后台补传遗漏素材: 每次刷新/登录时自动尝试补传之前 OSS 失败的图片
   // 关键约束: 跳过当前选中的 item + pending 卡片, 避免抢用户正在看的图 (右栏会瞬间裂图)
@@ -295,8 +271,32 @@ export default function WorkspacePage() {
   };
 
   // 后端真正返图后：找到对应 pending id 替换为真图（pending → success/failed）
+  // 关键容错（修复"钱扣了图丢了"）：若占位因超时/刷新未恢复而缺失，直接插入，绝不静默丢弃——
+  // 因为后端 done 时已 commit 积分，丢图等于白扣钱。
   const handleGenerate = (item: IMediaItem) => {
-    setMediaList((prev) => prev.map((m) => (m.id === item.id ? item : m)));
+    setMediaList((prev) => {
+      const idx = prev.findIndex((m) => m.id === item.id);
+      if (idx >= 0) {
+        const existing = prev[idx];
+        // 防御：已落库的好图（OSS 已上传永久链接）不被一次失败的恢复覆盖成过期 provider URL
+        const merged =
+          existing.ossUploaded && !item.ossUploaded
+            ? {
+                ...item,
+                thumbnail: existing.thumbnail,
+                fullUrl: existing.fullUrl,
+                ossUrl: existing.ossUrl,
+                ossObjectKey: existing.ossObjectKey,
+                ossUploaded: existing.ossUploaded,
+              }
+            : item;
+        const next = prev.slice();
+        next[idx] = merged;
+        return next;
+      }
+      // 占位不存在 → 直接前置插入（pending 被误删/刷新丢失的恢复路径）
+      return [item, ...prev];
+    });
   };
 
   const handleToggleFavorite = (id: string) => {
