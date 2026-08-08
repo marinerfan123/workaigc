@@ -602,6 +602,9 @@ function GenerationBar({
     },
   }), []);
 
+  // 当前选中模型（按 dispatch 存储键 displayName 匹配）
+  const currentModel = models.find((m) => m.displayName === settings.model);
+
   // 类型切换 + 模型列表变化时，自动校准默认模型
   useEffect(() => {
     const exists = models.some(
@@ -679,8 +682,6 @@ function GenerationBar({
   // 按 model_id 聚合（同 model_id 多供应商 → 一个入口，避免重名）
   const groupedModels = groupModelsByModelId(availableModels);
 
-  // 当前选中模型（按 dispatch 存储键 displayName 匹配）
-  const currentModel = models.find((m) => m.displayName === settings.model);
   // 顶栏展示名：优先映射名
   const currentModelLabel = getEffectiveModelName(currentModel) || settings.model || '无';
   // 模型是否支持奖励余额（缺省视为支持）
