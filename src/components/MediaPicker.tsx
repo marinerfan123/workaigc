@@ -25,6 +25,7 @@ import {
   Clock,
   ImageOff,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import type { IMediaItem } from '@/data/media';
 import { apiGetMedia, apiGetMediaCounts, apiSaveMedia, type MediaCounts } from '@/services/api';
 import Image from '@/components/ui/image';
@@ -38,6 +39,8 @@ interface MediaPickerProps {
   onAddToPrompt?: (url: string) => void;
   /** 已添加的参考图 URL 集合，用于在按钮上显示"已选"态 */
   referenceImages?: string[];
+  /** 允许同时添加的参考图上限（默认 4） */
+  maxReferenceImages?: number;
 }
 
 type CategoryKey =
@@ -94,7 +97,11 @@ export default function MediaPicker({
   onAddAsReference,
   onAddToPrompt,
   referenceImages = [],
+  maxReferenceImages = 4,
 }: MediaPickerProps) {
+  const maxRefs = Math.max(1, Math.min(8, maxReferenceImages));
+  const remainingRefs = Math.max(0, maxRefs - referenceImages.length);
+  const atRefLimit = remainingRefs === 0;
   const [list, setList] = useState<IMediaItem[]>([]);
   const [counts, setCounts] = useState<MediaCounts | null>(null);
   const [loading, setLoading] = useState(true);
@@ -203,6 +210,10 @@ export default function MediaPicker({
 
   const handleAddRefSingle = () => {
     if (!selected || alreadyAdded) return;
+    if (atRefLimit) {
+      toast.info(`最多添加 ${maxRefs} 张参考图，请先移除后再添加`);
+      return;
+    }
     onAddAsReference(selected.fullUrl);
     setMultiSelected(new Set());
     onClose();
@@ -214,7 +225,17 @@ export default function MediaPicker({
       const m = list.find((x) => x.id === id);
       if (m && !referenceImages.includes(m.fullUrl)) urls.push(m.fullUrl);
     }
-    urls.forEach((u) => onAddAsReference(u));
+    if (urls.length === 0) {
+      toast.info('选中的资源都已在参考图列表中');
+      return;
+    }
+    const take = urls.slice(0, remainingRefs);
+    take.forEach((u) => onAddAsReference(u));
+    if (take.length < urls.length) {
+      toast.info(`参考图上限为 ${maxRefs} 张，已自动添加前 ${take.length} 张`);
+    } else {
+      toast.success(`已添加 ${take.length} 张参考图`);
+    }
     setMultiSelected(new Set());
     setMultiMode(false);
     onClose();
@@ -229,8 +250,14 @@ export default function MediaPicker({
   const toggleMulti = (id: string) => {
     setMultiSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else if (atRefLimit) {
+        toast.info(`最多选择 ${maxRefs} 张参考图，请先移除后再添加`);
+        return prev;
+      } else {
+        next.add(id);
+      }
       return next;
     });
   };
@@ -341,10 +368,20 @@ export default function MediaPicker({
         {/* 顶部 */}
         <div className="flex items-center gap-3 border-b border-zinc-800 px-5 py-4">
           <div className="flex items-center gap-2">
-            <span className="flex h-7 min-w-7 items-center justify-center rounded-xl bg-emerald-500/15 px-2 text-xs font-bold text-emerald-300 border border-emerald-500/30">
-              {referenceImages.length}
+            <span
+              className={`flex h-7 min-w-7 items-center justify-center rounded-xl px-2 text-xs font-bold border transition-colors ${
+                atRefLimit
+                  ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                  : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+              }`}
+              title={`已选 ${referenceImages.length}/${maxRefs} 张参考图`}
+            >
+              {referenceImages.length}/{maxRefs}
             </span>
             <span className="text-xs text-zinc-500">已选参考</span>
+            {atRefLimit ? (
+              <span className="text-[10px] text-amber-400/80">已达上限，请先移除</span>
+            ) : null}
           </div>
 
           <div className="relative flex-1 max-w-md mx-auto">
@@ -431,7 +468,7 @@ export default function MediaPicker({
         {/* 主体三栏 */}
         <div className="flex flex-1 min-h-0">
           {/* 左侧分类 */}
-          <div className="w-48 shrink-0 border-r border-zinc-800 p-3 space-y-1 overflow-y-auto">
+          <div className="w-48 shrink-0 border-r border-zinc-800 p-3 space-y-1 overflow-y-auto lux-scrollbar">
             {CATEGORIES.map((cat) => {
               const Icon = cat.icon;
               const active = activeCategory === cat.key;
@@ -502,7 +539,7 @@ export default function MediaPicker({
           {/* 中间列表 */}
           <div
             ref={listRef}
-            className="flex-1 overflow-y-auto p-3 space-y-1 relative"
+            className="flex-1 overflow-y-auto p-3 space-y-1 relative lux-scrollbar"
           >
             {loading ? (
               <ListSkeleton />
@@ -530,46 +567,56 @@ export default function MediaPicker({
                         : 'hover:bg-zinc-800/40 border-transparent'
                     }`}
                   >
-                    {/* 多选 checkbox */}
-                    {multiMode ? (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleMulti(item.id);
-                        }}
-                        className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-all ${
-                          isMulti
-                            ? 'bg-emerald-500 border-emerald-500 text-black'
-                            : 'border-zinc-600 hover:border-emerald-400'
-                        }`}
-                      >
-                        {isMulti ? <Check className="size-3" /> : null}
-                      </button>
-                    ) : (
-                      <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-zinc-800">
-                        {isFailed ? (
-                          <div className="flex h-full w-full items-center justify-center text-zinc-600">
-                            <ImageOff className="size-5" />
-                          </div>
-                        ) : (
-                          <Image
-                            src={item.thumbnail}
-                            alt={item.title}
-                            className="h-full w-full object-cover"
-                          />
-                        )}
-                        {isFailed ? (
-                          <div className="absolute inset-0 flex items-center justify-center bg-red-500/20">
-                            <AlertCircle className="size-4 text-red-300" />
-                          </div>
-                        ) : null}
-                        {item.type === 'video' ? (
-                          <div className="absolute right-1 top-1 rounded-full bg-black/70 px-1 py-0.5 text-[9px] font-bold text-white">
-                            <Video className="size-2.5 inline -mt-0.5" />
-                          </div>
-                        ) : null}
-                      </div>
-                    )}
+                    {/* 缩略图（多选模式下叠加 checkbox，图片始终可见） */}
+                    <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-zinc-800">
+                      {multiMode ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleMulti(item.id);
+                          }}
+                          className={`absolute left-1 top-1 z-10 flex h-5 w-5 items-center justify-center rounded-md border transition-all shadow-sm ${
+                            isMulti
+                              ? 'bg-emerald-500 border-emerald-500 text-black'
+                              : atRefLimit
+                              ? 'border-zinc-600 bg-black/40 text-zinc-600 opacity-60 cursor-not-allowed'
+                              : 'border-zinc-600 bg-black/40 hover:border-emerald-400 hover:bg-black/60'
+                          }`}
+                          disabled={atRefLimit && !isMulti}
+                          title={isMulti ? '取消选择' : '选择为参考图'}
+                        >
+                          {isMulti ? <Check className="size-3" /> : null}
+                        </button>
+                      ) : null}
+                      {isFailed ? (
+                        <div className="flex h-full w-full items-center justify-center text-zinc-600">
+                          <ImageOff className="size-5" />
+                        </div>
+                      ) : (
+                        <Image
+                          src={item.thumbnail}
+                          alt={item.title}
+                          className="h-full w-full object-cover"
+                        />
+                      )}
+                      {isFailed ? (
+                        <div className="absolute inset-0 flex items-center justify-center bg-red-500/20">
+                          <AlertCircle className="size-4 text-red-300" />
+                        </div>
+                      ) : null}
+                      {item.type === 'video' ? (
+                        <div className="absolute right-1 top-1 rounded-full bg-black/70 px-1 py-0.5 text-[9px] font-bold text-white">
+                          <Video className="size-2.5 inline -mt-0.5" />
+                        </div>
+                      ) : null}
+                      {isRef && !multiMode ? (
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                          <span className="rounded-full bg-emerald-500/90 px-1.5 py-0.5 text-[9px] font-bold text-black">
+                            已参考
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
 
                     {/* 文字区 */}
                     <div className="flex-1 min-w-0">
@@ -709,15 +756,19 @@ export default function MediaPicker({
                 <div className="mt-3 space-y-2">
                   <button
                     onClick={handleAddRefSingle}
-                    disabled={alreadyAdded}
+                    disabled={alreadyAdded || atRefLimit}
                     className={`flex w-full items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-bold transition-all ${
-                      alreadyAdded
+                      alreadyAdded || atRefLimit
                         ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
                         : 'bg-emerald-500 text-black hover:bg-emerald-400 active:scale-[0.98]'
                     }`}
                   >
                     <ImagePlus className="size-4" />
-                    {alreadyAdded ? '已在参考图列表' : '添加为参考图'}
+                    {alreadyAdded
+                      ? '已在参考图列表'
+                      : atRefLimit
+                      ? `已达参考图上限 (${maxRefs} 张)`
+                      : '添加为参考图'}
                   </button>
                   {onAddToPrompt ? (
                     <button

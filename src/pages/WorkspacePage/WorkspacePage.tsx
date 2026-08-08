@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Search, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
@@ -74,6 +74,20 @@ export default function WorkspacePage() {
   const [negativePrompt, setNegativePrompt] = useState('');
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [activeCharacter, setActiveCharacter] = useState<ICharacter | null>(null);
+
+  // 参考图上限：视频通常只能带 1 张参考；图片最多 4 张，避免用户/后端误解
+  const MAX_REF_IMAGES = useMemo(() => (settings.contentType === 'video' ? 1 : 4), [settings.contentType]);
+
+  const setReferenceImagesCapped = useCallback(
+    (urls: string[]) => {
+      const next = urls.slice(0, MAX_REF_IMAGES);
+      if (next.length < urls.length) {
+        toast.info(`当前模式最多 ${MAX_REF_IMAGES} 张参考图，已自动截取前 ${next.length} 张`);
+      }
+      setReferenceImages(next);
+    },
+    [MAX_REF_IMAGES],
+  );
   const [generating, setGenerating] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
@@ -159,7 +173,7 @@ export default function WorkspacePage() {
       characterFiredRef.current = true;
       setActiveCharacter(character);
       if (character.description) setPrompt(character.description);
-      if (character.referenceImages?.length) setReferenceImages(character.referenceImages);
+      if (character.referenceImages?.length) setReferenceImagesCapped(character.referenceImages);
       setTimeout(() => {
         generationBarRef.current?.generate({
           prompt: character.description,
@@ -334,6 +348,10 @@ export default function WorkspacePage() {
   };
 
   const handleAddReference = (url: string) => {
+    if (referenceImages.length >= MAX_REF_IMAGES) {
+      toast.info(`当前最多可添加 ${MAX_REF_IMAGES} 张参考图，请先移除后再添加`);
+      return;
+    }
     if (!referenceImages.includes(url)) {
       setReferenceImages((prev) => [...prev, url]);
     }
@@ -577,7 +595,7 @@ export default function WorkspacePage() {
               referenceImages={referenceImages}
               onRemoveReference={handleRemoveReference}
               onAddReference={() => setPickerOpen(true)}
-              onSetReferenceImages={setReferenceImages}
+              onSetReferenceImages={setReferenceImagesCapped}
               generating={generating}
               setGenerating={setGenerating}
               prompt={prompt}
@@ -610,6 +628,7 @@ export default function WorkspacePage() {
         onClose={() => setPickerOpen(false)}
         onAddAsReference={handleAddReference}
         referenceImages={referenceImages}
+        maxReferenceImages={MAX_REF_IMAGES}
       />
 
       {/* 图片查看器（灯箱） */}
