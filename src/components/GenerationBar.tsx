@@ -334,6 +334,17 @@ function GenerationBar({
   const { providers, models, getProviderName, getDefaultModel } = useModelHub();
   const { config: ossConfig, uploadFile: uploadToOss, buildOssUrl } = useOssConfig();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // 关闭设置浮层并把焦点还给提示词输入框（点击任一选项后应立即可输入）
+  const closeSettingsAndFocus = () => {
+    setSettingsOpen(false);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+  // 关闭模型菜单并把焦点还给提示词输入框
+  const closeModelMenuAndFocus = () => {
+    setModelMenuOpen(false);
+    setModelSearch('');
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
 
   // ── 重试 / 配方 / 变体 imperative handle ──
   // 全部走 ref（而非 useEffect 依赖 state），避免父级回调身份变化导致 effect 重跑取消定时器。
@@ -1524,7 +1535,7 @@ function GenerationBar({
                             return (
                               <button
                                 key={q}
-                                onClick={() => onSettingsChange({ ...settings, quality: q })}
+                                onClick={() => { onSettingsChange({ ...settings, quality: q }); closeSettingsAndFocus(); }}
                                 className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                   settings.quality === q
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1550,7 +1561,7 @@ function GenerationBar({
                             {availableResolutions.map((res) => (
                               <button
                                 key={res}
-                                onClick={() => onSettingsChange({ ...settings, resolution: res })}
+                                onClick={() => { onSettingsChange({ ...settings, resolution: res }); closeSettingsAndFocus(); }}
                                 className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                   (settings.resolution || '1k') === res
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1577,7 +1588,7 @@ function GenerationBar({
                             {template.videoModes.map((m) => (
                               <button
                                 key={m}
-                                onClick={() => changeVideoMode(m)}
+                                onClick={() => { changeVideoMode(m); closeSettingsAndFocus(); }}
                                 className={`rounded-xl px-2 py-2 text-[11px] font-medium transition-all duration-200 ${
                                   effectiveVideoMode === m
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1611,9 +1622,9 @@ function GenerationBar({
                         </div>
                         <div className="grid grid-cols-4 gap-1.5">
                           {(template.ratios || []).map((r) => (
-                            <button
-                              key={r}
-                              onClick={() => onSettingsChange({ ...settings, ratio: r as Ratio })}
+                          <button
+                            key={r}
+                            onClick={() => { onSettingsChange({ ...settings, ratio: r as Ratio }); closeSettingsAndFocus(); }}
                               className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                 settings.ratio === r
                                   ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1638,9 +1649,9 @@ function GenerationBar({
                             {videoTiers.map((res) => {
                               const activeRes = settings.resolution || videoTiers[0];
                               return (
-                                <button
-                                  key={res}
-                                  onClick={() => onSettingsChange({ ...settings, resolution: res })}
+                              <button
+                                key={res}
+                                onClick={() => { onSettingsChange({ ...settings, resolution: res }); closeSettingsAndFocus(); }}
                                   className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                     activeRes === res
                                       ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1670,7 +1681,7 @@ function GenerationBar({
                             {template.durations.map((d) => (
                               <button
                                 key={d}
-                                onClick={() => onSettingsChange({ ...settings, duration: d })}
+                                onClick={() => { onSettingsChange({ ...settings, duration: d }); closeSettingsAndFocus(); }}
                                 className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                   (settings.duration ?? 6) === d
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1819,8 +1830,7 @@ function GenerationBar({
                               key={g.modelId}
                               onClick={() => {
                                 onSettingsChange({ ...settings, model: g.displayName });
-                                setModelMenuOpen(false);
-                                setModelSearch('');
+                                closeModelMenuAndFocus();
                               }}
                               className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-200 ${
                                 active
