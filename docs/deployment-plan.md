@@ -244,7 +244,7 @@ max_memory_restart: '1G'
 ### 6.2 目标数据结构（每账号 × 每分辨率一桶）
 
 ```js
-const ACCT = {}; // providerId -> 运行时状态（10K 账号 ≈ 2MB 内存，单机 OK）
+const ACCT = {}; // providerId -> 进程内缓存；生产多实例必须迁移到 Redis 或其他共享状态层
 // 每个账号:
 //   rpm:  { '1k':{cap,tokens,last}, '2k':{...}, '4k':{...} }   // 令牌桶，按时间回流
 //   conc: { '1k':n, '2k':n, '4k':n }                          // 当前并发

@@ -26,6 +26,7 @@ import {
   SlidersHorizontal,
   AlertTriangle,
   History,
+  Languages,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { capabilityClient, logger } from '@/services/client-capabilities';
@@ -35,7 +36,7 @@ import { ReferenceStyleSelector } from '@/components/ReferenceStyleSelector';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
-import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus, type ReferenceStyle } from '@/services/api';
+import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiTranslatePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus, type ReferenceStyle } from '@/services/api';
 import { refreshUser, setAuthModalOpen, useAuth } from '@/services/authStore';
 import { ALL_RESOLUTIONS, type Resolution, type IAiModel, type IModelParamTemplate, getEffectiveModelName } from '@/data/models';
 import type { Ratio, Quality, VideoMode } from '@/data/settings';
@@ -283,6 +284,8 @@ function GenerationBar({
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modelSearch, setModelSearch] = useState('');
   const [optimizing, setOptimizing] = useState(false);
+  // 翻译进行中（与优化共用禁用态，避免并发）
+  const [translating, setTranslating] = useState(false);
   // 优化输出语言：en（英文，生图引擎需要）/ zh（中文，国内工具）/ both（英文主填 + 中文对照）
   const [optLang, setOptLang] = useState<'en' | 'zh' | 'both'>('en');
   // 中英对照模式下展示的中文正向对照（只读预览）
@@ -1263,6 +1266,45 @@ function GenerationBar({
     }
   };
 
+  // 提示词翻译（智能体 skill：调后台启用的 text 推理模型，中↔英忠实翻译，不优化）
+  // 与优化共用 optimizing 禁用态，避免并发请求互相覆盖 textarea
+  const handleTranslate = async () => {
+    const trimmed = promptText.trim();
+    if (!trimmed) {
+      toast.error('请先输入提示词');
+      return;
+    }
+    if (optimizing || translating) return;
+    setTranslating(true);
+    try {
+      const r = await apiTranslatePrompt(promptText, { targetLang: optLang });
+      if (r.success && r.text) {
+        onPromptChange(r.text);
+        const langLabel = optLang === 'zh' ? '中文' : optLang === 'both' ? '中英对照' : '英文';
+        if (r.fallback) {
+          toast.warning('AI 模型繁忙，已原样返回', {
+            description: r.warning || '当前推理模型不可用，已原样保留原文。建议稍后重试，或到「模型 Hub」检查 text 模型状态。',
+            duration: 5000,
+          });
+        } else {
+          toast.success(`已用「${r.modelUsed || '推理模型'}」翻译提示词（${langLabel}）`, { duration: 2500 });
+        }
+      } else if (r.code === 'NO_REASONING_MODEL') {
+        toast.error('未配置文本推理模型', {
+          description: '请到「模型 Hub」添加一个 type=text 的模型（需要服务商已配置 API Key）',
+          duration: 5000,
+        });
+      } else {
+        toast.error(`翻译失败：${r.error || '未知错误'}`);
+      }
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      toast.error(`翻译异常：${errMsg.slice(0, 100)}`);
+    } finally {
+      setTranslating(false);
+    }
+  };
+
   /** 风格迁移：基于参考图，将目标风格应用到新生成中 */
   const handleStyleTransfer = async () => {
     if (referenceImages.length === 0) {
@@ -2101,6 +2143,26 @@ function GenerationBar({
                     <>
                       <Wand2 className="size-3" />
                       AI 优化提示词
+                    </>
+                  )}
+                </button>
+                {/* 纯翻译智能体：中↔英忠实翻译，不优化；长度不限，仅与优化互斥禁用 */}
+                <button
+                  type="button"
+                  onClick={handleTranslate}
+                  disabled={optimizing || translating}
+                  className="ml-1 inline-flex items-center gap-1.5 rounded-full border border-sky-500/30 bg-gradient-to-r from-sky-500/15 to-blue-500/15 px-3 py-1 text-[11px] font-semibold text-sky-400 hover:from-sky-500/25 hover:to-blue-500/25 transition-all disabled:cursor-not-allowed disabled:opacity-40"
+                  title="调用后台启用的文本推理模型，把当前提示词在中文/英文之间忠实翻译（补足缺失语种，不优化改写）"
+                >
+                  {translating ? (
+                    <>
+                      <Loader2 className="size-3 animate-spin" />
+                      正在翻译…
+                    </>
+                  ) : (
+                    <>
+                      <Languages className="size-3" />
+                      翻译提示词
                     </>
                   )}
                 </button>

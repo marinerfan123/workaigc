@@ -250,7 +250,7 @@
 
 ## III.3　一次请求的生命周期
 
-**登录**：Client → Cloudflare(WAF) → Nginx(限流 login zone) → Node `/api/auth/login` → `password.js`(scrypt 验) → `jwt.js`(签 access+refresh) → 写 `users.last_login_at` → 返回 token（localStorage）。
+**登录**：Client → Cloudflare(WAF) → Nginx(限流 login zone) → Node `/api/auth/login` → `password.js`(scrypt 验) → 服务端会话/JWT 签发 → 写 `users.last_login_at` → 设置 `HttpOnly`、`Secure`、`SameSite` Cookie；禁止使用 localStorage 保存令牌。
 
 **生成（计费）**：Client(带 Bearer) → Node(auth 中间件) → `billing.js` 原子预扣（`UPDATE ... WHERE balance>=cost RETURNING`）→ dispatcher 调供应商（`agent.js` 查 `skill_registry`）→ OSS 上传 → 成功写 `consume` 流水 / 失败 `refund` 回退 → SSE 推 console。
 

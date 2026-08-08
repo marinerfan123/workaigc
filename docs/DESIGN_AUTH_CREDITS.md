@@ -208,8 +208,8 @@ interface AuthState {
   refreshBalance(): Promise<void>;   // 生成后刷新积分
 }
 ```
-- token/refresh 存 `localStorage`（key: `auth_access` / `auth_refresh`）。
-- `apiFetch` 改造：自动带 `Authorization: Bearer <access>`；遇 401 调 `/api/auth/refresh` 一次并重试；refresh 失败 → 清空并跳转 `/login`。
+- 会话凭据使用 `HttpOnly`、`Secure`、`SameSite` Cookie；禁止把 access 或 refresh token 存入 `localStorage`。
+- `apiFetch` 使用 `credentials: 'include'`；遇 401 由服务端可撤销会话机制处理并跳转 `/login`，不在浏览器保存可窃取的 refresh token。
 - 向后兼容：旧 `ApiTokenContext` 保留导出但内部指向 AuthContext，避免其他文件大面积改动（后续清理）。
 
 ### 5.2 路由与守卫（`src/app.tsx`）

@@ -92,14 +92,14 @@ curl https://your-domain.com/api/health   # 确认 PG:connected + Redis:up
 
 ---
 
-## 🔍 单机设定残留（已知，非阻断）
+## 🔍 商业化与横向扩展约束
 
 | 项 | 说明 | 风险 |
 |---|---|---|
 | IndexedDB 本地图缓存 | **已在 2026-08-04 彻底移除**：资产改走 OSS 主路径 + 模型官方链接兜底，零浏览器存储，轻量化 | — |
-| redis.cjs 内存兜底 | Redis 掉线落内存 Map | 生产应保证 Redis 高可用（主从/哨兵/云托管） |
+| redis.cjs 内存兜底 | Redis 掉线落内存 Map | 生产不可依赖该兜底；应保证 Redis 高可用（主从/哨兵/云托管） |
 | mediaList PG 持久化 | 已删 MOCK fallback | ✅ 正确 |
-| monitor/logbus 内存缓冲 | 监控/日志去重 | ✅ 单机 OK |
+| monitor/logbus 内存缓冲 | 监控/日志去重 | 多实例场景须转为共享或持久化实现 |
 
 ---
 

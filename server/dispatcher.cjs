@@ -4,6 +4,17 @@ const crypto = require('crypto');
 const billing = require('./billing.cjs'); // Phase A 计费（reserve/commit/release）
 const accounting = require('./accounting.cjs'); // 全局双边账务：generate 真实消耗走账
 const videoRouter = require('./providers/video/index.cjs'); // 视频 provider 适配层（agnes/minimax/volcano/generic 路由）
+
+// ─── 日志总线注入（由 server.js 启动时 setLogSink(logbus) 注入）───
+// 生成失败 / 异常必须落到后台「核心错误日志 + 实时监控」(logbus.emit('ERROR') → syslog 持久化 + SSE 广播)，
+// 解决「前台出图失败后端没有任何反映、监控没做到位」的问题。
+let logSink = null;
+function setLogSink(sink) { logSink = sink; }
+function logError(source, message, meta) {
+  if (logSink && typeof logSink.emit === 'function') {
+    try { logSink.emit('ERROR', source, message, meta || null); } catch (_) { /* 日志失败绝不应影响主链路 */ }
+  }
+}
 // 负责：按 model_id 找到所有已启用的「模型行 × 服务商」组合，
 // 在「全局最大并发 maxThreads」+「每家服务商 max_concurrent」约束下，
 // round-robin 把 N 个生成请求均衡分配到不同服务商。
@@ -550,6 +561,16 @@ async function generateAsync(pgPool, opts) {
              WHERE task_id=$1`,
             [taskId, 'failed', JSON.stringify(result || {}), (result && result.error) || '', user_id],
           );
+          // 持久化到核心错误日志 + 实时监控（前台出图失败后端可观测）
+          logError('dispatcher.generate', `生成失败 taskId=${taskId} model=${model || ''} userId=${user_id || ''}`, {
+            taskId,
+            model: model || '',
+            userId: user_id || '',
+            contentType: contentType || 'image',
+            count: count || 1,
+            providerError: (result && result.error) || '',
+            meta: (result && result.meta) || null,
+          });
         }
       } catch (e) {
         console.warn('[dispatcher] 完成回调失败:', e.message);
@@ -563,6 +584,14 @@ async function generateAsync(pgPool, opts) {
          WHERE task_id=$1`,
         [taskId, String((e && e.message) || e), user_id],
       ).catch(() => {});
+      // 后台生成异常（非 provider 返回，而是代码/网络层异常）→ 同样落核心错误日志
+      logError('dispatcher.generate', `生成异常 taskId=${taskId} model=${model || ''} userId=${user_id || ''}: ${e && e.message}`, {
+        taskId,
+        model: model || '',
+        userId: user_id || '',
+        contentType: contentType || 'image',
+        stack: (e && e.stack) || null,
+      });
     });
   return { taskId };
 }
@@ -639,6 +668,7 @@ async function listActiveTasks(pgPool, userId) {
 // 导出内部调度函数（供测试 / 调试断言 RPM 门控与均匀分配用）
 module.exports = {
   generate, generateAsync, getTaskStatus, listActiveTasks, callEndpoint, getByPath, getArrayByPath,
+  setLogSink, logError,
   getAcct, normalizeRateLimits, costFor, getAccountStates, setManualState,
   // ── 等待区（资源全不可用时积压 + 前台"资源不足"提示）───
   getWaitingAreaStatus, enqueueWaiting, dequeueWaiting, waitingAreaSize,

@@ -68,6 +68,8 @@ const logbus = logbusMod.createLogBus({
 });
 logbus.installConsoleHook();
 logbus.startStatsTimer();
+// 把日志总线注入 dispatcher：生成失败/异常现在会落到后台「核心错误日志 + 实时监控」大屏
+dispatcher.setLogSink(logbus);
 
 async function initDB() {
   // ── 「数据必须入正式数据库」铁律（2026-08-08 拍板，实时约束）──
@@ -659,6 +661,9 @@ async function initDB() {
       INSERT INTO agents (key, name, enabled, config)
       VALUES ('prompt_optimizer','提示词优化智能体', TRUE, '{"desc":"将用户原始提示词改写为适合图像/视频生成的结构化英文提示词","endpoint":"/api/agent/optimize-prompt","skill":"prompt_optimize","skillName":"提示词优化"}')
       ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, config = EXCLUDED.config;
+      INSERT INTO agents (key, name, enabled, config)
+      VALUES ('prompt_translator','提示词翻译智能体', TRUE, '{"desc":"将用户提示词在中文/英文之间忠实翻译，用于补足缺失语种（生图引擎需要英文，国内工具需要中文）","endpoint":"/api/agent/translate-prompt","skill":"prompt_translate","skillName":"提示词翻译"}')
+      ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, config = EXCLUDED.config;
       INSERT INTO agent_rules (id, name, trigger, condition, action, enabled) VALUES
         ('rule-ban-ip','登录失败封禁','login_fail','{"threshold":20,"window":"ip"}','{"type":"ban_ip"}', TRUE),
         ('rule-error-rate','5xx 错误率告警','error_rate','{"threshold":0.02,"metric":"5xx"}','{"type":"alert"}', TRUE),
@@ -671,6 +676,7 @@ async function initDB() {
       INSERT INTO skill_registry (key, name, stage, adapter, params, cost_credits, enabled, description, author, icon, version)
       VALUES
         ('prompt_optimize','提示词优化','prompt','prompt_optimize','{"target":"image"}',1,TRUE,'将原始提示词改写为结构化英文生成提示词','官方','sparkles','1.0.0'),
+        ('prompt_translate','提示词翻译','prompt','prompt_translate','{"mode":"translate"}',1,TRUE,'在中文/英文之间忠实翻译提示词，补足缺失语种','官方','languages','1.0.0'),
         ('copy_writer','文案生成','post','text_gen','{"max_tokens":800,"temperature":0.8}',2,TRUE,'为成片生成营销文案 / 标题 / 社媒描述','官方','pencil','1.0.0')
       ON CONFLICT (key) DO NOTHING;
       INSERT INTO products (id, title, subtitle, kind, ref_key, price_credits, price_cents, status, author, description, tags)
@@ -2570,6 +2576,182 @@ async function handleAPI(req, res) {
       const detail = cause ? ` (cause: ${cause.code || cause.name || ''} ${cause.message || ''})` : '';
       console.error('[agent/optimize-prompt] 异常:', e.message, detail, '\n  model:', lastModel && lastModel.model_id, 'base:', lastModel && lastModel.base_url);
       return sendJSON(res, 200, { success: false, error: `优化异常：${e.message}${detail}`.slice(0, 200) });
+    }
+  }
+
+  // ── 纯翻译提示词智能体：把用户提示词按目标语言翻译（中↔英），不做优化改写 ──
+  // 与 optimize-prompt 同套：三层候选模型 + 双边记账（走账）+ 鉴权。
+  // 差异：optimize 是「改写增强」，translate 是「忠实翻译」(仅语言转换，不增删内容)。
+  if (url === '/api/agent/translate-prompt' && method === 'POST') {
+    if (!pgPool) return sendJSON(res, 200, { success: false, error: '数据库不可用' });
+    // 鉴权：必须登录（"走扣费鉴权" —— 未登录一律拦截）
+    if (!realUser) return sendJSON(res, 401, { success: false, error: '需要登录' });
+    const body = await parseBody(req);
+    const userPrompt = ((body && body.prompt) || '').toString().trim();
+    if (!userPrompt) return sendJSON(res, 200, { success: false, error: '提示词为空' });
+    // targetLang: 'en'（译英，默认，生图引擎需要）| 'zh'（译中，国内工具/对照）| 'both'（中英都给，主填英文）
+    const targetLang = (body && body.targetLang) || 'en';
+    let lastModel = null;
+    let lastError = '';
+    try {
+      // 三层优先级选候选模型（与 optimize-prompt 一致，agent_key 区分）
+      let appPromptModel = '';
+      try {
+        const sr = await pgPool.query("SELECT value FROM settings WHERE key='app'");
+        const sv = (sr.rows[0] && sr.rows[0].value) || {};
+        appPromptModel = sv && sv.promptTranslateModel ? String(sv.promptTranslateModel) : '';
+      } catch (_) { /* ignore */ }
+
+      const COLS = "m.id AS m_id, m.model_id, m.display_name, m.credit_cost, " +
+        "p.id AS p_id, p.base_url, p.api_key, p.protocol ";
+      const GUARD = "m.enabled=true AND p.enabled=true AND p.api_key IS NOT NULL AND LENGTH(p.api_key) >= 6 ";
+
+      const candidates = [];
+      if (appPromptModel) {
+        const r = await pgPool.query(
+          "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
+          "WHERE m.id=$1 AND " + GUARD,
+          [appPromptModel]
+        );
+        if (r.rows.length) candidates.push(r.rows[0]);
+      }
+      if (candidates.length === 0) {
+        const r = await pgPool.query(
+          "SELECT " + COLS + "FROM agent_providers ap JOIN models m ON m.id = ap.model " +
+          "JOIN providers p ON p.id = m.provider_id " +
+          "WHERE ap.agent_key='prompt_translator' AND ap.enabled=true AND " + GUARD +
+          "ORDER BY ap.priority ASC, ap.weight DESC, m.credit_cost ASC"
+        );
+        for (const row of r.rows) candidates.push(row);
+      }
+      if (candidates.length === 0) {
+        const r = await pgPool.query(
+          "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
+          "WHERE m.type='text' AND " + GUARD +
+          "ORDER BY (p.base_url LIKE '%agnes-ai.com%') ASC, m.credit_cost ASC, m.id ASC"
+        );
+        for (const row of r.rows) candidates.push(row);
+      }
+      if (candidates.length === 0) {
+        return sendJSON(res, 200, {
+          success: false,
+          code: 'NO_REASONING_MODEL',
+          error: '未配置启用的文本推理模型，请到「模型 Hub」添加 type=text 的模型',
+        });
+      }
+
+      // 纯翻译指令：忠实语言转换，不做优化/改写；要求同时输出 [ZH]/[EN] 两个标记块
+      const systemPrompt = [
+        '你是一位专业的 AI 生图提示词翻译专家，精通中英文生图术语（Midjourney / Stable Diffusion / 通义万相等）。',
+        '任务：把用户给的提示词，从原文语言精确翻译到目标语言，保持原意、术语、风格与逗号分隔短语结构，不做任何优化、扩充或改写。',
+        '',
+        '【规则】',
+        '- 仅翻译，不增删内容；保留原有的主体、光影、构图、画质等全部关键词。',
+        '- 若原文已是目标语言，原样返回，不要改写。',
+        '- 直接输出翻译结果（逗号分隔短语），块外不要任何解释或前缀。',
+        '',
+        '【输出要求——严格使用下方 2 个标记块】',
+        '无论用户原文是中文还是英文，都必须同时输出中文版与英文版（两者同义）：',
+        '[ZH]',
+        '<中文翻译：逗号分隔短语>',
+        '[/ZH]',
+        '[EN]',
+        '<英文翻译：逗号分隔短语>',
+        '[/EN]',
+      ].join('\n');
+
+      let successModel = null;
+      let zh = '';
+      let en = '';
+      let usage = null;
+      const parseBlock = (tag, txt) => {
+        const m = txt.match(new RegExp(`\\[${tag}\\][\\s\\S]*?\\[\\/${tag}\\]`, 'i'));
+        return m ? m[0].replace(new RegExp(`\\[\\/?${tag}\\]`, 'gi'), '').trim() : '';
+      };
+      for (const candidate of candidates.slice(0, 6)) {
+        lastModel = candidate;
+        const base = (candidate.base_url || '').trim().replace(/\/+$/, '');
+        if (!base) { lastError = `模型 ${candidate.display_name || candidate.model_id} 未配置 base_url`; continue; }
+        try {
+          const r = await fetch(`${base}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${candidate.api_key}` },
+            body: JSON.stringify({
+              model: candidate.model_id,
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+              ],
+              max_tokens: 2000,
+              temperature: 0.3,
+            }),
+          });
+          const raw = await r.text();
+          if (!r.ok) {
+            lastError = `模型 ${candidate.display_name || candidate.model_id} 返回 HTTP ${r.status}`;
+            continue;
+          }
+          let data; try { data = JSON.parse(raw); } catch { lastError = `模型 ${candidate.display_name || candidate.model_id} 返回非 JSON`; continue; }
+          const msg = (data && data.choices && data.choices[0] && data.choices[0].message) || {};
+          const rawText = `${msg.content || ''}\n${msg.reasoning_content || ''}`.toString().trim();
+          const z = parseBlock('ZH', rawText);
+          const e2 = parseBlock('EN', rawText);
+          if (!z && !e2) {
+            lastError = `模型 ${candidate.display_name || candidate.model_id} 未返回翻译块`;
+            continue;
+          }
+          zh = z; en = e2;
+          successModel = candidate;
+          usage = (data && data.usage) || null;
+          break;
+        } catch (e) {
+          lastError = `模型 ${candidate.display_name || candidate.model_id} 调用异常：${e.message}`;
+        }
+      }
+
+      if (!successModel) {
+        // 兜底：所有推理模型失败 → 原样返回原文（保证可用），标记 fallback
+        console.warn('[agent/translate-prompt] 所有推理模型失败，原样返回原文。最后错误:', lastError);
+        return sendJSON(res, 200, {
+          success: true,
+          text: userPrompt,
+          textEn: /[\u4e00-\u9fa5]/.test(userPrompt) ? '' : userPrompt,
+          textZh: /[\u4e00-\u9fa5]/.test(userPrompt) ? userPrompt : '',
+          targetLang,
+          modelUsed: '本地兜底',
+          providerId: '',
+          usage: null,
+          fallback: true,
+          warning: '当前 AI 模型繁忙，已原样返回原文，建议稍后重试',
+        });
+      }
+
+      const text = targetLang === 'zh' ? (zh || userPrompt) : (en || userPrompt);
+      try {
+        await accounting.recordConsumption(pgPool, {
+          scope: 'user', actorId: (realUser && realUser.id) || '', purpose: 'agent:translate-prompt',
+          providerId: successModel.p_id || '', modelId: successModel.model_id || '', modelType: 'text',
+          inputUnits: usage && usage.prompt_tokens ? usage.prompt_tokens : 0,
+          outputUnits: usage && usage.completion_tokens ? usage.completion_tokens : 0,
+          customerChargeCredits: 0,
+          idempotencyKey: `tr-${realUser ? realUser.id : 'anon'}-${Date.now()}`,
+        });
+      } catch (e) { console.warn('[accounting translate-prompt]', e.message); }
+      return sendJSON(res, 200, {
+        success: true,
+        text,
+        textEn: en || '',
+        textZh: zh || '',
+        targetLang,
+        modelUsed: successModel.display_name,
+        providerId: successModel.p_id,
+        usage,
+      });
+    } catch (e) {
+      const cause = e && e.cause;
+      const detail = cause ? ` (cause: ${cause.code || cause.name || ''} ${cause.message || ''})` : '';
+      console.error('[agent/translate-prompt] 异常:', e.message, detail, '\n  model:', lastModel && lastModel.model_id, 'base:', lastModel && lastModel.base_url);
+      return sendJSON(res, 200, { success: false, error: `翻译异常：${e.message}${detail}`.slice(0, 200) });
     }
   }
 

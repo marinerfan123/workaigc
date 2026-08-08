@@ -153,7 +153,7 @@
 |---|---|---|---|
 | GitHub Actions | CI（lint/test/build/镜像） | 已在用 GitHub | GitLab CI |
 | Docker | 容器化 | 环境一致 | — |
-| Docker Compose | 单机/预发编排 | 简单 | — |
+| Docker Compose | 本地开发与预发编排 | 简单 | — |
 | **Kubernetes** | 生产编排 + HPA 自动扩缩 | 10K 需弹性 | Nomad（轻）/ Swarm（弱） |
 | ArgoCD / Flux | GitOps 部署（可选） | 声明式 | 手动 kubectl |
 | 镜像仓库 | GHCR / 阿里云 ACR | 就近 | Docker Hub（慢） |

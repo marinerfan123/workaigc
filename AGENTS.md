@@ -94,10 +94,10 @@
 | 文生图创作 | real-plugin | capabilityClient 调 ai-text-to-image 实例，传入用户输入的提示词、选中的模型和画面比例，输出生成的图片 | 失败提示（toast "生成服务暂不可用"） |
 | 图生图编辑 | real-plugin | capabilityClient 调 ai-image-to-image 实例，传入用户选中的原图和修改指令，输出编辑后的新图 | 失败提示（toast "编辑服务暂不可用"） |
 | 提示词优化 | real-plugin | capabilityClient.callStream 调 ai-text-generate 实例，传入用户输入的简短描述，流式输出优化后的详细提示词 | 失败提示（toast "优化服务暂不可用"） |
-| 作品素材列表 | local-persist | localStorage key=__app_flow_media_list，存储生成的图片/视频元数据（ID、标题、提示词、模型、比例、创建时间、缩略图） | 初始 6 条 source='mock' 古风汉服示例数据 |
-| 角色数据 | local-persist | localStorage key=__app_flow_characters，存储角色形象描述和参考图集 | 初始 1 条 source='mock' 东方古典美人角色 |
+| 作品素材列表 | server-persist | 通过受鉴权 API 读写 PostgreSQL 中的媒体元数据；浏览器不得作为权威数据源 | 无；测试数据必须显式注入 |
+| 角色数据 | server-persist | 通过受鉴权 API 读写 PostgreSQL 中的角色与参考图数据；浏览器不得作为权威数据源 | 无；测试数据必须显式注入 |
 | 作品下载导出 | import-export | 通过 a 标签 + download 属性触发图片下载 | 无 |
-| 创作参数设置 | local-persist | localStorage key=__app_flow_settings，保存用户偏好的模型、比例、生成数量等 | 默认值：Nano Banana 2 Lite / 16:9 / x1 |
+| 创作参数设置 | server-persist | 通过受鉴权 API 保存用户或组织维度的创作偏好；仅允许短生命周期 UI 状态留在内存 | 服务端默认值 |
 
 > 插件行 mock 兜底均为失败提示，符合 real-plugin 不可 mock 的约束。
 
@@ -147,10 +147,10 @@
 
 | 存储键名 | 数据说明 | 使用页面 |
 |---------|---------|---------|
-| `__global_flow_mediaList` | 所有生成的媒体素材列表，类型为 `IMediaItem[]` | 创作工作台、素材库、图片编辑页 |
-| `__global_flow_currentMedia` | 当前选中的媒体素材，类型为 `IMediaItem` | 创作工作台、图片编辑页 |
-| `__global_flow_characters` | 角色列表，类型为 `ICharacter[]` | 角色管理页、创作工作台 |
-| `__global_flow_settings` | 用户创作偏好设置，类型为 `IGenerationSettings` | 创作工作台、图片编辑页 |
+| 服务端媒体资源 | 所有生成的媒体素材，类型为 `IMediaItem[]`，以 PostgreSQL 与对象存储为准 | 创作工作台、素材库、图片编辑页 |
+| 前端当前选择 | 当前选中的媒体 ID 或 `IMediaItem` 快照，仅为页面交互状态 | 创作工作台、图片编辑页 |
+| 服务端角色资源 | 角色列表，类型为 `ICharacter[]`，以 PostgreSQL 与对象存储为准 | 角色管理页、创作工作台 |
+| 服务端创作偏好 | 用户或组织维度的 `IGenerationSettings` | 创作工作台、图片编辑页 |
 
 ```ts
 interface IMediaItem {

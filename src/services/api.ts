@@ -534,6 +534,39 @@ export async function apiOptimizePrompt(
   }
 }
 
+/**
+ * 提示词翻译智能体：把当前提示词在中文/英文之间忠实翻译（不优化改写）。
+ * 后端 /api/agent/translate-prompt，需登录（走扣费鉴权）。
+ */
+export async function apiTranslatePrompt(
+  prompt: string,
+  opts?: { targetLang?: 'en' | 'zh' | 'both' },
+): Promise<{
+  success: boolean;
+  /** 主语言翻译结果：targetLang='zh'→中文，否则→英文 */
+  text?: string;
+  /** 英文翻译 */
+  textEn?: string;
+  /** 中文翻译 */
+  textZh?: string;
+  targetLang?: 'en' | 'zh' | 'both';
+  error?: string;
+  code?: 'NO_REASONING_MODEL' | string;
+  modelUsed?: string;
+  providerId?: string;
+  fallback?: boolean;
+  warning?: string;
+}> {
+  try {
+    return await apiFetch('/api/agent/translate-prompt', {
+      method: 'POST',
+      body: JSON.stringify({ prompt, targetLang: opts?.targetLang || 'en' }),
+    });
+  } catch (e) {
+    return { success: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
 // ─── 同步服务商模型列表（后端代理，避免前端持有真实 Key）───
 export async function apiSyncProviderModels(id: string): Promise<{ success: boolean; models?: Array<{ id: string; name: string }>; message?: string }> {
   try {
