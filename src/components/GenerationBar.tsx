@@ -993,7 +993,14 @@ function GenerationBar({
       const r = await apiOptimizePrompt(promptText);
       if (r.success && r.content) {
         onPromptChange(r.content);
-        toast.success(`已用「${r.modelUsed || '推理模型'}」优化提示词`, { duration: 2500 });
+        if (r.fallback) {
+          toast.warning('AI 模型繁忙，已启用兜底翻译', {
+            description: r.warning || '当前推理模型不可用，已使用本地关键词兜底。建议稍后重试，或到「模型 Hub」检查 text 模型状态。',
+            duration: 5000,
+          });
+        } else {
+          toast.success(`已用「${r.modelUsed || '推理模型'}」优化提示词`, { duration: 2500 });
+        }
       } else if (r.code === 'NO_REASONING_MODEL') {
         toast.error('未配置文本推理模型', {
           description: '请到「模型 Hub」添加一个 type=text 的模型（需要服务商已配置 API Key）',

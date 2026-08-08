@@ -823,6 +823,50 @@ function sendJSON(res, code, data) {
   res.end(JSON.stringify(data));
 }
 
+// 从深度思考模型的 reasoning_content 里提取最终优化提示词
+function extractPromptFromReasoning(reasoning) {
+  if (!reasoning) return '';
+  // 常见模式："Final Optimized Prompt:\n..." / "Optimized Prompt:\n..." / "Final Prompt:\n..."
+  const markers = [
+    /[\*\s]*(?:Final\s+Optimized\s+Prompt|Optimized\s+Prompt|Final\s+Prompt)[\*\s]*[:：]\s*([\s\S]+)$/im,
+    /(?:Here\s+is\s+the\s+optimized\s+prompt|Optimized\s+prompt)[\s\S]*?[:：]\s*([\s\S]+)$/im,
+  ];
+  for (const re of markers) {
+    const m = reasoning.match(re);
+    if (m && m[1]) {
+      const txt = m[1].trim();
+      if (txt.length > 10) return txt;
+    }
+  }
+  // 否则取最后一段看起来是英文提示词的内容（非步骤说明）
+  const blocks = reasoning.split(/\n\n+/);
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i].trim();
+    if (b.length > 30 && /[a-zA-Z]/.test(b) && !/^\d+[.)]/.test(b) && !b.startsWith('-')) return b;
+  }
+  return '';
+}
+
+// 当所有推理模型都不可用时，给出不会彻底失败的兜底英文关键词串
+function buildFallbackPrompt(userPrompt) {
+  if (!userPrompt) return '';
+  // 简单策略：把中文/英文逗号、顿号、换行拆成标签，去重后拼成英文短语串
+  const parts = userPrompt
+    .replace(/，/g, ',').replace(/、/g, ',').replace(/\n/g, ',')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return '';
+  const unique = [...new Set(parts)];
+  // 加上一个通用画质后缀，使其更像结构化提示词
+  const base = unique.join(', ');
+  if (/[\u4e00-\u9fa5]/.test(base)) {
+    // 中文保留原样并补画质后缀；图像模型对中文支持通常有限，但至少可用
+    return `${base}, 高画质, 细节丰富, 电影级光影, 专业摄影, 8K, 超高分辨率`;
+  }
+  return `${base}, high quality, highly detailed, cinematic lighting, professional photography, 8K, ultra high resolution`;
+}
+
 // 服务端回探图片真实字节数（不受浏览器缓存/CORS 限制），写入 media.file_size。
 // 优先 HEAD content-length；失败再用 Range 部分 GET 读 content-range 的总大小；再失败静默忽略。
 async function enrichMediaFileSize(pg, id, url) {
@@ -2085,114 +2129,169 @@ async function handleAPI(req, res) {
     const body = await parseBody(req);
     const userPrompt = ((body && body.prompt) || '').toString().trim();
     if (!userPrompt) return sendJSON(res, 200, { success: false, error: '提示词为空' });
-      let model = null;
+    let lastModel = null;
+    let lastError = '';
+    try {
+      // 三层优先级选候选模型列表（后续支持降级重试）：
+      //  1) 后台显式指定 settings.app.promptOptimizeModel
+      //  2) 智能体专属 agent_providers(agent_key='prompt_optimizer') 启用模型
+      //  3) 回退：所有启用的 type=text 模型（按成本排序）
+      let appPromptModel = '';
       try {
-        // 三层优先级选模型：
-        //  1) 后台显式指定 settings.app.promptOptimizeModel（模型 Hub 下拉设置）
-        //  2) 智能体专属 agent_providers(agent_key='prompt_optimizer') 启用模型（按 priority/weight）
-        //  3) 回退：自动选最便宜的 type=text 模型
-        let appPromptModel = '';
-        try {
-          const sr = await pgPool.query("SELECT value FROM settings WHERE key='app'");
-          const sv = (sr.rows[0] && sr.rows[0].value) || {};
-          appPromptModel = sv && sv.promptOptimizeModel ? String(sv.promptOptimizeModel) : '';
-        } catch (_) { /* ignore */ }
+        const sr = await pgPool.query("SELECT value FROM settings WHERE key='app'");
+        const sv = (sr.rows[0] && sr.rows[0].value) || {};
+        appPromptModel = sv && sv.promptOptimizeModel ? String(sv.promptOptimizeModel) : '';
+      } catch (_) { /* ignore */ }
 
-        const COLS = "m.id AS m_id, m.model_id, m.display_name, m.credit_cost, " +
-          "p.id AS p_id, p.base_url, p.api_key, p.protocol ";
-        const GUARD = "m.enabled=true AND p.enabled=true AND p.api_key IS NOT NULL AND LENGTH(p.api_key) >= 6 ";
+      const COLS = "m.id AS m_id, m.model_id, m.display_name, m.credit_cost, " +
+        "p.id AS p_id, p.base_url, p.api_key, p.protocol ";
+      const GUARD = "m.enabled=true AND p.enabled=true AND p.api_key IS NOT NULL AND LENGTH(p.api_key) >= 6 ";
 
-        // 1) 后台显式指定
-        if (appPromptModel) {
-          const r = await pgPool.query(
-            "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
-            "WHERE m.id=$1 AND " + GUARD,
-            [appPromptModel]
-          );
-          if (r.rows.length) model = r.rows[0];
-        }
-        // 2) 智能体专属 agent_providers
-        if (!model) {
-          const r = await pgPool.query(
-            "SELECT " + COLS + "FROM agent_providers ap JOIN models m ON m.id = ap.model " +
-            "JOIN providers p ON p.id = m.provider_id " +
-            "WHERE ap.agent_key='prompt_optimizer' AND ap.enabled=true AND " + GUARD +
-            "ORDER BY ap.priority ASC, ap.weight DESC, m.credit_cost ASC LIMIT 1"
-          );
-          if (r.rows.length) model = r.rows[0];
-        }
-        // 3) 回退：自动选最便宜的 type=text 模型
-        if (!model) {
-          const r = await pgPool.query(
-            "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
-            "WHERE m.type='text' AND " + GUARD +
-            "ORDER BY (p.base_url LIKE '%agnes-ai.com%') ASC, m.credit_cost ASC, m.id ASC LIMIT 1"
-          );
-          if (r.rows.length === 0) {
-            return sendJSON(res, 200, {
-              success: false,
-              code: 'NO_REASONING_MODEL',
-              error: '未配置启用的文本推理模型，请到「模型 Hub」添加 type=text 的模型',
-            });
-          }
-          model = r.rows[0];
-        }
-        const base = (model.base_url || '').trim().replace(/\/+$/, '');
-        if (!base) return sendJSON(res, 200, { success: false, error: '推理服务商 base_url 未配置' });
-
-        const systemPrompt = [
-          '你是一个 AI 图像/视频生成提示词优化专家。',
-          '用户会给一段初步描述（可能简短或粗糙），',
-          '请在不改变用户核心意图的前提下，把它改写成更适合图像/视频生成模型的结构化英文提示词。',
-          '要求：',
-          '1) 用英文输出（除非用户明确要求中文）；',
-          '2) 包含主体、场景、风格、光照、镜头、构图、画质等关键元素；',
-          '3) 控制在 80-200 词；',
-          '4) 直接输出优化后的提示词正文，不要加任何解释、前缀、Markdown 代码块包裹。',
-        ].join('');
-        const r = await fetch(`${base}/chat/completions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${model.api_key}` },
-          body: JSON.stringify({
-            model: model.model_id,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userPrompt },
-            ],
-            max_tokens: 600,
-            temperature: 0.7,
-          }),
-        });
-        const raw = await r.text();
-        if (!r.ok) return sendJSON(res, 200, { success: false, error: `推理模型返回 HTTP ${r.status}：${raw.slice(0, 200)}` });
-        let data; try { data = JSON.parse(raw); } catch { return sendJSON(res, 200, { success: false, error: '推理模型返回非 JSON：' + raw.slice(0, 200) }); }
-        const content = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content || '').toString().trim();
-        if (!content) return sendJSON(res, 200, { success: false, error: '推理模型返回为空' });
-        const usage = (data && data.usage) || null;
-        // 双边记账：optimize-prompt 当前对客户免费（customerChargeCredits=0），后台成本照实记录 → 如实显示为平台成本
-        try {
-          await accounting.recordConsumption(pgPool, {
-            scope: 'user', actorId: (realUser && realUser.id) || '', purpose: 'agent:optimize-prompt',
-            providerId: model.p_id || '', modelId: model.model_id || '', modelType: 'text',
-            inputUnits: usage && usage.prompt_tokens ? usage.prompt_tokens : 0,
-            outputUnits: usage && usage.completion_tokens ? usage.completion_tokens : 0,
-            customerChargeCredits: 0,
-            idempotencyKey: `opt-${realUser ? realUser.id : 'anon'}-${Date.now()}`,
-          });
-        } catch (e) { console.warn('[accounting optimize-prompt]', e.message); }
-        return sendJSON(res, 200, {
-          success: true,
-          content,
-          modelUsed: model.display_name,
-          providerId: model.p_id,
-          usage,
-        });
-      } catch (e) {
-        const cause = e && e.cause;
-        const detail = cause ? ` (cause: ${cause.code || cause.name || ''} ${cause.message || ''})` : '';
-        console.error('[agent/optimize-prompt] 异常:', e.message, detail, '\n  model:', model && model.model_id, 'base:', model && model.base_url);
-        return sendJSON(res, 200, { success: false, error: `优化异常：${e.message}${detail}`.slice(0, 200) });
+      const candidates = [];
+      // 1) 后台显式指定
+      if (appPromptModel) {
+        const r = await pgPool.query(
+          "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
+          "WHERE m.id=$1 AND " + GUARD,
+          [appPromptModel]
+        );
+        if (r.rows.length) candidates.push(r.rows[0]);
       }
+      // 2) 智能体专属 agent_providers
+      if (candidates.length === 0) {
+        const r = await pgPool.query(
+          "SELECT " + COLS + "FROM agent_providers ap JOIN models m ON m.id = ap.model " +
+          "JOIN providers p ON p.id = m.provider_id " +
+          "WHERE ap.agent_key='prompt_optimizer' AND ap.enabled=true AND " + GUARD +
+          "ORDER BY ap.priority ASC, ap.weight DESC, m.credit_cost ASC"
+        );
+        for (const row of r.rows) candidates.push(row);
+      }
+      // 3) 回退：所有启用的 type=text 模型
+      if (candidates.length === 0) {
+        const r = await pgPool.query(
+          "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
+          "WHERE m.type='text' AND " + GUARD +
+          "ORDER BY (p.base_url LIKE '%agnes-ai.com%') ASC, m.credit_cost ASC, m.id ASC"
+        );
+        for (const row of r.rows) candidates.push(row);
+      }
+      if (candidates.length === 0) {
+        return sendJSON(res, 200, {
+          success: false,
+          code: 'NO_REASONING_MODEL',
+          error: '未配置启用的文本推理模型，请到「模型 Hub」添加 type=text 的模型',
+        });
+      }
+
+      const systemPrompt = [
+        '你是一个 AI 图像/视频生成提示词优化专家。',
+        '用户会给一段初步描述（可能简短或粗糙），',
+        '请在不改变用户核心意图的前提下，把它改写成更适合图像/视频生成模型的结构化英文提示词。',
+        '要求：',
+        '1) 用英文输出（除非用户明确要求中文）；',
+        '2) 包含主体、场景、风格、光照、镜头、构图、画质等关键元素；',
+        '3) 控制在 80-200 词；',
+        '4) 直接输出优化后的提示词正文，不要加任何解释、前缀、Markdown 代码块包裹。',
+      ].join('');
+
+      // 顺序尝试候选模型，直到拿到非空提示词
+      let successModel = null;
+      let content = '';
+      let usage = null;
+      let rawSnapshots = [];
+      for (const candidate of candidates.slice(0, 6)) {
+        lastModel = candidate;
+        const base = (candidate.base_url || '').trim().replace(/\/+$/, '');
+        if (!base) { lastError = `模型 ${candidate.display_name || candidate.model_id} 未配置 base_url`; continue; }
+        try {
+          const r = await fetch(`${base}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${candidate.api_key}` },
+            body: JSON.stringify({
+              model: candidate.model_id,
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+              ],
+              max_tokens: 2000,
+              temperature: 0.7,
+            }),
+          });
+          const raw = await r.text();
+          if (!r.ok) {
+            lastError = `模型 ${candidate.display_name || candidate.model_id} 返回 HTTP ${r.status}`;
+            rawSnapshots.push({ model: candidate.model_id, status: r.status, snippet: raw.slice(0, 200) });
+            continue;
+          }
+          let data; try { data = JSON.parse(raw); } catch {
+            lastError = `模型 ${candidate.display_name || candidate.model_id} 返回非 JSON`;
+            rawSnapshots.push({ model: candidate.model_id, status: r.status, snippet: raw.slice(0, 200) });
+            continue;
+          }
+          const msg = (data && data.choices && data.choices[0] && data.choices[0].message) || {};
+          content = (msg.content || '').toString().trim();
+          // 兼容深度思考模型把正文放在 reasoning_content 的情况（如 agnes-2.5-pro）
+          if (!content && msg.reasoning_content) {
+            content = extractPromptFromReasoning(msg.reasoning_content.toString().trim());
+          }
+          if (!content) {
+            lastError = `模型 ${candidate.display_name || candidate.model_id} 返回为空`;
+            rawSnapshots.push({ model: candidate.model_id, status: r.status, snippet: raw.slice(0, 400) });
+            continue;
+          }
+          successModel = candidate;
+          usage = (data && data.usage) || null;
+          break;
+        } catch (e) {
+          lastError = `模型 ${candidate.display_name || candidate.model_id} 调用异常：${e.message}`;
+        }
+      }
+
+      if (!successModel || !content) {
+        // 兜底：如果所有推理模型都失败，尝试用简单规则把中文提示词直译为英文关键词串，保证可用性
+        const fallback = buildFallbackPrompt(userPrompt);
+        if (fallback) {
+          // 记录失败，但返回兜底结果，不让用户卡死
+          console.warn('[agent/optimize-prompt] 所有推理模型失败，返回兜底翻译。最后错误:', lastError, 'snapshots:', JSON.stringify(rawSnapshots));
+          return sendJSON(res, 200, {
+            success: true,
+            content: fallback,
+            modelUsed: '本地兜底翻译',
+            providerId: '',
+            usage: null,
+            fallback: true,
+            warning: '当前 AI 模型繁忙，已使用本地兜底翻译，建议稍后重试',
+          });
+        }
+        console.error('[agent/optimize-prompt] 全部候选模型失败:', lastError, 'snapshots:', JSON.stringify(rawSnapshots));
+        return sendJSON(res, 200, { success: false, error: `优化失败：${lastError || '所有推理模型均不可用'}` });
+      }
+
+      // 双边记账：optimize-prompt 当前对客户免费（customerChargeCredits=0），后台成本照实记录 → 如实显示为平台成本
+      try {
+        await accounting.recordConsumption(pgPool, {
+          scope: 'user', actorId: (realUser && realUser.id) || '', purpose: 'agent:optimize-prompt',
+          providerId: successModel.p_id || '', modelId: successModel.model_id || '', modelType: 'text',
+          inputUnits: usage && usage.prompt_tokens ? usage.prompt_tokens : 0,
+          outputUnits: usage && usage.completion_tokens ? usage.completion_tokens : 0,
+          customerChargeCredits: 0,
+          idempotencyKey: `opt-${realUser ? realUser.id : 'anon'}-${Date.now()}`,
+        });
+      } catch (e) { console.warn('[accounting optimize-prompt]', e.message); }
+      return sendJSON(res, 200, {
+        success: true,
+        content,
+        modelUsed: successModel.display_name,
+        providerId: successModel.p_id,
+        usage,
+      });
+    } catch (e) {
+      const cause = e && e.cause;
+      const detail = cause ? ` (cause: ${cause.code || cause.name || ''} ${cause.message || ''})` : '';
+      console.error('[agent/optimize-prompt] 异常:', e.message, detail, '\n  model:', lastModel && lastModel.model_id, 'base:', lastModel && lastModel.base_url);
+      return sendJSON(res, 200, { success: false, error: `优化异常：${e.message}${detail}`.slice(0, 200) });
+    }
   }
 
   // ── 同步服务商模型列表（后端代理，避免前端持有真实 Key）──

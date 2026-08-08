@@ -438,6 +438,8 @@ export async function apiOptimizePrompt(prompt: string): Promise<{
   code?: 'NO_REASONING_MODEL' | string;
   modelUsed?: string;
   providerId?: string;
+  fallback?: boolean;
+  warning?: string;
 }> {
   try {
     return await apiFetch('/api/agent/optimize-prompt', {
