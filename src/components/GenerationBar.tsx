@@ -37,7 +37,7 @@ import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
 import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus, type ReferenceStyle } from '@/services/api';
 import { refreshUser, setAuthModalOpen, useAuth } from '@/services/authStore';
-import { ALL_RESOLUTIONS, type Resolution, type IAiModel, getEffectiveModelName } from '@/data/models';
+import { ALL_RESOLUTIONS, type Resolution, type IAiModel, type IModelParamTemplate, getEffectiveModelName } from '@/data/models';
 import type { Ratio, Quality } from '@/data/settings';
 // 注意：原 probeImageLoad(persistentUrl) 在 OSS 失败分支探测 provider URL，因 CORS 不可靠
 // 会把生成成功的图误判为 failed，已在本文件 processResultImages 中移除该探测（信任 server 200）。
@@ -62,6 +62,50 @@ const QUALITY_OPTIONS: { key: Quality; label: string }[] = [
   { key: 'standard', label: '标准画质' },
   { key: 'high', label: '高画质' },
 ];
+
+// 视频分辨率档位（后台开关开启才显示）
+const VIDEO_RESOLUTIONS: ('1k' | '2k' | '3k' | '4k')[] = ['1k', '2k', '3k', '4k'];
+const DEFAULT_DURATIONS: (4 | 6 | 8 | 10)[] = [4, 6, 8, 10];
+
+/**
+ * 解析「有效参数模板」：优先用模型后台配置 paramTemplate，缺失时按 type 派生兜底，
+ * 保证前台始终有可渲染参数。前台所有设置项都从这份模板取。
+ */
+function resolveTemplate(model: IAiModel | undefined, contentType: 'image' | 'video'): IModelParamTemplate {
+  const t = (model && model.paramTemplate) || {};
+  if (contentType === 'video') {
+    return {
+      qualities: t.qualities && t.qualities.length ? t.qualities : ['standard', 'high'],
+      ratios: t.ratios && t.ratios.length ? t.ratios : ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
+      durations: t.durations && t.durations.length ? t.durations : DEFAULT_DURATIONS,
+      videoResolutionsEnabled: !!t.videoResolutionsEnabled,
+      videoResolutions: t.videoResolutions && t.videoResolutions.length ? t.videoResolutions : VIDEO_RESOLUTIONS,
+      allowCount: false,
+      supportsNegative: t.supportsNegative !== false,
+      supportsReference: t.supportsReference !== false,
+      rules: t.rules || [
+        { label: '数量固定', description: '视频每次生成 1 个，不支持批量' },
+        { label: '分辨率档位', description: '后台开启 1K/2K/3K/4K 后可选，默认智能 1K' },
+      ],
+      defaults: t.defaults,
+    };
+  }
+  // image
+  return {
+    qualities: t.qualities && t.qualities.length ? t.qualities : ['low', 'standard', 'high'],
+    ratios: t.ratios && t.ratios.length ? t.ratios : ALL_RATIOS.map((r) => r),
+    resolutions: t.resolutions && t.resolutions.length
+      ? t.resolutions
+      : (model && model.supportedResolutions && model.supportedResolutions.length
+        ? model.supportedResolutions
+        : ['1k', '2k', '4k']),
+    allowCount: t.allowCount !== false,
+    supportsNegative: t.supportsNegative !== false,
+    supportsReference: t.supportsReference !== false,
+    rules: t.rules || [],
+    defaults: t.defaults,
+  };
+}
 
 // 比例显示：auto → "智能"
 const formatRatio = (r: Ratio) => (r === 'auto' ? '智能' : r);
@@ -126,7 +170,7 @@ function balanceLimitInfo(code: string | undefined): { title: string; message: s
 interface IGenerationSettings {
   contentType: 'image' | 'video';
   ratio: Ratio;
-  resolution: '1k' | '2k' | '4k' | '8k';
+  resolution: '1k' | '2k' | '3k' | '4k' | '8k';
   quality: Quality;
   model: string;
   count: 1 | 2 | 3 | 4;
@@ -543,6 +587,47 @@ function GenerationBar({
     }
   }, [settings.contentType, settings.model, models]);
 
+  // 模型切换 / 类型切换后，按「模型级参数模板」校正当前设置（剔除无效选项、补默认）
+  const modelKey = currentModel?.id || `${settings.contentType}:${settings.model}`;
+  useEffect(() => {
+    const tpl = resolveTemplate(currentModel, settings.contentType);
+    const patch: Partial<IGenerationSettings> = {};
+    // 比例
+    if (tpl.ratios && tpl.ratios.length && !tpl.ratios.includes(settings.ratio as string)) {
+      patch.ratio = (tpl.defaults?.ratio || tpl.ratios[0] || '1:1') as Ratio;
+    }
+    // 分辨率
+    if (settings.contentType === 'image') {
+      const imgRes = tpl.resolutions || [];
+      if (imgRes.length && !imgRes.includes(settings.resolution)) {
+        patch.resolution = (tpl.defaults?.resolution || imgRes[0] || '1k') as Resolution;
+      }
+    } else {
+      // 视频：若后台开启分辨率档位则在档位内，否则固定 1k
+      if (tpl.videoResolutionsEnabled) {
+        const vidRes = tpl.videoResolutions || [];
+        if (vidRes.length && !vidRes.includes(settings.resolution as any)) {
+          patch.resolution = (vidRes[0] || '1k') as Resolution;
+        }
+      } else {
+        patch.resolution = '1k';
+      }
+      // 视频时长
+      if (tpl.durations && tpl.durations.length && !tpl.durations.includes((settings.duration || 6) as any)) {
+        patch.duration = (tpl.defaults?.duration || tpl.durations[0] || 6) as 4 | 6 | 8 | 10;
+      }
+      patch.count = 1; // 视频数量固定 1
+    }
+    // 质量
+    if (tpl.qualities && tpl.qualities.length && !tpl.qualities.includes(settings.quality)) {
+      patch.quality = tpl.qualities[0] || 'standard';
+    }
+    if (Object.keys(patch).length > 0) {
+      onSettingsChange({ ...settings, ...patch });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelKey, settings.contentType]);
+
   const agents = [
     { icon: Wand2, label: '提示词优化', desc: '将简单描述优化为详细的古风人像提示词', key: 'optimize' },
     { icon: Palette, label: '风格迁移', desc: '将参考图风格应用到新生成中', key: 'style' },
@@ -577,10 +662,19 @@ function GenerationBar({
     m && typeof m.rewardCreditsRequired === 'number' && m.rewardCreditsRequired > 0
       ? m.rewardCreditsRequired
       : (typeof m?.creditCost === 'number' ? m.creditCost : 0);
+  // 有效参数模板（按模型 + 类型解析）：弹窗与按钮统一从此取，保证前后台一致
+  const template: IModelParamTemplate = useMemo(
+    () => resolveTemplate(currentModel, settings.contentType),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [modelKey, settings.contentType],
+  );
   const availableResolutions: Resolution[] =
-    settings.contentType === 'image' && currentModel?.supportedResolutions
-      ? currentModel.supportedResolutions
-      : [];
+    settings.contentType === 'image' ? (template.resolutions || []) : [];
+  // 视频分辨率档位（后台开关开启才给选项，默认智能 1k）
+  const videoTiers: ('1k' | '2k' | '3k' | '4k')[] = template.videoResolutionsEnabled
+    ? (template.videoResolutions || [])
+    : [];
+  const showCount = settings.contentType === 'image' && template.allowCount !== false;
 
   // 当前模型所属服务商对「当前分辨率档」配置的每分钟上限（用于 UI 提示 + 错误兜底）
   const currentProvider = currentModel ? providers.find((p) => p.id === currentModel.providerId) : undefined;
@@ -795,7 +889,10 @@ function GenerationBar({
     // ── 立即释放按钮：用户可以继续编辑 prompt 或立刻再次提交 ──
     setGenerating(false);
 
-    const count = Math.max(1, Math.min(4, Number(settings.count) || 1));
+    // 视频数量固定 1（不支持批量）；图片按设置并行 count 张
+    const count = settings.contentType === 'video'
+      ? 1
+      : Math.max(1, Math.min(4, Number(settings.count) || 1));
     const now = Date.now();
 
     // ── 1) 立刻构造 N 个 pending 占位，调 onPendingCreate 插入 mediaList ──
@@ -1275,29 +1372,47 @@ function GenerationBar({
                       transform: 'translateX(-50%)',
                     }}
                   >
-                    {/* 图像质量 */}
-                    <div className="p-3">
-                      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                        图像质量
-                      </div>
-                      <div className="grid grid-cols-3 gap-1.5">
-                        {QUALITY_OPTIONS.map((q) => (
-                          <button
-                            key={q.key}
-                            onClick={() => onSettingsChange({ ...settings, quality: q.key })}
-                            className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
-                              settings.quality === q.key
-                                ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
-                                : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
-                            }`}
-                          >
-                            {q.label}
-                          </button>
+                    {/* 规则说明（后台配置、展示给用户） */}
+                    {template.rules && template.rules.length > 0 && (
+                      <div className="px-3 pt-3 space-y-1.5">
+                        {template.rules.map((rule, i) => (
+                          <div key={i} className="flex items-start gap-1.5 rounded-lg bg-zinc-800/40 px-2 py-1.5">
+                            <span className="mt-0.5 shrink-0 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-400">
+                              {rule.label}
+                            </span>
+                            <span className="text-[10px] leading-tight text-zinc-400">{rule.description}</span>
+                          </div>
                         ))}
                       </div>
-                    </div>
+                    )}
+                    {/* 质量（image / video 通用，来自模板） */}
+                    {template.qualities && template.qualities.length > 0 && (
+                      <div className="p-3">
+                        <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                          质量
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5">
+                          {template.qualities.map((q) => {
+                            const label = QUALITY_OPTIONS.find((o) => o.key === q)?.label || q;
+                            return (
+                              <button
+                                key={q}
+                                onClick={() => onSettingsChange({ ...settings, quality: q })}
+                                className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
+                                  settings.quality === q
+                                    ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
+                                    : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                     <div className="border-t border-zinc-800" />
-                    {/* 清晰度（仅在当前模型有支持时显示） */}
+                    {/* 清晰度（图片模型 + 后台支持时显示） */}
                     {availableResolutions.length > 0 && (
                       <>
                         <div className="p-3">
@@ -1305,7 +1420,7 @@ function GenerationBar({
                             清晰度
                           </div>
                           <div className="grid grid-cols-3 gap-1.5">
-                            {ALL_RESOLUTIONS.filter((r) => availableResolutions.includes(r)).map((res) => (
+                            {availableResolutions.map((res) => (
                               <button
                                 key={res}
                                 onClick={() => onSettingsChange({ ...settings, resolution: res })}
@@ -1323,29 +1438,56 @@ function GenerationBar({
                         <div className="border-t border-zinc-800" />
                       </>
                     )}
-                    {/* 图片尺寸（14 个常见比例 + 智能比例） */}
+                    {/* 图片尺寸 / 视频画幅（比例来自模板） */}
                     <div className="p-3">
                       <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                        图片尺寸
+                        {settings.contentType === 'video' ? '画幅' : '图片尺寸'}
                       </div>
                       <div className="grid grid-cols-4 gap-1.5">
-                        {ALL_RATIOS.map((r) => (
+                        {(template.ratios || []).map((r) => (
                           <button
                             key={r}
-                            onClick={() => onSettingsChange({ ...settings, ratio: r })}
+                            onClick={() => onSettingsChange({ ...settings, ratio: r as Ratio })}
                             className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                               settings.ratio === r
                                 ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
                                 : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
                             }`}
                           >
-                            {formatRatio(r)}
+                            {formatRatio(r as Ratio)}
                           </button>
                         ))}
                       </div>
                     </div>
-                    {/* 视频时长（仅视频模式） */}
-                    {settings.contentType === 'video' && (
+                    {/* 视频分辨率档位（后台开关开启才显示，默认智能 1k） */}
+                    {videoTiers.length > 0 && (
+                      <>
+                        <div className="border-t border-zinc-800" />
+                        <div className="p-3">
+                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            分辨率档位
+                          </div>
+                          <div className="grid grid-cols-4 gap-1.5">
+                            {videoTiers.map((res) => (
+                              <button
+                                key={res}
+                                onClick={() => onSettingsChange({ ...settings, resolution: res })}
+                                className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
+                                  (settings.resolution || '1k') === res
+                                    ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
+                                    : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
+                                }`}
+                              >
+                                {res}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="mt-1.5 text-[10px] text-zinc-500">默认智能使用 1K</div>
+                        </div>
+                      </>
+                    )}
+                    {/* 视频时长（仅视频模式，来自模板） */}
+                    {settings.contentType === 'video' && template.durations && template.durations.length > 0 && (
                       <>
                         <div className="border-t border-zinc-800" />
                         <div className="p-3">
@@ -1353,7 +1495,7 @@ function GenerationBar({
                             视频时长
                           </div>
                           <div className="grid grid-cols-4 gap-1.5">
-                            {([4, 6, 8, 10] as const).map((d) => (
+                            {template.durations.map((d) => (
                               <button
                                 key={d}
                                 onClick={() => onSettingsChange({ ...settings, duration: d })}
@@ -1548,7 +1690,8 @@ function GenerationBar({
               )}
             </div>
 
-            {/* 数量选择 - 单次请求拿 N 张一样的图片 */}
+            {/* 数量选择 - 仅图片模型（视频固定 1，不显示） */}
+            {showCount && (
             <div
               className="flex shrink-0 items-center whitespace-nowrap rounded-full bg-zinc-800/50 px-1 py-1"
               title="单次请求返回 N 张图片（不是发 N 次请求）"
@@ -1574,6 +1717,7 @@ function GenerationBar({
                 <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 h-1.5 w-1.5 rotate-45 bg-zinc-900 border-r border-b border-zinc-700" />
               </div>
             </div>
+            )}
 
             {/* 双池余额指示：奖励（平台赠送，限定模型，优先扣）+ 充值（真钱，全部可用）；点击前往充值 */}
             {user && (

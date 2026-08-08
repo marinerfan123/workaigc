@@ -4,11 +4,54 @@ export type ModelType = 'image' | 'video' | 'text';
 export type ProviderType = 'official' | 'relay' | 'custom';
 export type ProtocolType = 'openai-compatible' | 'custom';
 
-/** 分辨率档位（图片模型专用） */
-export type Resolution = '1k' | '2k' | '4k' | '8k';
+/** 分辨率档位（图片模型专用；视频另用 1k/2k/3k/4k 档位） */
+export type Resolution = '1k' | '2k' | '3k' | '4k' | '8k';
 
 /** 所有支持的分辨率档位（UI 顺序） */
-export const ALL_RESOLUTIONS: Resolution[] = ['1k', '2k', '4k', '8k'];
+export const ALL_RESOLUTIONS: Resolution[] = ['1k', '2k', '3k', '4k', '8k'];
+
+// ─── 模型级参数模板（后台可简单自定义，前台按类型渲染 UI）───
+/** 单条规则说明（展示给用户，解释该模型支持什么 / 有什么限制） */
+export interface IModelParamRule {
+  label: string;       // 短标签（如 "数量固定"）
+  description: string; // 说明（如 "视频每次生成 1 个，不支持批量"）
+}
+
+/**
+ * 每个模型可后台配置的参数模板。前台读取后：
+ * - 仅渲染模板中声明的参数（如未声明 qualities ⇒ 不显示质量）
+ * - 选项来自模板数组（如 ratios / resolutions / durations / videoResolutions）
+ * - 缺失时前台按 type 用兜底默认值，保证始终可渲染。
+ */
+export interface IModelParamTemplate {
+  /** 质量档位（image / video 通用；缺省 ['low','standard','high']） */
+  qualities?: ('low' | 'standard' | 'high')[];
+  /** 比例档位（缺省全部常见比例） */
+  ratios?: string[];
+  /** 图片分辨率档位（image 专用；缺省 model.supportedResolutions） */
+  resolutions?: Resolution[];
+  /** 视频分辨率档位开关：后台开启才给前台 1K/2K/3K/4K 选项（缺省 false） */
+  videoResolutionsEnabled?: boolean;
+  /** 视频分辨率档位选项（缺省 ['1k','2k','3k','4k']；默认每设置智能用 1k） */
+  videoResolutions?: ('1k' | '2k' | '3k' | '4k')[];
+  /** 视频时长档位（video 专用；缺省 [4,6,8,10]） */
+  durations?: (4 | 6 | 8 | 10)[];
+  /** 数量选择：image 默认 true（显示 1–4）；video 默认 false（固定 1，不显示） */
+  allowCount?: boolean;
+  /** 是否支持反向提示词（negative_prompt） */
+  supportsNegative?: boolean;
+  /** 是否支持参考图（图生图 / 视频首帧） */
+  supportsReference?: boolean;
+  /** 规则说明（展示给用户的可选规则） */
+  rules?: IModelParamRule[];
+  /** 默认参数（切换模型时回填，避免无效选择） */
+  defaults?: Partial<{
+    quality: 'low' | 'standard' | 'high';
+    ratio: string;
+    resolution: Resolution;
+    duration: 4 | 6 | 8 | 10;
+  }>;
+}
 
 // ─── 自定义接口配置 ─────────────────────────────────────
 /**
@@ -147,6 +190,8 @@ export interface IAiModel {
   /** 是否允许商用（true=可商用 / false=不可商用；未设置时按 type 取兜底值）。
    *  该标记同时影响生成时附加的水印策略与市集上架审核。 */
   commercialUse?: boolean;
+  /** 模型级参数模板（后台可简单自定义；前台按类型渲染 UI；缺省按 type 派生） */
+  paramTemplate?: IModelParamTemplate;
 }
 
 /**

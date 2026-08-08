@@ -102,7 +102,7 @@ async function initDB() {
   try {
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT DEFAULT 'official', base_url TEXT DEFAULT '', api_key TEXT DEFAULT '', supported_types TEXT[] DEFAULT '{}', enabled BOOLEAN DEFAULT TRUE, protocol TEXT DEFAULT 'openai-compatible', remark TEXT DEFAULT '', default_endpoint JSONB DEFAULT '{}', capacity_model TEXT DEFAULT 'limited', bucket_max INT, cooldown_ms INT DEFAULT 60000, created_at TIMESTAMPTZ DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, mapping_name TEXT DEFAULT '', type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', credit_cost INT DEFAULT 0, supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE, reward_credits_required INT NOT NULL DEFAULT 0, max_concurrent INT, created_at TIMESTAMPTZ DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, mapping_name TEXT DEFAULT '', type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', param_template JSONB DEFAULT '{}'::jsonb, credit_cost INT DEFAULT 0, supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE, reward_credits_required INT NOT NULL DEFAULT 0, max_concurrent INT, created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, title TEXT DEFAULT '', type TEXT DEFAULT 'image', thumbnail TEXT DEFAULT '', full_url TEXT DEFAULT '', prompt TEXT DEFAULT '', model TEXT DEFAULT '', ratio TEXT DEFAULT '1:1', source TEXT DEFAULT 'user', is_favorite BOOLEAN DEFAULT FALSE, is_deleted BOOLEAN DEFAULT FALSE, oss_url TEXT DEFAULT '', oss_object_key TEXT DEFAULT '', oss_uploaded BOOLEAN DEFAULT FALSE, category TEXT DEFAULT 'generated', status TEXT DEFAULT 'success', error_message TEXT DEFAULT '', failed_at TIMESTAMPTZ, file_size BIGINT, created_at TIMESTAMPTZ DEFAULT NOW());
       -- 兼容旧库：缺失列自动补齐
       DO $$ BEGIN
@@ -120,6 +120,7 @@ async function initDB() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='max_concurrent') THEN ALTER TABLE models ADD COLUMN max_concurrent INT; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='supports_reward_balance') THEN ALTER TABLE models ADD COLUMN supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='reward_credits_required') THEN ALTER TABLE models ADD COLUMN reward_credits_required INT NOT NULL DEFAULT 0; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='param_template') THEN ALTER TABLE models ADD COLUMN param_template JSONB DEFAULT '{}'::jsonb; END IF;
       END $$;
       -- 双余额拆分迁移：users 加奖励/充值池 + credits 改 STORED 生成列 + 流水记 pool
       ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS pool TEXT;
@@ -264,6 +265,9 @@ async function initDB() {
       CREATE UNIQUE INDEX IF NOT EXISTS ux_gt_idem
         ON generation_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL;
     `);
+
+    // === 模型级参数模板回填（后台可自定义；空模板按 type 派生默认）===
+    await backfillModelParamTemplates();
 
     // === 公共默认资产（default_assets 模板库 + media 归属标记）===
     await pgPool.query(`
@@ -748,6 +752,7 @@ const SNAKE_MAP = {
   api_key:'apiKey', supported_types:'supportedTypes', default_endpoint:'defaultEndpoint',
   display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent', rate_limits:'rateLimits', mapping_name:'mappingName', credit_cost:'creditCost', estimated_seconds:'estimatedSeconds', commercial_use:'commercialUse', capacity_model:'capacityModel', bucket_max:'bucketMax', cooldown_ms:'cooldownMs',
   supported_resolutions:'supportedResolutions', access_point_name:'accessPointName',
+  param_template:'paramTemplate',
   endpoint_external:'endpointExternal', endpoint_internal:'endpointInternal',
   access_key_id:'accessKeyId', access_key_secret:'accessKeySecret',
   path_prefix:'pathPrefix', custom_domain:'customDomain', region_label:'regionLabel',
@@ -784,6 +789,62 @@ function toSnake(obj) {
     out[rev[k] || k] = v;
   }
   return out;
+}
+
+// ─── 模型级参数模板（后台可简单自定义，前台按类型渲染 UI）───
+// 后台无模板时，按模型 type + 能力派生一套合理默认值，保证前台始终有可渲染参数。
+function defaultParamTemplate(type, supportedResolutions, capabilities) {
+  const caps = (capabilities && typeof capabilities === 'object') ? capabilities : {};
+  if (type === 'video') {
+    return {
+      qualities: ['standard', 'high'],
+      ratios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
+      durations: [4, 6, 8, 10],
+      // 视频分辨率档位（后台开关）：开启才给前台选项，默认每设置智能用 1k
+      videoResolutionsEnabled: false,
+      videoResolutions: ['1k', '2k', '3k', '4k'],
+      // 视频数量固定 1，不显示数量选择
+      allowCount: false,
+      supportsNegative: true,
+      supportsReference: !!caps.imageInput,
+      rules: [
+        { label: '数量固定', description: '视频每次生成 1 个，不支持批量' },
+        { label: '分辨率档位', description: '后台开启 1K/2K/3K/4K 后可选，默认智能 1K' },
+      ],
+    };
+  }
+  if (type === 'image') {
+    return {
+      qualities: ['low', 'standard', 'high'],
+      ratios: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '21:9', 'auto'],
+      resolutions: (Array.isArray(supportedResolutions) && supportedResolutions.length ? supportedResolutions : ['1k', '2k', '4k']),
+      allowCount: true,
+      supportsNegative: true,
+      supportsReference: !!(caps.asFirstFrame || caps.imageInput),
+      rules: [
+        { label: '图生图', description: '开启参考图后按规则提交（Agnes 走 extra_body.image）' },
+      ],
+    };
+  }
+  // 文本等其它类型：无生成参数
+  return { allowCount: false, rules: [] };
+}
+
+// 首次部署 / 旧库无模板时回填（幂等：仅更新空模板）
+async function backfillModelParamTemplates() {
+  if (!pgPool) return;
+  try {
+    const empty = await pgPool.query(
+      "SELECT id, type, supported_resolutions, capabilities FROM models WHERE param_template IS NULL OR param_template = '{}'::jsonb",
+    );
+    for (const r of empty.rows || []) {
+      const tpl = defaultParamTemplate(r.type, r.supported_resolutions || [], r.capabilities || {});
+      await pgPool.query('UPDATE models SET param_template=$1 WHERE id=$2', [JSON.stringify(tpl), r.id]);
+    }
+    if (empty.rows && empty.rows.length) console.log(`[Init] 回填 ${empty.rows.length} 个模型参数模板`);
+  } catch (e) {
+    console.warn('[Init] 参数模板回填失败（可忽略）', e.message);
+  }
 }
 
 // ─── 公共默认资产（新用户注册/登录时拷贝到个人素材库）───
@@ -2583,8 +2644,8 @@ async function handleAPI(req, res) {
         for (const it of arr) {
           const s = toSnake(it);
           await pgPool.query(
-            `INSERT INTO models (id,model_id,display_name,mapping_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint,credit_cost,supports_reward_balance,reward_credits_required,max_concurrent,estimated_seconds,category,commercial_use,creator) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name,mapping_name=EXCLUDED.mapping_name,enabled=EXCLUDED.enabled,credit_cost=EXCLUDED.credit_cost,supports_reward_balance=EXCLUDED.supports_reward_balance,reward_credits_required=EXCLUDED.reward_credits_required,max_concurrent=EXCLUDED.max_concurrent,estimated_seconds=EXCLUDED.estimated_seconds,category=EXCLUDED.category,commercial_use=EXCLUDED.commercial_use,creator=EXCLUDED.creator`,
-            [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, s.provider_id, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0)), (s.supports_reward_balance === true || s.supports_reward_balance === 'true' ? true : (s.supports_reward_balance === false || s.supports_reward_balance === 'false' ? false : true)), (s.reward_credits_required != null && s.reward_credits_required !== '' ? Math.max(0, Math.floor(Number(s.reward_credits_required))) : Math.max(0, Math.floor(Number(s.credit_cost) || 0))), (s.max_concurrent == null ? null : Math.max(0, Math.floor(Number(s.max_concurrent)))), (s.estimated_seconds == null ? null : Math.max(0, Math.floor(Number(s.estimated_seconds)))), (s.category == null ? '' : String(s.category)), (s.commercial_use === true || s.commercial_use === 'true' ? true : (s.commercial_use === false || s.commercial_use === 'false' ? false : null)), (s.creator && typeof s.creator === 'object' ? JSON.stringify(s.creator) : (s.creator == null ? null : JSON.stringify(s.creator)))]
+            `INSERT INTO models (id,model_id,display_name,mapping_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint,param_template,credit_cost,supports_reward_balance,reward_credits_required,max_concurrent,estimated_seconds,category,commercial_use,creator) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name,mapping_name=EXCLUDED.mapping_name,enabled=EXCLUDED.enabled,credit_cost=EXCLUDED.credit_cost,supports_reward_balance=EXCLUDED.supports_reward_balance,reward_credits_required=EXCLUDED.reward_credits_required,max_concurrent=EXCLUDED.max_concurrent,estimated_seconds=EXCLUDED.estimated_seconds,category=EXCLUDED.category,commercial_use=EXCLUDED.commercial_use,creator=EXCLUDED.creator,param_template=EXCLUDED.param_template`,
+            [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, s.provider_id, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), JSON.stringify(s.param_template || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0)), (s.supports_reward_balance === true || s.supports_reward_balance === 'true' ? true : (s.supports_reward_balance === false || s.supports_reward_balance === 'false' ? false : true)), (s.reward_credits_required != null && s.reward_credits_required !== '' ? Math.max(0, Math.floor(Number(s.reward_credits_required))) : Math.max(0, Math.floor(Number(s.credit_cost) || 0))), (s.max_concurrent == null ? null : Math.max(0, Math.floor(Number(s.max_concurrent)))), (s.estimated_seconds == null ? null : Math.max(0, Math.floor(Number(s.estimated_seconds)))), (s.category == null ? '' : String(s.category)), (s.commercial_use === true || s.commercial_use === 'true' ? true : (s.commercial_use === false || s.commercial_use === 'false' ? false : null)), (s.creator && typeof s.creator === 'object' ? JSON.stringify(s.creator) : (s.creator == null ? null : JSON.stringify(s.creator)))]
           );
         }
         return sendJSON(res, 200, { ok: true });
@@ -2611,6 +2672,7 @@ async function handleAPI(req, res) {
       credit_cost: 'creditCost', supports_reward_balance: 'supportsRewardBalance', reward_credits_required: 'rewardCreditsRequired',
       max_concurrent: 'maxConcurrent', estimated_seconds: 'estimatedSeconds',
       category: 'category', commercial_use: 'commercialUse', creator: 'creator',
+      param_template: 'paramTemplate',
     };
     if (!pgPool) return sendJSON(res, 501, { error: 'JSON 兜底模式不支持 PATCH' });
     try {
@@ -2634,6 +2696,7 @@ async function handleAPI(req, res) {
         else if (col === 'mapping_name') v = v == null ? '' : String(v);
         else if (col === 'type') v = v == null ? 'image' : String(v);
         else if (col === 'display_name') v = String(v);
+        else if (col === 'param_template') v = JSON.stringify((v && typeof v === 'object') ? v : (v == null ? {} : v));
         sets.push(`${col}=$${i++}`); vals.push(v);
       }
       // 校验：支持奖励余额的模型「必须填写」奖励积分(>0)

@@ -65,6 +65,7 @@ async function initDB() {
         supported_resolutions TEXT[] DEFAULT '{}',
         capabilities JSONB DEFAULT '{}',
         endpoint JSONB DEFAULT '{}',
+        param_template JSONB DEFAULT '{}'::jsonb,
         max_concurrent INT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );

@@ -33,12 +33,14 @@ import {
   type ProviderType,
   type Resolution,
   type IModelProvider,
+  type IModelParamTemplate,
   ALL_RESOLUTIONS,
   getEffectiveModelName,
   defaultEstimatedSeconds,
   defaultCategory,
   defaultCommercialUse,
 } from '@/data/models';
+import { ModelParamTemplateEditor } from '@/components/ModelParamTemplateEditor';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
@@ -78,7 +80,7 @@ const PROVIDER_TYPE_ICONS: Record<ProviderType, typeof Server> = {
 };
 
 export default function ModelHubPage() {
-  const { providers, models, setProviders, setModels, deleteProvider, deleteModel, cleanupOrphanModels, getProviderName } = useModelHub();
+  const { providers, models, setProviders, setModels, patchModel, deleteProvider, deleteModel, cleanupOrphanModels, getProviderName } = useModelHub();
   const { enabled: ossEnabled, uploadFile: uploadToOss } = useOssConfig();
   const [activeTab, setActiveTab] = useState<'providers' | 'models' | 'endpoints' | 'pairing' | 'storage'>('models');
   const [asyncAddOpen, setAsyncAddOpen] = useState(false);
@@ -1807,6 +1809,13 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                         </div>
                       )}
                     </div>
+
+                    {/* 参数模板（后台简单自定义，前台按类型渲染） */}
+                    <ModelParamTemplateEditor
+                      modelType={model.type}
+                      value={(models.find((m) => m.id === model.id)?.paramTemplate) || {}}
+                      onChange={(tpl: IModelParamTemplate) => patchModel(model.id, { paramTemplate: tpl })}
+                    />
 
                     {/* 类型选择 */}
                     <div className="relative shrink-0">

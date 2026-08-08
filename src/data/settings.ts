@@ -17,7 +17,7 @@ export interface IGenerationSettings {
   contentType: 'image' | 'video';
   videoMode?: 'frame' | 'clip';
   ratio: Ratio;
-  resolution: '1k' | '2k' | '4k' | '8k';
+  resolution: '1k' | '2k' | '3k' | '4k' | '8k';
   quality: Quality;
   model: string;
   count: 1 | 2 | 3 | 4;

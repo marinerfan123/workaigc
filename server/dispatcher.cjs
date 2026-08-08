@@ -108,15 +108,24 @@ function bumpSize(size, res) {
 }
 
 // Agnes Video 按画幅方向给分辨率（Agnes 会再自动标准化，方向正确即可）
-function agnesVideoSize(ratio) {
-  switch (ratio) {
-    case '16:9': return { width: 1152, height: 648 };
-    case '9:16': return { width: 648, height: 1152 };
-    case '4:3': return { width: 1024, height: 768 };
-    case '3:4': return { width: 768, height: 1024 };
-    case '1:1': return { width: 1024, height: 1024 };
-    default: return { width: 1024, height: 1024 };
-  }
+// resolution 为视频分辨率档位（1k/2k/3k/4k）：1k≈1024 基准，向上按比例放大
+const VIDEO_TIER_SCALE = { '1k': 1, '2k': 1.5, '3k': 2, '4k': 2.5 };
+function agnesVideoSize(ratio, resolution) {
+  const base = (() => {
+    switch (ratio) {
+      case '16:9': return { width: 1152, height: 648 };
+      case '9:16': return { width: 648, height: 1152 };
+      case '4:3': return { width: 1024, height: 768 };
+      case '3:4': return { width: 768, height: 1024 };
+      case '1:1': return { width: 1024, height: 1024 };
+      default: return { width: 1024, height: 1024 };
+    }
+  })();
+  const scale = VIDEO_TIER_SCALE[String(resolution || '1k').toLowerCase()] || 1;
+  return {
+    width: Math.round(base.width * scale),
+    height: Math.round(base.height * scale),
+  };
 }
 
 async function imageGenerate(provider, model, opts) {
@@ -191,7 +200,7 @@ async function imageGenerate(provider, model, opts) {
 
 // ─── 视频生成（异步 submit + poll 模式）───
 async function videoGenerate(provider, model, opts) {
-  const { prompt, ratio, durationSec, referenceImages, negative } = opts;
+  const { prompt, ratio, durationSec, referenceImages, negative, resolution } = opts;
   const baseUrl = provider.base_url;
   const apiKey = provider.api_key;
   if (!apiKey) return { videoUrl: '', status: 'error', error: '服务商未配置 API Key' };
@@ -207,7 +216,7 @@ async function videoGenerate(provider, model, opts) {
     let numFrames = Math.round((Number(durationSec) || 6) * frameRate);
     numFrames = Math.min(441, Math.max(9, numFrames));
     numFrames = Math.floor((numFrames - 1) / 8) * 8 + 1;
-    const { width, height } = agnesVideoSize(ratio);
+    const { width, height } = agnesVideoSize(ratio, resolution);
     vars = {
       model: model.model_id,
       prompt,
@@ -233,6 +242,7 @@ async function videoGenerate(provider, model, opts) {
       model: model.model_id,
       prompt,
       ratio,
+      resolution: resolution || '1k',
       duration: durationSec || 6,
       firstFrame: referenceImages && referenceImages[0] ? referenceImages[0] : '',
       images: referenceImages || [],
@@ -477,7 +487,8 @@ async function generate(pgPool, opts) {
   }
 
   // 5. 并发分配：单任务内部已做「拒单静默切下一个供应商」+「全部不可用 → throttled」
-  const total = Math.max(1, Math.min(4, Number(count) || 1));
+  // 视频数量固定 1（用户需求：视频不支持批量），图片按设置并行 count 张
+  const total = contentType === 'video' ? 1 : Math.max(1, Math.min(4, Number(count) || 1));
   const tasks = [];
   for (let i = 0; i < total; i++) {
     tasks.push((async () => {
