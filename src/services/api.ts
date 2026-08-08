@@ -258,8 +258,28 @@ export async function apiSignOssUpload(
 }
 
 // ─── Characters ─────────────────────────────────
+// 归一化：无论后端返回什么，都收口成「合法数组 + 每个 item 必有 referenceImages 数组」，
+// 彻底杜绝 /characters 页面因 referenceImages 为 undefined / 非数组触发 .map 崩溃。
+function normalizeCharacters(raw: unknown): any[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((it) => {
+    if (!it || typeof it !== 'object') return null;
+    const c = it as Record<string, any>;
+    return {
+      ...c,
+      id: c.id ?? `char-${Math.random().toString(36).slice(2)}`,
+      name: typeof c.name === 'string' ? c.name : '未命名角色',
+      avatar: typeof c.avatar === 'string' ? c.avatar : '',
+      description: typeof c.description === 'string' ? c.description : '',
+      referenceImages: Array.isArray(c.referenceImages) ? c.referenceImages : [],
+      baseModel: typeof c.baseModel === 'string' ? c.baseModel : '',
+      createdAt: typeof c.createdAt === 'string' ? c.createdAt : new Date().toISOString(),
+      source: c.source === 'user' ? 'user' : 'mock',
+    };
+  }).filter(Boolean);
+}
 export async function apiGetCharacters(): Promise<any[]> {
-  try { return await apiFetch('/api/characters'); } catch { return []; }
+  try { return normalizeCharacters(await apiFetch('/api/characters')); } catch { return []; }
 }
 export async function apiSaveCharacters(items: any[]) {
   try { await apiFetch('/api/characters', { method: 'POST', body: JSON.stringify(items) }); } catch {}

@@ -64,6 +64,8 @@ export default function CharactersPage() {
       if (ok) {
         try { list = await apiGetCharacters(); } catch { list = []; }
       }
+      // 防御：list 必须为真数组，否则回退 MOCK，杜绝后续 .map 崩溃
+      if (!Array.isArray(list)) list = [];
       const final = list.length > 0 ? list : MOCK_CHARACTERS;
       if (cancelled) return;
       setCharacters(final);
