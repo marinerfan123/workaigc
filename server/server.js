@@ -1540,6 +1540,15 @@ async function handleAPI(req, res) {
     if (await referenceStyles.handle(req, res, url, method)) return;
   }
 
+  // AI 市集公开浏览 + 技能目录：无需登录（获取/试跑/我的技能等留在下方 appGateway 之后处理）
+  if (method === 'GET') {
+    const path = url.split('?')[0];
+    const isPublicShop = path === '/api/shop/products' || path === '/api/skills' || /^\/api\/shop\/products\/[^/]+$/.test(path);
+    if (isPublicShop) {
+      if (await shop.handleShop(req, res, path, method)) return;
+    }
+  }
+
   // 应用网关：API_TOKEN 或 用户会话 cookie 任一通过
   if (!appGateway(req)) return sendJSON(res, 401, { error: 'Unauthorized' });
 
