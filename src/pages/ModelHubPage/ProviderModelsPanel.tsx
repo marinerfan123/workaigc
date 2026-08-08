@@ -76,6 +76,7 @@ export default function ProviderModelsPanel({ providerId, providerName, open, on
   const [onlyEnabled, setOnlyEnabled] = useState(false);
   const [batchPrice, setBatchPrice] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
   // 进出场动画
@@ -146,6 +147,19 @@ export default function ProviderModelsPanel({ providerId, providerName, open, on
     for (const m of filtered) void patchModel(m.id, { creditCost: n }).catch(() => {});
     toast.success(`批量价格已设为 ${n} 积分（共 ${filtered.length} 个）`);
     setBatchPrice('');
+  };
+
+  const toggleModelEnabled = async (m: IAiModel, e?: React.MouseEvent | React.KeyboardEvent) => {
+    e?.stopPropagation?.();
+    if (togglingId === m.id) return;
+    setTogglingId(m.id);
+    try {
+      await patchModel(m.id, { enabled: !m.enabled });
+    } catch (err) {
+      toast.error(`切换失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setTogglingId(null);
+    }
   };
 
   if (!mounted || !providerId) return null;
@@ -243,43 +257,55 @@ export default function ProviderModelsPanel({ providerId, providerName, open, on
                     const isSel = m.id === selectedId;
                     return (
                       <li key={m.id} className="group/row">
-                        <button
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={isSel}
                           onClick={() => setSelectedId(m.id)}
-                          className={`group/btn flex w-full items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left transition-all ${
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setSelectedId(m.id);
+                            }
+                          }}
+                          className={`group/btn flex w-full cursor-pointer items-center gap-2.5 rounded-xl border px-2.5 py-2 text-left transition-all outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
                             isSel
                               ? 'border-indigo-500/40 bg-gradient-to-r from-indigo-500/10 to-fuchsia-500/5 shadow-md shadow-indigo-500/10'
                               : 'border-transparent hover:border-white/10 hover:bg-zinc-800/40'
                           } ${m.enabled ? '' : 'opacity-60'}`}
                         >
                           {/* 行内显隐开关 — 点击不触发选中右栏 */}
-                          <span
+                          <button
+                            type="button"
                             role="switch"
                             aria-checked={!!m.enabled}
-                            tabIndex={0}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              patchModel(m.id, { enabled: !m.enabled });
-                            }}
+                            disabled={togglingId === m.id}
+                            onClick={(e) => void toggleModelEnabled(m, e)}
                             onKeyDown={(e) => {
                               if (e.key === ' ' || e.key === 'Enter') {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                patchModel(m.id, { enabled: !m.enabled });
+                                void toggleModelEnabled(m, e);
                               }
                             }}
                             title={m.enabled ? '点击隐藏此模型' : '点击显示此模型'}
-                            className={`inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full p-0.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60 ${
+                            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/60 disabled:opacity-50 ${
                               m.enabled
                                 ? 'bg-emerald-500/70 hover:bg-emerald-500/85'
                                 : 'bg-zinc-700/80 hover:bg-zinc-600/80'
                             }`}
                           >
+                            {togglingId === m.id && (
+                              <span className="absolute inset-0 flex items-center justify-center">
+                                <Loader2 className="size-3 animate-spin text-zinc-900/70" />
+                              </span>
+                            )}
                             <span
                               className={`inline-block size-4 rounded-full bg-white shadow-md transition-transform ${
-                                m.enabled ? 'translate-x-4' : 'translate-x-0'
-                              }`}
+                                togglingId === m.id ? 'opacity-0' : ''
+                              } ${m.enabled ? 'translate-x-4' : 'translate-x-0'}`}
                             />
-                          </span>
+                          </button>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5">
                               <span className={`truncate text-[13px] font-medium ${m.enabled ? 'text-zinc-100' : 'text-zinc-500 line-through decoration-zinc-700'}`}>
@@ -305,7 +331,7 @@ export default function ProviderModelsPanel({ providerId, providerName, open, on
                             </span>
                             <ChevronRight className={`size-3.5 text-zinc-600 transition-transform ${isSel ? 'translate-x-0.5 text-indigo-300' : ''}`} />
                           </div>
-                        </button>
+                        </div>
                       </li>
                     );
                   })}
