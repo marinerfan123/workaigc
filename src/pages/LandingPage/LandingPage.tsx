@@ -16,8 +16,10 @@ import {
   LayoutGrid,
   Film,
   Clapperboard,
+  Clock,
 } from 'lucide-react';
 import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authStore';
+import { isPathLocked } from '@/config/moduleLocks';
 
 /* ── 整个计划：创意生产流水线（M5：点子→剧本→分镜→视频→剧集，五阶段可回退）──
    生图/视频生成是驱动第 3–4 步产出的引擎，而非独立终点。
@@ -264,21 +266,27 @@ export default function LandingPage() {
           })}
         </div>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          <Link
-            to="/studio"
-            className="flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20"
-          >
-            进入创作工作室 <ArrowRight className="size-3.5" />
-          </Link>
+          {isPathLocked('/studio') ? (
+            <span
+              className="flex cursor-not-allowed items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.03] px-4 py-1.5 text-xs font-semibold text-zinc-500"
+              title="创作工作室正在打磨中，敬请期待"
+            >
+              创作工作室 · 即将上线 <Clock className="size-3.5" />
+            </span>
+          ) : (
+            <Link
+              to="/studio"
+              className="flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-4 py-1.5 text-xs font-semibold text-emerald-300 transition-colors hover:bg-emerald-500/20"
+            >
+              进入创作工作室 <ArrowRight className="size-3.5" />
+            </Link>
+          )}
           <Link
             to="/shop"
             className="flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-4 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-white/10"
           >
             逛 AI 市集 <ArrowRight className="size-3.5" />
           </Link>
-          <span className="text-xs text-zinc-600">
-            /studio 五阶段工作台为 Phase 4 规划，骨架已就位。
-          </span>
         </div>
       </section>
 

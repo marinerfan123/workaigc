@@ -15,6 +15,7 @@ import AuthModal from '@/components/AuthModal';
 import { Toaster } from '@/components/ui/sonner';
 import { RequireAdmin } from '@/components/RequireAdmin';
 import { RequireAuth } from '@/components/RequireAuth';
+import { ModuleLockGate } from '@/components/ModuleLockGate';
 
 // 后台（M3 总控台 / M4 智能体 / M2 流水 / 用户 / 技能 / 电商后台）
 import { AdminLayout } from '@/components/layouts/AdminLayout';
@@ -129,8 +130,8 @@ export default function App() {
           <Route path="errors" element={<ErrorLogsPage />} />
         </Route>
 
-        {/* 创作工作室壳（需登录） */}
-        <Route path="/studio" element={<RequireAuth><StudioLayout /></RequireAuth>}>
+        {/* 创作工作室壳（需登录；未完善阶段由 ModuleLockGate 软锁） */}
+        <Route path="/studio" element={<RequireAuth><ModuleLockGate><StudioLayout /></ModuleLockGate></RequireAuth>}>
           <Route index element={<StudioListPage />} />
           <Route path=":projectId" element={<StudioStagePage />} />
         </Route>

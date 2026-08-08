@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import type { MediaCounts } from '@/services/api';
 import type { NavigationDockProps, NavSection } from '@/components/NavigationDock';
+import { isPathLocked } from '@/config/moduleLocks';
 
 // ───────────────────────────────────────────────
 // 全站跨模块导航（每个导航台底部都带，方便任意页面跳转）
@@ -52,7 +53,9 @@ function globalNavSection(
     ...(userRole === 'admin'
       ? [{ key: 'global-admin', label: '管理后台', icon: ShieldAlert, path: '/admin', end: true }]
       : []),
-  ];
+  ]
+    // 锁定模块不进入全局导航（单一事实来源：moduleLocks.ts）
+    .filter((it) => !isPathLocked(it.path));
   return {
     title: '全站',
     items,
