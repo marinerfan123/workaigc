@@ -34,7 +34,8 @@ export interface IGenerationSettings {
   quality: Quality;
   model: string;
   count: 1 | 2 | 3 | 4;
-  duration?: 4 | 6 | 8 | 10;
+  /** 视频时长（秒）；-1 表示「智能选时长」（由模型自选合适长度） */
+  duration?: number;
 }
 
 export const DEFAULT_SETTINGS: IGenerationSettings = {

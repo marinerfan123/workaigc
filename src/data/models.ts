@@ -42,8 +42,10 @@ export interface IModelParamTemplate {
   videoResolutions?: string[];
   /** 视频模式白名单（仅 contentType='video' 生效）。声明后前台显示模式选择器；不声明则后端按参考图数量推导 */
   videoModes?: VideoMode[];
-  /** 视频时长档位（video 专用；缺省 [4,6,8,10]） */
-  durations?: (4 | 6 | 8 | 10)[];
+  /** 视频时长档位（video 专用；含 -1 表示「智能选时长」，缺省 [4,6,8,10]） */
+  durations?: number[];
+  /** 视频参考图上限（仅 reference_image 模式生效；缺省 4；Seedance 2.5 → 30） */
+  maxReferenceImages?: number;
   /** 数量选择：image 默认 true（显示 1–4）；video 默认 false（固定 1，不显示） */
   allowCount?: boolean;
   /** 是否支持反向提示词（negative_prompt） */
@@ -57,7 +59,7 @@ export interface IModelParamTemplate {
     quality: 'low' | 'standard' | 'high';
     ratio: string;
     resolution: Resolution;
-    duration: 4 | 6 | 8 | 10;
+    duration: number;
   }>;
 }
 

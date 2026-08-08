@@ -18,6 +18,38 @@ function toVolcanoResolution(res) {
   return map[String(res || '1k').toLowerCase()] || '720p';
 }
 
+// ─── Seedance 系列时长规则（依官方文档）───
+//   Seedance 2.5       ：默认 -1（智能选时长）；显式取值 [4, 30]；支持 -1
+//   Seedance 2.0 系列  ：取值 [4, 15]；支持 -1
+//   Seedance 1.5 pro   ：取值 [4, 12]；支持 -1
+//   Seedance 1.0 pro   ：取值 [2, 12]；不支持 -1（智能时退回 max）
+const DURATION_RULES = {
+  '2.5': { min: 4, max: 30, smart: true },
+  '2.0': { min: 4, max: 15, smart: true },
+  '1.5': { min: 4, max: 12, smart: true },
+  '1.0': { min: 2, max: 12, smart: false },
+};
+function resolveSeedanceFamily(modelId) {
+  const id = String(modelId || '').toLowerCase();
+  if (id.includes('seedance-2-5') || id.includes('seedance2.5')) return '2.5';
+  if (id.includes('seedance-2-0') || id.includes('seedance2.0')) return '2.0';
+  if (id.includes('seedance-1-5') || id.includes('seedance1.5')) return '1.5';
+  if (id.includes('seedance-1-0') || id.includes('seedance1.0')) return '1.0';
+  return null; // 未知 → 最宽松兜底
+}
+// 把前端 duration（-1 表示智能，或正整数秒）映射为火山合法 duration：
+//   - -1 且系列支持智能 → 透传 -1
+//   - -1 但系列不支持（1.0）→ 退回 max
+//   - 显式正整数秒 → 夹到 [min, max]（取整数）
+function toVolcanoDuration(durationSec, modelId) {
+  const fam = resolveSeedanceFamily(modelId);
+  const rule = fam ? DURATION_RULES[fam] : { min: 2, max: 30, smart: true };
+  let raw = (durationSec === undefined || durationSec === null) ? -1 : Number(durationSec);
+  if (!Number.isFinite(raw)) raw = -1;
+  if (raw === -1) return rule.smart ? -1 : rule.max;
+  return Math.min(rule.max, Math.max(rule.min, Math.round(raw)));
+}
+
 async function submitAndPoll(provider, model, opts) {
   const apiKey = provider.api_key;
   if (!apiKey) return { videoUrl: '', status: 'error', error: '服务商未配置 API Key' };
@@ -27,11 +59,18 @@ async function submitAndPoll(provider, model, opts) {
   const mode = opts.videoMode || deriveVideoMode(refs);
   const content = buildVideoContent(refs, mode, prompt, 'volcano');
 
-  let ratio = opts.ratio || '16:9';
-  if (mode !== 't2v') ratio = 'adaptive';
+  // 比例处理（依官方文档 ratio 适配规则）：
+  //   - 文生视频(t2v)            ：比例可选（含 adaptive），透传用户选择（默认 16:9）
+  //   - 首帧/首尾帧生视频(i2v)   ：Seedance 2.5 输出自动保持首帧宽高比，仅支持 adaptive（强制）
+  //   - 多模态参考生视频(reference_image)：比例可选（含 adaptive），透传用户选择（默认 adaptive）
+  let ratio = opts.ratio || (mode === 't2v' ? '16:9' : 'adaptive');
+  const fam = resolveSeedanceFamily(model.model_id);
+  if ((mode === 'i2v_first' || mode === 'i2v_first_last') && fam === '2.5') {
+    ratio = 'adaptive'; // Seedance 2.5 图生视频仅支持 adaptive
+  }
 
   const resolution = toVolcanoResolution(opts.resolution);
-  const duration = Math.round(Number(opts.durationSec) || 5);
+  const duration = toVolcanoDuration(opts.durationSec, model.model_id);
 
   const body = {
     model: model.model_id,

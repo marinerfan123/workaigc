@@ -14,7 +14,7 @@ const RATIO_PRESET: Ratio[] = [
   '3:2', '2:3', '5:4', '4:5',
   '21:9', '9:21',
 ];
-const DURATIONS: (4 | 6 | 8 | 10)[] = [4, 6, 8, 10];
+const DURATIONS: number[] = [-1, 4, 6, 8, 10];
 const VIDEO_RES: ('1k' | '2k' | '3k' | '4k')[] = ['1k', '2k', '3k', '4k'];
 
 function Pill({
@@ -139,8 +139,8 @@ export function ModelParamTemplateEditor({ modelType, value, onChange }: ModelPa
               <Pill
                 key={d}
                 active={(value.durations || []).includes(d)}
-                label={`${d}s`}
-                onClick={() => set({ durations: toggleIn(value.durations, d) as (4 | 6 | 8 | 10)[] })}
+                label={d === -1 ? '智能' : `${d}s`}
+                onClick={() => set({ durations: toggleIn(value.durations, d) as number[] })}
               />
             ))}
           </Section>

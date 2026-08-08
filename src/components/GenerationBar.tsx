@@ -66,7 +66,7 @@ const QUALITY_OPTIONS: { key: Quality; label: string }[] = [
 
 // 视频分辨率档位（后台开关开启才显示）
 const VIDEO_RESOLUTIONS: ('1k' | '2k' | '3k' | '4k')[] = ['1k', '2k', '3k', '4k'];
-const DEFAULT_DURATIONS: (4 | 6 | 8 | 10)[] = [4, 6, 8, 10];
+const DEFAULT_DURATIONS: number[] = [4, 6, 8, 10];
 
 /**
  * 解析「有效参数模板」：优先用模型后台配置 paramTemplate，缺失时按 type 派生兜底，
@@ -82,6 +82,7 @@ function resolveTemplate(model: IAiModel | undefined, contentType: 'image' | 'vi
       videoResolutionsEnabled: !!t.videoResolutionsEnabled,
       videoResolutions: t.videoResolutions && t.videoResolutions.length ? t.videoResolutions : VIDEO_RESOLUTIONS,
       videoModes: t.videoModes && t.videoModes.length ? t.videoModes : undefined,
+      maxReferenceImages: typeof t.maxReferenceImages === 'number' ? t.maxReferenceImages : undefined,
       allowCount: false,
       supportsNegative: t.supportsNegative !== false,
       supportsReference: t.supportsReference !== false,
@@ -127,12 +128,12 @@ const VIDEO_MODE_DESC: Record<VideoMode, string> = {
 };
 
 /** 视频模式允许的参考图上限（image 走父级 MAX_REF_IMAGES，这里仅算视频） */
-function allowedRefCount(mode: VideoMode | undefined): number {
+function allowedRefCount(mode: VideoMode | undefined, maxRef = 4): number {
   switch (mode) {
     case 't2v': return 0;
     case 'i2v_first': return 1;
     case 'i2v_first_last': return 2;
-    case 'reference_image': return 4;
+    case 'reference_image': return maxRef; // 由模板 maxReferenceImages 控制（Seedance 2.5 → 30）
     default: return 1; // 未定模式兜底
   }
 }
@@ -203,7 +204,8 @@ interface IGenerationSettings {
   quality: Quality;
   model: string;
   count: 1 | 2 | 3 | 4;
-  duration?: 4 | 6 | 8 | 10;
+  /** 视频时长（秒）；-1 表示「智能选时长」 */
+  duration?: number;
 }
 
 interface GenerationBarProps {
@@ -646,9 +648,12 @@ function GenerationBar({
       } else {
         patch.resolution = '1k';
       }
-      // 视频时长
-      if (tpl.durations && tpl.durations.length && !tpl.durations.includes((settings.duration || 6) as any)) {
-        patch.duration = (tpl.defaults?.duration || tpl.durations[0] || 6) as 4 | 6 | 8 | 10;
+      // 视频时长：模板明确声明默认时长（如 Seedance 2.5 → -1 智能）优先；否则当前值不在档位内时回落到首个档位
+      const dDef = tpl.defaults && typeof tpl.defaults.duration === 'number' ? tpl.defaults.duration : undefined;
+      if (dDef !== undefined) {
+        if (settings.duration !== dDef) patch.duration = dDef;
+      } else if (tpl.durations && tpl.durations.length && !tpl.durations.includes((settings.duration || 6) as any)) {
+        patch.duration = (tpl.durations[0] || 6) as number;
       }
       patch.count = 1; // 视频数量固定 1
     }
@@ -718,7 +723,7 @@ function GenerationBar({
   const videoRefAtCap =
     modeSystemOn &&
     settings.contentType === 'video' &&
-    referenceImages.length >= allowedRefCount(effectiveVideoMode);
+    referenceImages.length >= allowedRefCount(effectiveVideoMode, template.maxReferenceImages);
 
   // 视频模式 / 分辨率默认化：切换模型或类型时确保有合法 videoMode 与 resolution（避免 UI 空选 + 后端错位）
   useEffect(() => {
@@ -738,15 +743,23 @@ function GenerationBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, settings.contentType, template, settings.videoMode, settings.resolution]);
 
-  // 切换视频模式：按模式裁剪参考图数量，并把 ratio 置为 adaptive（图生/参考视频画幅随参考图）
+  // 切换视频模式：按模式裁剪参考图数量；比例规则依火山文档：
+  //   t2v → 可选（保留当前合法选择）；i2v 首/末帧 → 仅 adaptive（输出保持首帧比例）；reference_image → 可选（保留当前选择，否则 adaptive）
   const changeVideoMode = (mode: VideoMode) => {
-    const allowed = allowedRefCount(mode);
+    const allowed = allowedRefCount(mode, template.maxReferenceImages);
     const trimmed = referenceImages.slice(0, allowed);
     if (trimmed.length !== referenceImages.length) onSetReferenceImages?.(trimmed);
-    const nextRatio: Ratio =
-      mode === 't2v'
-        ? (template.ratios && template.ratios.includes(settings.ratio) ? settings.ratio : (template.ratios?.[0] || '16:9'))
+    let nextRatio: Ratio;
+    if (mode === 't2v') {
+      nextRatio = (template.ratios && template.ratios.includes(settings.ratio) ? settings.ratio : (template.ratios?.[0] || '16:9'));
+    } else if (mode === 'i2v_first' || mode === 'i2v_first_last') {
+      nextRatio = 'adaptive'; // 图生视频：输出保持首帧宽高比，仅支持 adaptive
+    } else {
+      // 参考图生视频：比例可选（含 adaptive），保留当前合法选择，否则回落 adaptive
+      nextRatio = (settings.ratio && settings.ratio !== 'auto' && template.ratios?.includes(settings.ratio))
+        ? settings.ratio
         : 'adaptive';
+    }
     onSettingsChange({ ...settings, videoMode: mode, ratio: nextRatio });
   };
 
@@ -1659,12 +1672,12 @@ function GenerationBar({
                                 key={d}
                                 onClick={() => onSettingsChange({ ...settings, duration: d })}
                                 className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
-                                  (settings.duration || 6) === d
+                                  (settings.duration ?? 6) === d
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
                                     : 'text-zinc-400 hover:bg-zinc-800/50 hover:text-white'
                                 }`}
                               >
-                                {d}s
+                                {d === -1 ? '智能' : `${d}s`}
                               </button>
                             ))}
                           </div>
