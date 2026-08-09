@@ -30,6 +30,7 @@ import {
 } from '@/services/api';
 
 const PRESETS = [6, 30, 98, 198, 648];
+const QUICK_AMOUNTS = [10, 50, 100, 200, 500, 1000];
 type Step = 'form' | 'paying' | 'success' | 'error';
 
 const CHANNEL_META: Record<string, { label: string; icon: typeof Smartphone; color: string; bg: string }> = {
@@ -41,7 +42,7 @@ export default function RechargePage() {
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  const [amount, setAmount] = useState<number>(98);
+  const [amount, setAmount] = useState<number>(100);
   const [custom, setCustom] = useState('');
   const [channel, setChannel] = useState<string>('wxpay');
   const [methods, setMethods] = useState<string[]>(['wxpay', 'alipay']);
@@ -59,7 +60,14 @@ export default function RechargePage() {
 
   // 拉取后台套餐 + 支付方式
   useEffect(() => {
-    apiPublicTopupPackages().then((r) => setPackages(r.items)).catch(() => {});
+    apiPublicTopupPackages().then((r) => {
+      setPackages(r.items);
+      if (r.items.length) {
+        const preferred = r.items.find((p) => p.price === 100) || r.items[0];
+        setAmount(preferred.price);
+        setSelectedPackageId(preferred.id);
+      }
+    }).catch(() => {});
     apiGetPaymentMethods().then((info) => {
       const available = info.items.length ? info.items : ['wxpay', 'alipay'];
       setMethods(available);
@@ -296,6 +304,29 @@ export default function RechargePage() {
                         placeholder={`最低 ¥${limits.min.toFixed(2)}，最高 ¥${limits.max.toFixed(2)}`}
                         className={`w-full rounded-2xl border bg-zinc-800/40 px-4 py-3 text-sm text-white placeholder-zinc-600 outline-none ${amountError ? 'border-red-500/50 focus:border-red-500' : 'border-zinc-800 focus:border-emerald-500/50'}`}
                       />
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {QUICK_AMOUNTS.map((v) => {
+                          const matched = packages.find((p) => p.price === v);
+                          const active = !custom && amount === v;
+                          return (
+                            <button
+                              key={v}
+                              onClick={() => {
+                                setAmount(v);
+                                setCustom('');
+                                setSelectedPackageId(matched ? matched.id : null);
+                              }}
+                              className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
+                                active
+                                  ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-300'
+                                  : 'border-zinc-800 bg-zinc-800/40 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+                              }`}
+                            >
+                              ¥{v}
+                            </button>
+                          );
+                        })}
+                      </div>
                       {amountError && (
                         <p className="mt-2 flex items-center gap-1 text-xs text-red-400">
                           <AlertCircle className="size-3.5" /> {amountError}
@@ -351,6 +382,9 @@ export default function RechargePage() {
                     <div className="mt-1 flex items-center justify-between text-xs text-zinc-500">
                       <span>预计获得积分</span>
                       <span className="text-emerald-300">{creditsPreview} 积分</span>
+                    </div>
+                    <div className="mt-3 border-t border-white/5 pt-2 text-[11px] text-zinc-500">
+                      默认按所选金额支付，支付成功后积分将自动到账
                     </div>
                   </div>
 
