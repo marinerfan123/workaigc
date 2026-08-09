@@ -446,7 +446,7 @@ function createAdmin(ctx) {
       `SELECT COUNT(*) FROM generation_tasks t LEFT JOIN users u ON u.id=t.user_id ${ws}`, params);
     const r = await pg().query(
       `SELECT t.task_id, t.created_at, t.status, t.model, t.content_type, t.prompt,
-              t.cost, t.completed_at, t.user_id, u.display_name AS user
+              t.cost, t.completed_at, t.user_id, t.error, u.display_name AS user
        FROM generation_tasks t LEFT JOIN users u ON u.id=t.user_id
        ${ws} ORDER BY t.created_at DESC LIMIT $${i}`, [...params, limit]);
     const items = r.rows.map((x) => {
@@ -460,6 +460,7 @@ function createAdmin(ctx) {
         model: x.model,
         contentType: x.content_type,
         prompt: prompt.slice(0, 200),
+        error: (x.error == null ? '' : String(x.error)).slice(0, 500),
         cost: x.cost != null ? Number(x.cost) : 0,
         latencyMs: (created && done) ? done - created : null,
         userId: x.user_id,
@@ -550,7 +551,7 @@ function createAdmin(ctx) {
       const sparams = [];
       let si = 1;
       let swhere = '1=1';
-      if (category) { swhere += ` AND category=$${si}`; sparams.push(category); si++; }
+      if (category) { swhere += ` AND category ILIKE $${si}`; sparams.push(`%${category}%`); si++; }
       if (keyword) { swhere += ` AND (message ILIKE $${si} OR source ILIKE $${si})`; sparams.push(`%${keyword}%`); si++; }
       if (from && !isNaN(from.getTime())) { swhere += ` AND created_at >= $${si}`; sparams.push(from); si++; }
       if (to && !isNaN(to.getTime())) { swhere += ` AND created_at <= $${si}`; sparams.push(to); si++; }
