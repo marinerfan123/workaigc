@@ -426,6 +426,161 @@ function createAdmin(ctx) {
     return { ok: true, pushed: copied, users: usersTouched, totalUsers: users.rows.length };
   }
 
+  // ───────────────── 监控接口辅助函数（跨用户生成 / 资产链接 / 报错合并） ─────────────────
+  // 纯后端接口，无前端页面；管理员直接通过 REST 查询。
+  async function listGenerations(query) {
+    const where = [];
+    const params = [];
+    let i = 1;
+    const w = (cond, val) => { where.push(cond.replace(/\$n/g, `$${i}`)); params.push(val); i++; };
+    if (query.status) w('t.status=$n', query.status);
+    if (query.content_type) w('t.content_type=$n', query.content_type);
+    if (query.model) w('t.model=$n', query.model);
+    if (query.user) w('u.display_name ILIKE $n', `%${query.user}%`);
+    if (query.from) { const d = new Date(query.from); if (!isNaN(d.getTime())) w('t.created_at >= $n', d); }
+    if (query.to) { const d = new Date(query.to); if (!isNaN(d.getTime())) w('t.created_at <= $n', d); }
+    if (query.before) { const d = new Date(query.before); if (!isNaN(d.getTime())) w('t.created_at < $n', d); }
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const ws = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const countR = await pg().query(
+      `SELECT COUNT(*) FROM generation_tasks t LEFT JOIN users u ON u.id=t.user_id ${ws}`, params);
+    const r = await pg().query(
+      `SELECT t.task_id, t.created_at, t.status, t.model, t.content_type, t.prompt,
+              t.cost, t.completed_at, t.user_id, u.display_name AS user
+       FROM generation_tasks t LEFT JOIN users u ON u.id=t.user_id
+       ${ws} ORDER BY t.created_at DESC LIMIT $${i}`, [...params, limit]);
+    const items = r.rows.map((x) => {
+      const created = x.created_at ? new Date(x.created_at).getTime() : null;
+      const done = x.completed_at ? new Date(x.completed_at).getTime() : null;
+      const prompt = x.prompt == null ? '' : (typeof x.prompt === 'string' ? x.prompt : JSON.stringify(x.prompt));
+      return {
+        taskId: x.task_id,
+        createdAt: x.created_at,
+        status: x.status,
+        model: x.model,
+        contentType: x.content_type,
+        prompt: prompt.slice(0, 200),
+        cost: x.cost != null ? Number(x.cost) : 0,
+        latencyMs: (created && done) ? done - created : null,
+        userId: x.user_id,
+        user: x.user || null,
+      };
+    });
+    const next = (items.length === limit) ? items[items.length - 1].createdAt : null;
+    return { total: parseInt(countR.rows[0].count, 10), items, nextCursor: next };
+  }
+
+  async function listAssets(query) {
+    const where = [];
+    const params = [];
+    let i = 1;
+    const w = (cond, val) => { where.push(cond.replace(/\$n/g, `$${i}`)); params.push(val); i++; };
+    if (query.type) w('m.type=$n', query.type);
+    if (query.user) w('u.display_name ILIKE $n', `%${query.user}%`);
+    if (query.q) w('(m.title ILIKE $n OR m.full_url ILIKE $n OR m.oss_url ILIKE $n OR m.thumbnail ILIKE $n)', `%${query.q}%`);
+    if (query.is_deleted === 'true') w('m.is_deleted=$n', true);
+    else if (query.is_deleted === 'false') w('m.is_deleted=$n', false);
+    if (query.from) { const d = new Date(query.from); if (!isNaN(d.getTime())) w('m.created_at >= $n', d); }
+    if (query.to) { const d = new Date(query.to); if (!isNaN(d.getTime())) w('m.created_at <= $n', d); }
+    if (query.before) { const d = new Date(query.before); if (!isNaN(d.getTime())) w('m.created_at < $n', d); }
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const ws = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const countR = await pg().query(
+      `SELECT COUNT(*) FROM media m LEFT JOIN users u ON u.id=m.user_id ${ws}`, params);
+    const r = await pg().query(
+      `SELECT m.id, m.title, m.type, m.thumbnail, m.full_url, m.oss_url, m.user_id,
+              m.is_deleted, m.created_at, m.file_size, m.category, m.model,
+              u.display_name AS user,
+              COALESCE(NULLIF(m.oss_url,''), NULLIF(m.full_url,''), m.thumbnail) AS url
+       FROM media m LEFT JOIN users u ON u.id=m.user_id
+       ${ws} ORDER BY m.created_at DESC LIMIT $${i}`, [...params, limit]);
+    const items = r.rows.map((x) => ({
+      id: x.id,
+      title: x.title,
+      type: x.type,
+      url: x.url,
+      thumbnail: x.thumbnail,
+      ossUrl: x.oss_url,
+      fullUrl: x.full_url,
+      userId: x.user_id,
+      user: x.user || null,
+      isDeleted: x.is_deleted,
+      fileSize: x.file_size != null ? Number(x.file_size) : null,
+      category: x.category,
+      model: x.model,
+      createdAt: x.created_at,
+    }));
+    const next = (items.length === limit) ? items[items.length - 1].createdAt : null;
+    return { total: parseInt(countR.rows[0].count, 10), items, nextCursor: next };
+  }
+
+  async function listIssues(query) {
+    const scope = (query.scope || 'all').toLowerCase();
+    const keyword = (query.keyword || '').trim();
+    const category = (query.category || '').trim();
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const from = query.from ? new Date(query.from) : null;
+    const to = query.to ? new Date(query.to) : null;
+    const before = query.before ? new Date(query.before) : null;
+    const items = [];
+    const userIds = new Set();
+    let total = 0;
+
+    if (scope === 'all' || scope === 'generation') {
+      const gparams = ['failed'];
+      let gi = 2;
+      let gwhere = "t.status=$1 AND t.error IS NOT NULL AND t.error <> ''";
+      if (keyword) { gwhere += ` AND t.error ILIKE $${gi}`; gparams.push(`%${keyword}%`); gi++; }
+      if (from && !isNaN(from.getTime())) { gwhere += ` AND t.created_at >= $${gi}`; gparams.push(from); gi++; }
+      if (to && !isNaN(to.getTime())) { gwhere += ` AND t.created_at <= $${gi}`; gparams.push(to); gi++; }
+      if (before && !isNaN(before.getTime())) { gwhere += ` AND t.created_at < $${gi}`; gparams.push(before); gi++; }
+      const c = await pg().query(`SELECT COUNT(*) FROM generation_tasks t WHERE ${gwhere}`, gparams);
+      total += parseInt(c.rows[0].count, 10);
+      const gr = await pg().query(
+        `SELECT t.task_id, t.user_id, t.model, t.error, t.created_at
+         FROM generation_tasks t WHERE ${gwhere} ORDER BY t.created_at DESC LIMIT $${gi}`,
+        [...gparams, limit]);
+      for (const x of gr.rows) {
+        items.push({ id: x.task_id, kind: 'generation', model: x.model, userId: x.user_id, error: x.error, createdAt: x.created_at });
+        if (x.user_id) userIds.add(x.user_id);
+      }
+    }
+
+    if (scope === 'all' || scope === 'system') {
+      const sparams = [];
+      let si = 1;
+      let swhere = '1=1';
+      if (category) { swhere += ` AND category=$${si}`; sparams.push(category); si++; }
+      if (keyword) { swhere += ` AND (message ILIKE $${si} OR source ILIKE $${si})`; sparams.push(`%${keyword}%`); si++; }
+      if (from && !isNaN(from.getTime())) { swhere += ` AND created_at >= $${si}`; sparams.push(from); si++; }
+      if (to && !isNaN(to.getTime())) { swhere += ` AND created_at <= $${si}`; sparams.push(to); si++; }
+      if (before && !isNaN(before.getTime())) { swhere += ` AND created_at < $${si}`; sparams.push(before); si++; }
+      const c = await pg().query(`SELECT COUNT(*) FROM system_error_logs WHERE ${swhere}`, sparams);
+      total += parseInt(c.rows[0].count, 10);
+      const sr = await pg().query(
+        `SELECT id, category, source, message, meta, created_at
+         FROM system_error_logs WHERE ${swhere} ORDER BY created_at DESC LIMIT $${si}`,
+        [...sparams, limit]);
+      for (const x of sr.rows) {
+        items.push({
+          id: Number(x.id), kind: 'system', category: x.category, source: x.source,
+          meta: x.meta || {}, error: x.message, createdAt: x.created_at,
+        });
+      }
+    }
+
+    const userMap = {};
+    if (userIds.size) {
+      const ur = await pg().query('SELECT id, display_name FROM users WHERE id = ANY($1)', [Array.from(userIds)]);
+      for (const x of ur.rows) userMap[x.id] = x.display_name;
+    }
+    items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const sliced = items.slice(0, limit);
+    for (const it of sliced) if (it.userId) it.user = userMap[it.userId] || null;
+    const next = (sliced.length === limit) ? sliced[sliced.length - 1].createdAt : null;
+    return { total, items: sliced, nextCursor: next };
+  }
+
   async function handleAdmin(req, res, url, method) {
     if (!hasPg()) return sendJSON(res, 503, { error: '数据库不可用' });
     if (!requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
@@ -526,6 +681,18 @@ function createAdmin(ctx) {
     if (m && method === 'DELETE') {
       try { return sendJSON(res, 200, await deleteSample(decodeURIComponent(m[1]))); }
       catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+
+    // ───────────────── 监控：跨用户生成 / 资产链接 / 报错合并（纯后端接口） ─────────────────
+    // 注意：放在 syslog 闸门之前，仅依赖 pg()，不依赖 syslog/monitor/logbus 模块。
+    if (url === '/api/admin/generations' && method === 'GET') {
+      return sendJSON(res, 200, await listGenerations(query));
+    }
+    if (url === '/api/admin/assets' && method === 'GET') {
+      return sendJSON(res, 200, await listAssets(query));
+    }
+    if (url === '/api/admin/issues' && method === 'GET') {
+      return sendJSON(res, 200, await listIssues(query));
     }
 
     // ───────────────── 核心错误历史（#449/#450 持久化查询） ─────────────────
