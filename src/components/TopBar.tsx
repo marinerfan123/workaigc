@@ -23,7 +23,6 @@ import {
   Loader2,
 } from 'lucide-react';
 import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authStore';
-import RechargeModal from '@/components/RechargeModal';
 import { apiExportMyMedia } from '@/services/api';
 
 interface TopBarProps {
@@ -34,7 +33,6 @@ interface TopBarProps {
 export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProps) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [rechargeOpen, setRechargeOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -138,7 +136,7 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
           <div className="flex items-center gap-2">
             {/* 双池余额：赠送（平台赠送，限定模型优先扣）+ 充值（真钱，全部可用） */}
             <button
-              onClick={() => setRechargeOpen(true)}
+              onClick={() => navigate('/recharge')}
               className="flex h-8 items-center gap-1.5 rounded-full border border-amber-500/20 bg-amber-500/10 px-2.5 text-xs font-semibold hover:bg-amber-500/20 transition-colors"
               title="赠送余额（平台赠送/活动发放，限定模型可用，优先扣减）· 充值余额（真钱充值，全部模型可用）。点击充值"
             >
@@ -190,7 +188,7 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
                           <div className="mt-0.5 text-[10px] text-zinc-500">赠送 · 充值</div>
                         </div>
                         <button
-                          onClick={() => { setMenuOpen(false); setRechargeOpen(true); }}
+                          onClick={() => { setMenuOpen(false); navigate('/recharge'); }}
                           className="flex items-center gap-1.5 rounded-full bg-emerald-400 px-3 py-1.5 text-xs font-semibold text-black transition-colors hover:bg-emerald-300"
                         >
                           <Wallet className="size-3.5" /> 充值
@@ -238,7 +236,6 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
         )}
       </div>
 
-      <RechargeModal open={rechargeOpen} onClose={() => setRechargeOpen(false)} />
     </header>
   );
 }

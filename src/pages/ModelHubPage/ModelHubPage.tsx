@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { logger } from '@/services/client-capabilities';
 import {
   Plus,
@@ -81,6 +82,7 @@ const PROVIDER_TYPE_ICONS: Record<ProviderType, typeof Server> = {
 
 export default function ModelHubPage() {
   const { providers, models, setProviders, setModels, patchModel, deleteProvider, deleteModel, cleanupOrphanModels, getProviderName } = useModelHub();
+  const navigate = useNavigate();
   const { enabled: ossEnabled, uploadFile: uploadToOss } = useOssConfig();
   const [activeTab, setActiveTab] = useState<'providers' | 'models' | 'endpoints' | 'pairing' | 'storage'>('models');
   const [asyncAddOpen, setAsyncAddOpen] = useState(false);
@@ -830,6 +832,15 @@ export default function ModelHubPage() {
               存储配置
             </button>
           </div>
+
+          {/* 跳转到前台「模型控制台」：已配置模型自动渲染表单并可直接生成 */}
+          <button
+            onClick={() => navigate('/model-console')}
+            className="flex items-center gap-1.5 rounded-full border border-indigo-400/40 bg-indigo-500/10 px-4 py-2 text-xs font-bold text-indigo-200 hover:bg-indigo-500/20 transition-colors shrink-0 whitespace-nowrap"
+          >
+            <Sparkles className="size-3.5" />
+            <span>打开模型控制台</span>
+          </button>
 
           {/* 固定右侧：所有 Tab 共用一个「添加」按钮（storage 例外：保存配置） */}
           {/* Tab-专属按钮（如「从模板添加」「异步添加」）已移到内容区内部，避免按钮数变化导致 Tab 错位 */}

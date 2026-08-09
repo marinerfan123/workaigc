@@ -3,7 +3,7 @@ import {
   User, KeyRound, Shield, BarChart3, Receipt, Wallet,
   Check, Loader2, Eye, EyeOff, Sparkles, ShieldCheck,
   Crown, Image as ImageIcon, Video, Clock, CreditCard,
-  Smartphone, AlertCircle, ArrowRight, Package,
+  Smartphone, AlertCircle, ArrowRight, Package, Calendar,
 } from 'lucide-react';
 import { useAuth, refreshUser } from '@/services/authStore';
 import { useMediaCounts } from '@/hooks/useMediaCounts';
@@ -59,7 +59,25 @@ export default function AccountPage() {
   const { counts } = useMediaCounts();
   const pageRef = useRef<HTMLDivElement>(null);
 
-  const [activeSection, setActiveSection] = useState<string>('profile');
+  const initialHash = typeof window !== 'undefined'
+    ? window.location.hash.replace(/^#/, '')
+    : '';
+  const [activeSection, setActiveSection] = useState<string>(
+    SECTIONS.some((s) => s.id === initialHash) ? initialHash : 'profile'
+  );
+
+  // 监听 URL hash：支持书签/刷新/外部链接直接定位到某个标签
+  useEffect(() => {
+    const applyHash = () => {
+      const id = window.location.hash.replace(/^#/, '');
+      if (SECTIONS.some((s) => s.id === id)) {
+        setActiveSection(id);
+      }
+    };
+    applyHash();
+    window.addEventListener('hashchange', applyHash);
+    return () => window.removeEventListener('hashchange', applyHash);
+  }, []);
 
   // 账务概览 / 流水 / 订单
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -105,14 +123,18 @@ export default function AccountPage() {
       setTxLoading(false);
     }
   }
-  useEffect(() => { loadTx(true); }, []);
-
-  function scrollTo(id: string) {
-    setActiveSection(id);
-    const el = document.getElementById(id);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // 积分流水只在切换到对应标签时加载
+  useEffect(() => {
+    if (activeSection === 'transactions') {
+      loadTx(true);
     }
+  }, [activeSection]);
+
+  function activateTab(id: string) {
+    if (window.location.hash !== `#${id}`) {
+      window.history.replaceState(null, '', `#${id}`);
+    }
+    setActiveSection(id);
   }
 
   function resetProfile() {
@@ -189,9 +211,13 @@ export default function AccountPage() {
           {SECTIONS.map(({ id, label, icon: Icon }) => {
             const active = activeSection === id;
             return (
-              <button
+              <a
                 key={id}
-                onClick={() => scrollTo(id)}
+                href={`#${id}`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  activateTab(id);
+                }}
                 className={cn(
                   'flex shrink-0 items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition-all duration-200',
                   active
@@ -201,187 +227,194 @@ export default function AccountPage() {
               >
                 <Icon className="size-3.5" />
                 {label}
-              </button>
+              </a>
             );
           })}
         </nav>
 
         <div className="grid gap-6">
-          {/* ── 个人资料 ── */}
-          <SectionCard id="profile" icon={User} title="个人资料" subtitle="管理你在平台上显示的昵称">
-            <div className="space-y-4">
-              <div>
-                <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-zinc-300">
-                  <User className="size-3.5 text-zinc-500" />
-                  昵称
-                </label>
-                <p className="mb-2 text-xs text-zinc-500">其他用户将在你的主页和作品中看到此名称</p>
-                <div className="flex gap-2">
-                  <input
-                    value={displayName}
-                    onChange={(e) => {
-                      setDisplayName(e.target.value);
-                      setProfileMsg(null);
-                      setProfileErr(null);
-                    }}
-                    className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3.5 py-2.5 text-sm text-white outline-none transition-all placeholder:text-zinc-600 focus:border-emerald-500/50 focus:bg-zinc-950/80 focus:ring-1 focus:ring-emerald-500/20"
-                    placeholder="你的昵称"
-                  />
-                  <button
-                    onClick={saveProfile}
-                    disabled={!dirty || profileSaving}
-                    className="flex shrink-0 items-center gap-1.5 rounded-xl bg-emerald-500 px-4 text-sm font-medium text-black transition-all hover:bg-emerald-400 hover:shadow-lg hover:shadow-emerald-500/15 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
-                  >
-                    {profileSaving ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
-                    保存
-                  </button>
-                  {dirty && (
+          {activeSection === 'profile' && (
+            <SectionCard id="profile" icon={User} title="个人资料" subtitle="管理你在平台上显示的昵称" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div className="space-y-4">
+                <div>
+                  <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-zinc-300">
+                    <User className="size-3.5 text-zinc-500" />
+                    昵称
+                  </label>
+                  <p className="mb-2 text-xs text-zinc-500">其他用户将在你的主页和作品中看到此名称</p>
+                  <div className="flex gap-2">
+                    <input
+                      value={displayName}
+                      onChange={(e) => {
+                        setDisplayName(e.target.value);
+                        setProfileMsg(null);
+                        setProfileErr(null);
+                      }}
+                      className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3.5 py-2.5 text-sm text-white outline-none transition-all placeholder:text-zinc-600 focus:border-emerald-500/50 focus:bg-zinc-950/80 focus:ring-1 focus:ring-emerald-500/20"
+                      placeholder="你的昵称"
+                    />
                     <button
-                      onClick={resetProfile}
-                      className="flex shrink-0 items-center gap-1.5 rounded-xl border border-zinc-700 bg-transparent px-4 text-sm font-medium text-zinc-300 transition-all hover:bg-white/5 hover:text-white"
+                      onClick={saveProfile}
+                      disabled={!dirty || profileSaving}
+                      className="flex shrink-0 items-center gap-1.5 rounded-xl bg-emerald-500 px-4 text-sm font-medium text-black transition-all hover:bg-emerald-400 hover:shadow-lg hover:shadow-emerald-500/15 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
                     >
-                      取消
+                      {profileSaving ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
+                      保存
+                    </button>
+                    {dirty && (
+                      <button
+                        onClick={resetProfile}
+                        className="flex shrink-0 items-center gap-1.5 rounded-xl border border-zinc-700 bg-transparent px-4 text-sm font-medium text-zinc-300 transition-all hover:bg-white/5 hover:text-white"
+                      >
+                        取消
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <Feedback msg={profileMsg} err={profileErr} />
+              </div>
+            </SectionCard>
+          )}
+
+          {activeSection === 'security' && (
+            <SectionCard id="security" icon={Shield} title="账户安全" subtitle="修改密码以保护账户安全" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div className="space-y-4">
+                <PasswordField
+                  label="当前密码"
+                  value={oldPw}
+                  onChange={(v) => { setOldPw(v); setPwErr(null); }}
+                  visible={showOld}
+                  toggle={() => setShowOld((s) => !s)}
+                  placeholder="输入当前密码"
+                />
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <PasswordField
+                    label="新密码"
+                    value={newPw}
+                    onChange={(v) => { setNewPw(v); setPwErr(null); }}
+                    visible={showNew}
+                    toggle={() => setShowNew((s) => !s)}
+                    placeholder="至少 6 位"
+                  />
+                  <PasswordField
+                    label="确认新密码"
+                    value={confirmPw}
+                    onChange={(v) => { setConfirmPw(v); setPwErr(null); }}
+                    visible={showConfirm}
+                    toggle={() => setShowConfirm((s) => !s)}
+                    placeholder="再次输入新密码"
+                  />
+                </div>
+                <div className="flex items-start gap-2 text-xs text-zinc-500">
+                  <KeyRound className="mt-0.5 size-3.5 shrink-0" />
+                  <span>建议密码包含字母与数字。修改后需使用新密码重新登录。</span>
+                </div>
+                <Feedback msg={pwMsg} err={pwErr} />
+                <button
+                  onClick={savePassword}
+                  disabled={pwSaving || !oldPw || !newPw || !confirmPw}
+                  className="flex items-center gap-1.5 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-medium text-black transition-all hover:bg-emerald-400 hover:shadow-lg hover:shadow-emerald-500/15 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
+                >
+                  {pwSaving ? <Loader2 className="size-3.5 animate-spin" /> : <KeyRound className="size-3.5" />}
+                  更新密码
+                </button>
+              </div>
+            </SectionCard>
+          )}
+
+          {activeSection === 'usage' && (
+            <SectionCard id="usage" icon={BarChart3} title="用量概览" subtitle="积分余额与创作资产统计" className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <StatTile
+                  label="赠送余额"
+                  value={user?.rewardCredits ?? 0}
+                  icon={Crown}
+                  accent="emerald"
+                  suffix="积分"
+                />
+                <StatTile
+                  label="充值余额"
+                  value={user?.rechargeCredits ?? 0}
+                  icon={Wallet}
+                  accent="cyan"
+                  suffix="积分"
+                />
+                <StatTile
+                  label="图片"
+                  value={counts?.image ?? 0}
+                  icon={ImageIcon}
+                  accent="zinc"
+                />
+                <StatTile
+                  label="视频"
+                  value={counts?.video ?? 0}
+                  icon={Video}
+                  accent="zinc"
+                />
+              </div>
+              {summary && (
+                <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  <Metric label="累计充值" value={summary.totalRecharged} tone="emerald" />
+                  <Metric label="累计消费" value={summary.totalConsumed} tone="rose" />
+                  <Metric label="本月消费" value={summary.monthConsumed} tone="zinc" />
+                </div>
+              )}
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Badge icon={ShieldCheck} tone={user?.role === 'admin' ? 'emerald' : 'zinc'}>
+                  角色：{user?.role === 'admin' ? '管理员' : '普通用户'}
+                </Badge>
+                <Badge icon={Sparkles} tone="amber">套餐：{user?.plan || 'free'}</Badge>
+              </div>
+            </SectionCard>
+          )}
+
+          {activeSection === 'transactions' && (
+            <SectionCard
+              id="transactions"
+              icon={Receipt}
+              title="积分流水"
+              subtitle="积分变动记录"
+              action={<span className="text-xs text-zinc-500">共 {txTotal} 笔</span>}
+              className="animate-in fade-in slide-in-from-bottom-2 duration-300"
+            >
+              {txns.length === 0 ? (
+                <Empty icon={Receipt} text="暂无流水记录" />
+              ) : (
+                <div className="space-y-1">
+                  {txns.map((t) => <TransactionRow key={t.id} t={t} />)}
+                  {txOffset < txTotal && (
+                    <button
+                      onClick={() => loadTx(false)}
+                      disabled={txLoading}
+                      className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-zinc-800 py-2.5 text-xs font-medium text-zinc-400 transition-all hover:border-zinc-600 hover:bg-white/5 hover:text-white disabled:opacity-50"
+                    >
+                      {txLoading ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowRight className="size-3.5" />}
+                      {txLoading ? '加载中…' : '加载更多'}
                     </button>
                   )}
                 </div>
-              </div>
-              <Feedback msg={profileMsg} err={profileErr} />
-            </div>
-          </SectionCard>
+              )}
+            </SectionCard>
+          )}
 
-          {/* ── 账户安全 ── */}
-          <SectionCard id="security" icon={Shield} title="账户安全" subtitle="修改密码以保护账户安全">
-            <div className="space-y-4">
-              <PasswordField
-                label="当前密码"
-                value={oldPw}
-                onChange={(v) => { setOldPw(v); setPwErr(null); }}
-                visible={showOld}
-                toggle={() => setShowOld((s) => !s)}
-                placeholder="输入当前密码"
-              />
-              <div className="grid gap-4 sm:grid-cols-2">
-                <PasswordField
-                  label="新密码"
-                  value={newPw}
-                  onChange={(v) => { setNewPw(v); setPwErr(null); }}
-                  visible={showNew}
-                  toggle={() => setShowNew((s) => !s)}
-                  placeholder="至少 6 位"
-                />
-                <PasswordField
-                  label="确认新密码"
-                  value={confirmPw}
-                  onChange={(v) => { setConfirmPw(v); setPwErr(null); }}
-                  visible={showConfirm}
-                  toggle={() => setShowConfirm((s) => !s)}
-                  placeholder="再次输入新密码"
-                />
-              </div>
-              <div className="flex items-start gap-2 text-xs text-zinc-500">
-                <KeyRound className="mt-0.5 size-3.5 shrink-0" />
-                <span>建议密码包含字母与数字。修改后需使用新密码重新登录。</span>
-              </div>
-              <Feedback msg={pwMsg} err={pwErr} />
-              <button
-                onClick={savePassword}
-                disabled={pwSaving || !oldPw || !newPw || !confirmPw}
-                className="flex items-center gap-1.5 rounded-xl bg-emerald-500 px-5 py-2.5 text-sm font-medium text-black transition-all hover:bg-emerald-400 hover:shadow-lg hover:shadow-emerald-500/15 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
-              >
-                {pwSaving ? <Loader2 className="size-3.5 animate-spin" /> : <KeyRound className="size-3.5" />}
-                更新密码
-              </button>
-            </div>
-          </SectionCard>
-
-          {/* ── 用量概览 ── */}
-          <SectionCard id="usage" icon={BarChart3} title="用量概览" subtitle="积分余额与创作资产统计">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <StatTile
-                label="赠送余额"
-                value={user?.rewardCredits ?? 0}
-                icon={Crown}
-                accent="emerald"
-                suffix="积分"
-              />
-              <StatTile
-                label="充值余额"
-                value={user?.rechargeCredits ?? 0}
-                icon={Wallet}
-                accent="cyan"
-                suffix="积分"
-              />
-              <StatTile
-                label="图片"
-                value={counts?.image ?? 0}
-                icon={ImageIcon}
-                accent="zinc"
-              />
-              <StatTile
-                label="视频"
-                value={counts?.video ?? 0}
-                icon={Video}
-                accent="zinc"
-              />
-            </div>
-            {summary && (
-              <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-3">
-                <Metric label="累计充值" value={summary.totalRecharged} tone="emerald" />
-                <Metric label="累计消费" value={summary.totalConsumed} tone="rose" />
-                <Metric label="本月消费" value={summary.monthConsumed} tone="zinc" />
-              </div>
-            )}
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <Badge icon={ShieldCheck} tone={user?.role === 'admin' ? 'emerald' : 'zinc'}>
-                角色：{user?.role === 'admin' ? '管理员' : '普通用户'}
-              </Badge>
-              <Badge icon={Sparkles} tone="amber">套餐：{user?.plan || 'free'}</Badge>
-            </div>
-          </SectionCard>
-
-          {/* ── 积分流水 ── */}
-          <SectionCard
-            id="transactions"
-            icon={Receipt}
-            title="积分流水"
-            subtitle="积分变动记录"
-            action={<span className="text-xs text-zinc-500">共 {txTotal} 笔</span>}
-          >
-            {txns.length === 0 ? (
-              <Empty icon={Receipt} text="暂无流水记录" />
-            ) : (
-              <div className="space-y-1">
-                {txns.map((t) => <TransactionRow key={t.id} t={t} />)}
-                {txOffset < txTotal && (
-                  <button
-                    onClick={() => loadTx(false)}
-                    disabled={txLoading}
-                    className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-zinc-800 py-2.5 text-xs font-medium text-zinc-400 transition-all hover:border-zinc-600 hover:bg-white/5 hover:text-white disabled:opacity-50"
-                  >
-                    {txLoading ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowRight className="size-3.5" />}
-                    {txLoading ? '加载中…' : '加载更多'}
-                  </button>
-                )}
-              </div>
-            )}
-          </SectionCard>
-
-          {/* ── 充值订单 ── */}
-          <SectionCard
-            id="recharges"
-            icon={Wallet}
-            title="充值订单"
-            subtitle="充值记录与支付状态"
-            action={<span className="text-xs text-zinc-500">{recharges.length} 笔</span>}
-          >
-            {recharges.length === 0 ? (
-              <Empty icon={Package} text="暂无充值订单" />
-            ) : (
-              <div className="space-y-1">
-                {recharges.map((o) => <RechargeRow key={o.id} o={o} />)}
-              </div>
-            )}
-          </SectionCard>
+          {activeSection === 'recharges' && (
+            <SectionCard
+              id="recharges"
+              icon={Wallet}
+              title="充值订单"
+              subtitle="充值记录与支付状态"
+              action={<span className="text-xs text-zinc-500">{recharges.length} 笔</span>}
+              className="animate-in fade-in slide-in-from-bottom-2 duration-300"
+            >
+              {recharges.length === 0 ? (
+                <Empty icon={Package} text="暂无充值订单" />
+              ) : (
+                <div className="space-y-1">
+                  {recharges.map((o) => <RechargeRow key={o.id} o={o} />)}
+                </div>
+              )}
+            </SectionCard>
+          )}
         </div>
 
         <div className="h-12" />
@@ -401,6 +434,7 @@ function SectionCard({
   subtitle,
   children,
   action,
+  className,
 }: {
   id?: string;
   icon: ElementType;
@@ -408,11 +442,15 @@ function SectionCard({
   subtitle?: string;
   children: ReactNode;
   action?: ReactNode;
+  className?: string;
 }) {
   return (
     <section
       id={id}
-      className="group rounded-3xl border border-zinc-800/80 bg-zinc-900/40 p-6 backdrop-blur-md transition-all duration-300 hover:border-zinc-700/80 hover:bg-zinc-900/50 hover:shadow-lg hover:shadow-black/10 md:p-7"
+      className={cn(
+        'group rounded-3xl border border-zinc-800/80 bg-zinc-900/40 p-6 backdrop-blur-md transition-all duration-300 hover:border-zinc-700/80 hover:bg-zinc-900/50 hover:shadow-lg hover:shadow-black/10 md:p-7',
+        className
+      )}
     >
       <div className="mb-5 flex items-start justify-between gap-3">
         <div className="flex items-center gap-3">

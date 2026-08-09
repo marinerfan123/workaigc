@@ -4,14 +4,12 @@ import { NavLink } from 'react-router-dom';
 import { LayoutGrid, Clapperboard, ShoppingBag, ShieldAlert } from 'lucide-react';
 import { useAuth } from '@/services/authStore';
 import { cn } from '@/components/skeleton';
-import { isPathLocked } from '@/config/moduleLocks';
 
 const PRODUCTS = [
   { to: '/workspace', label: '工作台', icon: LayoutGrid },
   { to: '/studio', label: '创作工作室', icon: Clapperboard },
   { to: '/shop', label: 'AI 市集', icon: ShoppingBag },
-  // 锁定模块不进入产品切换（单一事实来源：moduleLocks.ts）
-].filter((p) => !isPathLocked(p.to));
+];
 
 export function ProductSwitcher({ className = '' }: { className?: string }) {
   const { user } = useAuth();

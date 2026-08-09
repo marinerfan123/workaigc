@@ -439,16 +439,18 @@ function createAdmin(ctx) {
     if (query.user) w('u.display_name ILIKE $n', `%${query.user}%`);
     if (query.from) { const d = new Date(query.from); if (!isNaN(d.getTime())) w('t.created_at >= $n', d); }
     if (query.to) { const d = new Date(query.to); if (!isNaN(d.getTime())) w('t.created_at <= $n', d); }
-    if (query.before) { const d = new Date(query.before); if (!isNaN(d.getTime())) w('t.created_at < $n', d); }
     const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 1000);
     const ws = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    // total 不应受游标 before 影响
     const countR = await pg().query(
       `SELECT COUNT(*) FROM generation_tasks t LEFT JOIN users u ON u.id=t.user_id ${ws}`, params);
+    if (query.before) { const d = new Date(query.before); if (!isNaN(d.getTime())) w('t.created_at < $n', d); }
+    const dataWs = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const r = await pg().query(
       `SELECT t.task_id, t.created_at, t.status, t.model, t.content_type, t.prompt,
               t.cost, t.completed_at, t.user_id, t.error, u.display_name AS user
        FROM generation_tasks t LEFT JOIN users u ON u.id=t.user_id
-       ${ws} ORDER BY t.created_at DESC LIMIT $${i}`, [...params, limit]);
+       ${dataWs} ORDER BY t.created_at DESC LIMIT $${i}`, [...params, limit]);
     const items = r.rows.map((x) => {
       const created = x.created_at ? new Date(x.created_at).getTime() : null;
       const done = x.completed_at ? new Date(x.completed_at).getTime() : null;
@@ -483,18 +485,20 @@ function createAdmin(ctx) {
     else if (query.is_deleted === 'false') w('m.is_deleted=$n', false);
     if (query.from) { const d = new Date(query.from); if (!isNaN(d.getTime())) w('m.created_at >= $n', d); }
     if (query.to) { const d = new Date(query.to); if (!isNaN(d.getTime())) w('m.created_at <= $n', d); }
-    if (query.before) { const d = new Date(query.before); if (!isNaN(d.getTime())) w('m.created_at < $n', d); }
     const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 1000);
     const ws = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    // total 不应受游标 before 影响
     const countR = await pg().query(
       `SELECT COUNT(*) FROM media m LEFT JOIN users u ON u.id=m.user_id ${ws}`, params);
+    if (query.before) { const d = new Date(query.before); if (!isNaN(d.getTime())) w('m.created_at < $n', d); }
+    const dataWs = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const r = await pg().query(
       `SELECT m.id, m.title, m.type, m.thumbnail, m.full_url, m.oss_url, m.user_id,
               m.is_deleted, m.created_at, m.file_size, m.category, m.model,
               u.display_name AS user,
               COALESCE(NULLIF(m.oss_url,''), NULLIF(m.full_url,''), m.thumbnail) AS url
        FROM media m LEFT JOIN users u ON u.id=m.user_id
-       ${ws} ORDER BY m.created_at DESC LIMIT $${i}`, [...params, limit]);
+       ${dataWs} ORDER BY m.created_at DESC LIMIT $${i}`, [...params, limit]);
     const items = r.rows.map((x) => ({
       id: x.id,
       title: x.title,
@@ -534,9 +538,10 @@ function createAdmin(ctx) {
       if (keyword) { gwhere += ` AND t.error ILIKE $${gi}`; gparams.push(`%${keyword}%`); gi++; }
       if (from && !isNaN(from.getTime())) { gwhere += ` AND t.created_at >= $${gi}`; gparams.push(from); gi++; }
       if (to && !isNaN(to.getTime())) { gwhere += ` AND t.created_at <= $${gi}`; gparams.push(to); gi++; }
-      if (before && !isNaN(before.getTime())) { gwhere += ` AND t.created_at < $${gi}`; gparams.push(before); gi++; }
+      // total 不受游标 before 影响
       const c = await pg().query(`SELECT COUNT(*) FROM generation_tasks t WHERE ${gwhere}`, gparams);
       total += parseInt(c.rows[0].count, 10);
+      if (before && !isNaN(before.getTime())) { gwhere += ` AND t.created_at < $${gi}`; gparams.push(before); gi++; }
       const gr = await pg().query(
         `SELECT t.task_id, t.user_id, t.model, t.error, t.created_at
          FROM generation_tasks t WHERE ${gwhere} ORDER BY t.created_at DESC LIMIT $${gi}`,
@@ -555,9 +560,10 @@ function createAdmin(ctx) {
       if (keyword) { swhere += ` AND (message ILIKE $${si} OR source ILIKE $${si})`; sparams.push(`%${keyword}%`); si++; }
       if (from && !isNaN(from.getTime())) { swhere += ` AND created_at >= $${si}`; sparams.push(from); si++; }
       if (to && !isNaN(to.getTime())) { swhere += ` AND created_at <= $${si}`; sparams.push(to); si++; }
-      if (before && !isNaN(before.getTime())) { swhere += ` AND created_at < $${si}`; sparams.push(before); si++; }
+      // total 不受游标 before 影响
       const c = await pg().query(`SELECT COUNT(*) FROM system_error_logs WHERE ${swhere}`, sparams);
       total += parseInt(c.rows[0].count, 10);
+      if (before && !isNaN(before.getTime())) { swhere += ` AND created_at < $${si}`; sparams.push(before); si++; }
       const sr = await pg().query(
         `SELECT id, category, source, message, meta, created_at
          FROM system_error_logs WHERE ${swhere} ORDER BY created_at DESC LIMIT $${si}`,

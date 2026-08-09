@@ -31,6 +31,7 @@ import {
 
 const PRESETS = [6, 30, 98, 198, 648];
 const QUICK_AMOUNTS = [10, 50, 100, 200, 500, 1000];
+const MIN_RECHARGE_YUAN = 10; // 产品级最低充值金额，前端兜底，避免后端配置过低时放行到 API
 type Step = 'form' | 'paying' | 'success' | 'error';
 
 const CHANNEL_META: Record<string, { label: string; icon: typeof Smartphone; color: string; bg: string }> = {
@@ -46,7 +47,7 @@ export default function RechargePage() {
   const [custom, setCustom] = useState('');
   const [channel, setChannel] = useState<string>('wxpay');
   const [methods, setMethods] = useState<string[]>(['wxpay', 'alipay']);
-  const [limits, setLimits] = useState<{ min: number; max: number }>({ min: 1, max: 100000 });
+  const [limits, setLimits] = useState<{ min: number; max: number }>({ min: MIN_RECHARGE_YUAN, max: 100000 });
   const [step, setStep] = useState<Step>('form');
   const [order, setOrder] = useState<RechargeOrder | null>(null);
   const [busy, setBusy] = useState(false);
@@ -71,7 +72,9 @@ export default function RechargePage() {
     apiGetPaymentMethods().then((info) => {
       const available = info.items.length ? info.items : ['wxpay', 'alipay'];
       setMethods(available);
-      setLimits(info.limits || { min: 1, max: 100000 });
+      const backendMin = info.limits?.min ?? MIN_RECHARGE_YUAN;
+      const backendMax = info.limits?.max ?? 100000;
+      setLimits({ min: Math.max(backendMin, MIN_RECHARGE_YUAN), max: backendMax });
       setChannel((prev) => (available.includes(prev) ? prev : available[0] || 'wxpay'));
     }).catch(() => {});
   }, []);
@@ -223,14 +226,15 @@ export default function RechargePage() {
             {user && (
               <div className="rounded-3xl border border-white/10 bg-zinc-900/60 p-6 backdrop-blur-sm">
                 <div className="text-xs text-zinc-500">当前账户余额</div>
-                <div className="mt-2 flex items-baseline gap-3 text-4xl font-bold tabular-nums">
-                  <span className="text-emerald-400" title="赠送余额">{user.rewardCredits ?? 0}</span>
-                  <span className="text-lg text-zinc-600">/</span>
-                  <span className="text-amber-400" title="充值余额">{user.rechargeCredits ?? 0}</span>
-                </div>
-                <div className="mt-1 flex items-center gap-3 text-xs text-zinc-500">
-                  <span className="flex items-center gap-1"><span className="inline-block size-2 rounded-full bg-emerald-400" /> 赠送</span>
-                  <span className="flex items-center gap-1"><span className="inline-block size-2 rounded-full bg-amber-400" /> 充值</span>
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-sm text-zinc-500">赠送积分</span>
+                    <span className="text-2xl font-bold tabular-nums text-emerald-400">{user.rewardCredits ?? 0}</span>
+                  </div>
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-sm text-zinc-500">充值积分</span>
+                    <span className="text-2xl font-bold tabular-nums text-amber-400">{user.rechargeCredits ?? 0}</span>
+                  </div>
                 </div>
                 {step === 'form' && valid && (
                   <div className="mt-4 rounded-2xl border border-dashed border-emerald-500/30 bg-emerald-500/5 p-3 text-xs text-emerald-300">
@@ -377,11 +381,11 @@ export default function RechargePage() {
                   <div className="rounded-2xl border border-white/5 bg-white/[0.02] p-4">
                     <div className="flex items-center justify-between text-sm">
                       <span className="text-zinc-400">应付金额</span>
-                      <span className="text-2xl font-bold text-white">¥{valid ? finalAmount : 0}</span>
+                      <span className={`text-2xl font-bold ${valid ? 'text-white' : 'text-red-400'}`}>¥{finalAmount || 0}</span>
                     </div>
-                    <div className="mt-1 flex items-center justify-between text-xs text-zinc-500">
-                      <span>预计获得积分</span>
-                      <span className="text-emerald-300">{creditsPreview} 积分</span>
+                    <div className="mt-1 flex items-center justify-between text-xs">
+                      <span className="text-zinc-500">预计获得积分</span>
+                      <span className={valid ? 'text-emerald-300' : 'text-red-400'}>{valid ? `${creditsPreview} 积分` : '金额过低，无法充值'}</span>
                     </div>
                     <div className="mt-3 border-t border-white/5 pt-2 text-[11px] text-zinc-500">
                       默认按所选金额支付，支付成功后积分将自动到账
@@ -394,7 +398,7 @@ export default function RechargePage() {
                     className="flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-cyan-500 py-4 text-base font-bold text-zinc-900 transition-transform hover:scale-[1.01] disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {busy ? <Loader2 className="size-5 animate-spin" /> : <Wallet className="size-5" />}
-                    {!user ? '请先登录后充值' : methods.length === 0 ? '支付通道未就绪' : `立即支付 ¥${valid ? finalAmount : 0}`}
+                    {!user ? '请先登录后充值' : methods.length === 0 ? '支付通道未就绪' : !valid ? `最低 ¥${limits.min.toFixed(0)} 起充` : `立即支付 ¥${finalAmount}`}
                   </button>
 
                   {!user && (

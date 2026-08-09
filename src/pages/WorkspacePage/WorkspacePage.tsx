@@ -30,8 +30,7 @@ interface IGenerationSettings {
   quality: Quality;
   model: string;
   count: 1 | 2 | 3 | 4;
-  /** 视频时长（秒）；-1 表示「智能选时长」 */
-  duration?: number;
+  duration?: 4 | 6 | 8 | 10;
 }
 
 const DEFAULT_SETTINGS: IGenerationSettings = {

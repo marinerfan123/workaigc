@@ -22,7 +22,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { PageHeader, StatCard, SectionCard, TabBar, cn } from '@/components/skeleton';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   apiGetGenerations,
   apiGetAssets,
@@ -50,6 +50,19 @@ function LimitSelector({ value, onChange }: { value: number; onChange: (n: numbe
   );
 }
 
+function PopOutButton({ tab }: { tab: 'generations' | 'assets' | 'issues' }) {
+  return (
+    <button
+      onClick={() => window.open(`/monitoring/${tab}`, '_blank', 'noopener,noreferrer')}
+      title="跳出单独页面"
+      className="inline-flex items-center gap-1 rounded-lg bg-zinc-800 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-700"
+    >
+      <ExternalLink className="size-3" />
+      单独页面
+    </button>
+  );
+}
+
 /* 通用游标分页 tab 状态机：filters/limit 变化→防抖重载；loadMore→追加下一页 */
 function useMonitorTab<T>(apiFn: (p: any) => Promise<{ total: number; items: T[]; nextCursor: string | null }>, filters: any, limit: number) {
   const [items, setItems] = useState<T[]>([]);
@@ -57,29 +70,67 @@ function useMonitorTab<T>(apiFn: (p: any) => Promise<{ total: number; items: T[]
   const [loading, setLoading] = useState(false);
   const cursorRef = useRef<string | null>(null);
   const reqIdRef = useRef(0);
+  const loadingRef = useRef(false);
 
   const load = useCallback(
     async (reset: boolean) => {
+      if (loadingRef.current) return; // 防止并发
       const myId = ++reqIdRef.current;
+      loadingRef.current = true;
       setLoading(true);
-      const res = await apiFn({ ...filters, limit, before: reset ? undefined : cursorRef.current ?? undefined });
-      if (myId !== reqIdRef.current) return; // 丢弃过期响应
-      setTotal(res.total);
-      setItems((prev) => (reset ? res.items : [...prev, ...(res.items as T[])]));
-      cursorRef.current = res.nextCursor ?? null;
-      setLoading(false);
+      try {
+        const res = await apiFn({ ...filters, limit, before: reset ? undefined : cursorRef.current ?? undefined });
+        if (myId !== reqIdRef.current) return; // 丢弃过期响应
+        setTotal(res.total);
+        setItems((prev) => (reset ? res.items : [...prev, ...(res.items as T[])]));
+        cursorRef.current = res.nextCursor ?? null;
+      } finally {
+        loadingRef.current = false;
+        setLoading(false);
+      }
     },
     [filters, apiFn, limit],
   );
 
+  // 仅在 filters 或 limit 真正变化时重置加载；filters 必须由调用方 useMemo 稳定
   useEffect(() => {
-    const id = setTimeout(() => load(true), 300);
+    cursorRef.current = null;
+    const id = setTimeout(() => load(true), 120);
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [load]);
+  }, [filters, limit, apiFn]);
 
-  const loadMore = () => load(false);
-  return { items, total, loading, loadMore };
+  const loadMore = useCallback(() => load(false), [load]);
+  const reset = useCallback(() => load(true), [load]);
+  return { items, total, loading, loadMore, reset };
+}
+
+/* 表格容器滚动到底自动加载（带 300ms 节流） */
+function useScrollLoad(loadMore: () => void, hasMore: boolean, loading: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+  const lastRef = useRef(0);
+  const loadMoreRef = useRef(loadMore);
+  loadMoreRef.current = loadMore;
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (!hasMore || loading) return;
+      const now = Date.now();
+      if (now - lastRef.current < 300) return;
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      // 只有内容真正溢出时才触发
+      if (scrollHeight <= clientHeight + 2) return;
+      if (scrollTop + clientHeight >= scrollHeight - 80) {
+        lastRef.current = now;
+        loadMoreRef.current();
+      }
+    };
+    el.addEventListener('scroll', onScroll);
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [hasMore, loading]);
+  return ref;
 }
 
 function fmtDateTime(iso?: string) {
@@ -112,21 +163,22 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 /* ───────────────── 生成监控 ───────────────── */
-function GenerationsTab() {
+export function GenerationsTab() {
   const [status, setStatus] = useState('');
   const [contentType, setContentType] = useState('');
   const [model, setModel] = useState('');
   const [user, setUser] = useState('');
   const [limit, setLimit] = useState(DEFAULT_PAGE);
-  const filters = { status, content_type: contentType, model, user };
+  const filters = useMemo(() => ({ status, content_type: contentType, model, user }), [status, contentType, model, user]);
   const { items, total, loading, loadMore } = useMonitorTab<GenerationItem>(apiGetGenerations, filters, limit);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const scrollRef = useScrollLoad(loadMore, items.length < total, loading);
 
   const failedOnPage = items.filter((i) => i.status === 'failed').length;
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div className="h-full flex flex-col gap-4">
+      <div className="shrink-0 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="总生成" value={total} icon={<Hash className="size-4" />} />
         <StatCard label="已加载" value={items.length} icon={<Database className="size-4" />} />
         <StatCard label="本页失败" value={failedOnPage} icon={<AlertTriangle className="size-4" />} />
@@ -134,6 +186,8 @@ function GenerationsTab() {
       </div>
 
       <SectionCard
+        className="flex-1 flex flex-col min-h-0"
+        bodyClassName="flex-1 flex flex-col min-h-0"
         title="跨用户生成"
         hint={`命中 ${total} 条 · 已加载 ${items.length}`}
         actions={
@@ -155,10 +209,11 @@ function GenerationsTab() {
               <input value={user} onChange={(e) => setUser(e.target.value)} placeholder="用户(昵称)" className="w-28 bg-transparent text-zinc-200 placeholder:text-zinc-600 outline-none" />
             </div>
             <LimitSelector value={limit} onChange={setLimit} />
+            <PopOutButton tab="generations" />
           </div>
         }
       >
-        <div className="max-h-[560px] overflow-auto rounded-2xl border border-zinc-800 bg-zinc-950/60">
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto rounded-2xl border border-zinc-800 bg-zinc-950/60">
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-zinc-900 text-zinc-400">
               <tr className="[&>th]:px-3 [&>th]:py-2 [&>th]:text-left [&>th]:font-medium">
@@ -201,11 +256,11 @@ function GenerationsTab() {
             </div>
           )}
         </div>
-        <div className="mt-3 flex items-center justify-between">
+        <div className="mt-3 flex shrink-0 items-center justify-between">
           <span className="text-xs text-zinc-500">已加载 {items.length} / {total}</span>
           {items.length < total && (
             <button onClick={loadMore} disabled={loading} className="inline-flex items-center gap-1 rounded-lg bg-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-50">
-              <Filter className="size-3" /> 加载更多
+              <Filter className="size-3" /> {loading ? '加载中…' : '加载更多'}
             </button>
           )}
         </div>
@@ -215,19 +270,20 @@ function GenerationsTab() {
 }
 
 /* ───────────────── 资产链接 ───────────────── */
-function AssetsTab() {
+export function AssetsTab() {
   const [type, setType] = useState('');
   const [user, setUser] = useState('');
   const [q, setQ] = useState('');
   const [isDeleted, setIsDeleted] = useState('');
   const [limit, setLimit] = useState(DEFAULT_PAGE);
-  const filters = { type, user, q, is_deleted: isDeleted };
+  const filters = useMemo(() => ({ type, user, q, is_deleted: isDeleted }), [type, user, q, isDeleted]);
   const { items, total, loading, loadMore } = useMonitorTab<AssetItem>(apiGetAssets, filters, limit);
   const deletedOnPage = items.filter((i) => i.isDeleted).length;
+  const scrollRef = useScrollLoad(loadMore, items.length < total, loading);
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div className="h-full flex flex-col gap-4">
+      <div className="shrink-0 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="总资产" value={total} icon={<ImageIcon className="size-4" />} />
         <StatCard label="已加载" value={items.length} icon={<Database className="size-4" />} />
         <StatCard label="本页已删" value={deletedOnPage} icon={<XCircle className="size-4" />} />
@@ -235,6 +291,8 @@ function AssetsTab() {
       </div>
 
       <SectionCard
+        className="flex-1 flex flex-col min-h-0"
+        bodyClassName="flex-1 flex flex-col min-h-0"
         title="资产链接总览"
         hint={`命中 ${total} 条 · 已加载 ${items.length}`}
         actions={
@@ -255,10 +313,11 @@ function AssetsTab() {
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="标题/URL" className="w-32 bg-transparent text-zinc-200 placeholder:text-zinc-600 outline-none" />
             </div>
             <LimitSelector value={limit} onChange={setLimit} />
+            <PopOutButton tab="assets" />
           </div>
         }
       >
-        <div className="max-h-[560px] overflow-auto rounded-2xl border border-zinc-800 bg-zinc-950/60">
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto rounded-2xl border border-zinc-800 bg-zinc-950/60">
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-zinc-900 text-zinc-400">
               <tr className="[&>th]:px-3 [&>th]:py-2 [&>th]:text-left [&>th]:font-medium">
@@ -295,11 +354,11 @@ function AssetsTab() {
           </table>
           {items.length === 0 && <div className="px-3 py-10 text-center text-zinc-600">{loading ? '加载中…' : '暂无资产'}</div>}
         </div>
-        <div className="mt-3 flex items-center justify-between">
+        <div className="mt-3 flex shrink-0 items-center justify-between">
           <span className="text-xs text-zinc-500">已加载 {items.length} / {total}</span>
           {items.length < total && (
             <button onClick={loadMore} disabled={loading} className="inline-flex items-center gap-1 rounded-lg bg-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-50">
-              <Filter className="size-3" /> 加载更多
+              <Filter className="size-3" /> {loading ? '加载中…' : '加载更多'}
             </button>
           )}
         </div>
@@ -309,18 +368,19 @@ function AssetsTab() {
 }
 
 /* ───────────────── 生成报错 ───────────────── */
-function IssuesTab() {
+export function IssuesTab() {
   const [scope, setScope] = useState('all');
   const [keyword, setKeyword] = useState('');
   const [category, setCategory] = useState('');
   const [limit, setLimit] = useState(DEFAULT_PAGE);
-  const filters = { scope, keyword, category };
+  const filters = useMemo(() => ({ scope, keyword, category }), [scope, keyword, category]);
   const { items, total, loading, loadMore } = useMonitorTab<IssueItem>(apiGetIssues, filters, limit);
   const [expanded, setExpanded] = useState<Set<string | number>>(new Set());
+  const scrollRef = useScrollLoad(loadMore, items.length < total, loading);
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+    <div className="h-full flex flex-col gap-4">
+      <div className="shrink-0 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="总报错" value={total} icon={<AlertTriangle className="size-4" />} />
         <StatCard label="已加载" value={items.length} icon={<Database className="size-4" />} />
         <StatCard label="生成失败" value={items.filter((i) => i.kind === 'generation').length} icon={<XCircle className="size-4" />} />
@@ -328,6 +388,8 @@ function IssuesTab() {
       </div>
 
       <SectionCard
+        className="flex-1 flex flex-col min-h-0"
+        bodyClassName="flex-1 flex flex-col min-h-0"
         title="生成报错 + 系统错误（合并）"
         hint={`命中 ${total} 条 · 已加载 ${items.length} · 按时间归并`}
         actions={
@@ -343,10 +405,11 @@ function IssuesTab() {
               <input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="关键字" className="w-32 bg-transparent text-zinc-200 placeholder:text-zinc-600 outline-none" />
             </div>
             <LimitSelector value={limit} onChange={setLimit} />
+            <PopOutButton tab="issues" />
           </div>
         }
       >
-        <div className="max-h-[560px] overflow-auto rounded-2xl border border-zinc-800 bg-zinc-950/60">
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto rounded-2xl border border-zinc-800 bg-zinc-950/60">
           {items.map((it) => {
             const open = expanded.has(it.id);
             const isGen = it.kind === 'generation';
@@ -381,11 +444,11 @@ function IssuesTab() {
           })}
           {items.length === 0 && <div className="px-3 py-10 text-center text-zinc-600">{loading ? '加载中…' : '暂无报错 🎉'}</div>}
         </div>
-        <div className="mt-3 flex items-center justify-between">
+        <div className="mt-3 flex shrink-0 items-center justify-between">
           <span className="text-xs text-zinc-500">已加载 {items.length} / {total}</span>
           {items.length < total && (
             <button onClick={loadMore} disabled={loading} className="inline-flex items-center gap-1 rounded-lg bg-zinc-800 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-700 disabled:opacity-50">
-              <Filter className="size-3" /> 加载更多
+              <Filter className="size-3" /> {loading ? '加载中…' : '加载更多'}
             </button>
           )}
         </div>
@@ -400,13 +463,15 @@ type MonitorTab = 'generations' | 'assets' | 'issues';
 export default function MonitoringPage() {
   const [tab, setTab] = useState<MonitorTab>('generations');
   return (
-    <div className="space-y-5 p-6">
+    <div className="h-full flex flex-col gap-5 p-6">
       <PageHeader
+        className="shrink-0"
         title="全局监控"
         subtitle="跨用户生成 · 资产链接 · 生成报错（合并系统错误） · 仅管理员可见 · 数据来自后端 REST 接口"
         icon={<Database className="size-5" />}
       />
       <TabBar<MonitorTab>
+        className="shrink-0"
         tabs={[
           { key: 'generations', label: '用户生成', icon: <Activity className="size-4" /> },
           { key: 'assets', label: '资产链接', icon: <ImageIcon className="size-4" /> },
@@ -415,10 +480,12 @@ export default function MonitoringPage() {
         active={tab}
         onChange={setTab}
       />
-      {/* 三个 tab 常驻挂载，切换用 hidden 保留各自已加载状态 */}
-      <div className={cn(tab !== 'generations' && 'hidden')}><GenerationsTab /></div>
-      <div className={cn(tab !== 'assets' && 'hidden')}><AssetsTab /></div>
-      <div className={cn(tab !== 'issues' && 'hidden')}><IssuesTab /></div>
+      {/* 仅渲染当前 tab，避免 hidden tab 的 useEffect 副作用互相干扰 */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {tab === 'generations' && <GenerationsTab />}
+        {tab === 'assets' && <AssetsTab />}
+        {tab === 'issues' && <IssuesTab />}
+      </div>
     </div>
   );
 }

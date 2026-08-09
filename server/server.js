@@ -434,7 +434,7 @@ async function initDB() {
         id                INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
         enabled           BOOLEAN NOT NULL DEFAULT TRUE,
         default_expires_min INT NOT NULL DEFAULT 15,
-        min_amount        INT NOT NULL DEFAULT 100,        -- 最小充值（分）
+        min_amount        INT NOT NULL DEFAULT 1000,       -- 最小充值（分）¥10
         max_amount        INT NOT NULL DEFAULT 10000000,   -- 最大充值（分）
         daily_limit       INT NOT NULL DEFAULT 10000000,   -- 单用户日限额（分）
         max_open_orders   INT NOT NULL DEFAULT 5,          -- 单用户最大待支付数
@@ -611,6 +611,16 @@ async function initDB() {
       );
       CREATE INDEX IF NOT EXISTS ix_cl_scope_time ON consumption_ledger(scope, created_at DESC);
       CREATE INDEX IF NOT EXISTS ix_cl_actor ON consumption_ledger(actor_id, created_at DESC);
+
+      -- 模型价格历史快照：每次改价/下架/删除时归档(last credit_cost)，供「再添加时提醒沿用原价格」
+      CREATE TABLE IF NOT EXISTS model_price_history (
+        id            TEXT PRIMARY KEY DEFAULT 'mph-' || gen_random_uuid()::text,
+        model_id      TEXT NOT NULL,
+        display_name  TEXT DEFAULT '',
+        credit_cost   INT DEFAULT 0,
+        updated_at    TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_mph_model ON model_price_history(model_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS ix_cl_purpose ON consumption_ledger(purpose, created_at DESC);
       CREATE INDEX IF NOT EXISTS ix_cl_idem ON consumption_ledger(idempotency_key) WHERE idempotency_key <> '';
 
@@ -1664,6 +1674,20 @@ async function handleAPI(req, res) {
     }
   }
 
+  // ── 模型历史价格查询（再添加时提醒沿用原价格）──
+  if (url === '/api/admin/model-price-history' && method === 'GET') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    const modelId = ((req.query && req.query.modelId) || '').toString().trim();
+    if (!modelId) return sendJSON(res, 400, { error: 'modelId 必填' });
+    try {
+      const r = await pgPool.query('SELECT display_name, credit_cost, updated_at FROM model_price_history WHERE model_id=$1 ORDER BY updated_at DESC LIMIT 1', [modelId]);
+      if (!r.rows.length) return sendJSON(res, 200, { found: false, modelId });
+      const h = r.rows[0];
+      return sendJSON(res, 200, { found: true, modelId, displayName: h.display_name, creditCost: Number(h.credit_cost) || 0, updatedAt: h.updated_at });
+    } catch (e) {
+      return sendJSON(res, 200, { found: false, modelId, error: e.message });
+    }
+  }
   if (url.startsWith('/api/admin/') && method !== 'OPTIONS') return admin.handleAdmin(req, res, url.split('?')[0], method);
 
   // ── 电商模块（AI 市集 / 技能注册表 / 试用台）── 命中即处理（内部自行鉴权：目录/商品公开，试用/获取/我的技能需登录）
@@ -2852,11 +2876,15 @@ async function handleAPI(req, res) {
     const arr = Array.isArray(items) ? items : [items];
     if (pgPool) {
       try {
+        const provRows = await pgPool.query('SELECT id FROM providers');
+        const provIds = new Set((provRows.rows || []).map(r => r.id));
         for (const it of arr) {
           const s = toSnake(it);
+          // 外键容错：provider_id 必须引用已存在的服务商，否则置 NULL，避免整批同步因外键约束失败
+          const pid = (s.provider_id && provIds.has(s.provider_id)) ? s.provider_id : null;
           await pgPool.query(
             `INSERT INTO models (id,model_id,display_name,mapping_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint,param_template,credit_cost,supports_reward_balance,reward_credits_required,max_concurrent,estimated_seconds,category,commercial_use,creator) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name,mapping_name=EXCLUDED.mapping_name,enabled=EXCLUDED.enabled,credit_cost=EXCLUDED.credit_cost,supports_reward_balance=EXCLUDED.supports_reward_balance,reward_credits_required=EXCLUDED.reward_credits_required,max_concurrent=EXCLUDED.max_concurrent,estimated_seconds=EXCLUDED.estimated_seconds,category=EXCLUDED.category,commercial_use=EXCLUDED.commercial_use,creator=EXCLUDED.creator,param_template=EXCLUDED.param_template`,
-            [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, s.provider_id, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), JSON.stringify(s.param_template || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0)), (s.supports_reward_balance === true || s.supports_reward_balance === 'true' ? true : (s.supports_reward_balance === false || s.supports_reward_balance === 'false' ? false : true)), (s.reward_credits_required != null && s.reward_credits_required !== '' ? Math.max(0, Math.floor(Number(s.reward_credits_required))) : Math.max(0, Math.floor(Number(s.credit_cost) || 0))), (s.max_concurrent == null ? null : Math.max(0, Math.floor(Number(s.max_concurrent)))), (s.estimated_seconds == null ? null : Math.max(0, Math.floor(Number(s.estimated_seconds)))), (s.category == null ? '' : String(s.category)), (s.commercial_use === true || s.commercial_use === 'true' ? true : (s.commercial_use === false || s.commercial_use === 'false' ? false : null)), (s.creator && typeof s.creator === 'object' ? JSON.stringify(s.creator) : (s.creator == null ? null : JSON.stringify(s.creator)))]
+            [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, pid, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), JSON.stringify(s.param_template || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0)), (s.supports_reward_balance === true || s.supports_reward_balance === 'true' ? true : (s.supports_reward_balance === false || s.supports_reward_balance === 'false' ? false : true)), (s.reward_credits_required != null && s.reward_credits_required !== '' ? Math.max(0, Math.floor(Number(s.reward_credits_required))) : Math.max(0, Math.floor(Number(s.credit_cost) || 0))), (s.max_concurrent == null ? null : Math.max(0, Math.floor(Number(s.max_concurrent)))), (s.estimated_seconds == null ? null : Math.max(0, Math.floor(Number(s.estimated_seconds)))), (s.category == null ? '' : String(s.category)), (s.commercial_use === true || s.commercial_use === 'true' ? true : (s.commercial_use === false || s.commercial_use === 'false' ? false : null)), (s.creator && typeof s.creator === 'object' ? JSON.stringify(s.creator) : (s.creator == null ? null : JSON.stringify(s.creator)))]
           );
         }
         return sendJSON(res, 200, { ok: true });
@@ -2910,14 +2938,29 @@ async function handleAPI(req, res) {
         else if (col === 'param_template') v = JSON.stringify((v && typeof v === 'object') ? v : (v == null ? {} : v));
         sets.push(`${col}=$${i++}`); vals.push(v);
       }
-      // 校验：支持奖励余额的模型「必须填写」奖励积分(>0)
-      const willSupportReward = ('supportsRewardBalance' in patch) ? (patch.supportsRewardBalance === true || patch.supportsRewardBalance === 'true' || patch.supportsRewardBalance === 1) : (cur.supports_reward_balance === true || cur.supports_reward_balance === 't');
-      const rewardVal = ('rewardCreditsRequired' in patch) ? Math.max(0, Math.floor(Number(patch.rewardCreditsRequired) || 0)) : Number(cur.reward_credits_required) || 0;
-      if (willSupportReward && rewardVal <= 0) {
-        return sendJSON(res, 400, { error: '支持奖励余额的模型必须填写奖励积分（且需大于 0）' });
+      // 校验：仅当本次 patch 真正改动奖励余额相关字段时，才强制校验「支持奖励余额必须填写奖励积分(>0)」
+      // 避免「纯改价 / 改显隐」等无关更新被既有奖励积分配置（seed 默认 supports_reward_balance=true 但 reward_credits_required=0）误拦截
+      const touchReward = ('supportsRewardBalance' in patch) || ('rewardCreditsRequired' in patch);
+      if (touchReward) {
+        const willSupportReward = ('supportsRewardBalance' in patch) ? (patch.supportsRewardBalance === true || patch.supportsRewardBalance === 'true' || patch.supportsRewardBalance === 1) : (cur.supports_reward_balance === true || cur.supports_reward_balance === 't');
+        const rewardVal = ('rewardCreditsRequired' in patch) ? Math.max(0, Math.floor(Number(patch.rewardCreditsRequired) || 0)) : Number(cur.reward_credits_required) || 0;
+        if (willSupportReward && rewardVal <= 0) {
+          return sendJSON(res, 400, { error: '支持奖励余额的模型必须填写奖励积分（且需大于 0）' });
+        }
       }
       if (sets.length === 0) return sendJSON(res, 400, { error: '无可更新字段' });
       await pgPool.query(`UPDATE models SET ${sets.join(', ')} WHERE id=$1`, vals);
+      // 价格变更归档：写入 model_price_history，供「再添加时提醒沿用原价格」
+      if ('creditCost' in patch) {
+        const newCost = Math.max(0, Math.floor(Number(patch.creditCost) || 0));
+        const m = await pgPool.query('SELECT model_id, display_name FROM models WHERE id=$1', [id]);
+        if (m.rows[0]) {
+          await pgPool.query(
+            'INSERT INTO model_price_history (model_id, display_name, credit_cost) VALUES ($1,$2,$3)',
+            [m.rows[0].model_id, m.rows[0].display_name || '', newCost]
+          ).catch(() => {});
+        }
+      }
       const r = await pgPool.query('SELECT * FROM models WHERE id=$1', [id]);
       if (!r.rows[0]) return sendJSON(res, 404, { error: '模型不存在' });
       return sendJSON(res, 200, { ok: true, model: fromSnake(r.rows[0]) });
@@ -2929,7 +2972,20 @@ async function handleAPI(req, res) {
   if (url.startsWith('/api/models/') && method === 'DELETE') {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const id = url.split('/api/models/')[1];
-    if (pgPool) { try { await pgPool.query('DELETE FROM models WHERE id=$1', [id]); return sendJSON(res, 200, { ok: true }); } catch (e) { console.error('[models] DELETE 失败', e.message); return sendJSON(res, 400, { error: '删除失败：' + e.message }); } }
+    if (pgPool) {
+      try {
+        // 删除前归档最后价格到 model_price_history（供再添加提醒沿用）
+        const m = await pgPool.query('SELECT model_id, display_name, credit_cost FROM models WHERE id=$1', [id]);
+        if (m.rows[0]) {
+          await pgPool.query(
+            'INSERT INTO model_price_history (model_id, display_name, credit_cost) VALUES ($1,$2,$3)',
+            [m.rows[0].model_id, m.rows[0].display_name || '', Number(m.rows[0].credit_cost) || 0]
+          ).catch(() => {});
+        }
+        await pgPool.query('DELETE FROM models WHERE id=$1', [id]);
+        return sendJSON(res, 200, { ok: true });
+      } catch (e) { console.error('[models] DELETE 失败', e.message); return sendJSON(res, 400, { error: '删除失败：' + e.message }); }
+    }
     writeJSON('models', readJSON('models').filter(m => m.id !== id));
     return sendJSON(res, 200, { ok: true });
   }

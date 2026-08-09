@@ -8,6 +8,8 @@ import ImageEditorPage from '@/pages/ImageEditorPage/ImageEditorPage';
 import LibraryPage from '@/pages/LibraryPage/LibraryPage';
 import CharactersPage from '@/pages/CharactersPage/CharactersPage';
 import ModelHubPage from '@/pages/ModelHubPage/ModelHubPage';
+import ModelConsole from '@/pages/ModelConsole/ModelConsole';
+import ModelPricePage from '@/pages/Admin/ModelPricePage';
 import AccountPage from '@/pages/AccountPage/AccountPage';
 import UserPage from '@/pages/UserPage/UserPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
@@ -30,6 +32,7 @@ import MonitorPage from '@/pages/Admin/MonitorPage';
 import LogsPage from '@/pages/Admin/LogsPage';
 import ErrorLogsPage from '@/pages/Admin/ErrorLogsPage';
 import MonitoringPage from '@/pages/Admin/MonitoringPage';
+import MonitoringStandalonePage from '@/pages/Admin/MonitoringStandalonePage';
 import FinancePage from '@/pages/Admin/FinancePage';
 import PaymentSettingsPage from '@/pages/Admin/PaymentSettingsPage';
 
@@ -52,6 +55,7 @@ import AuthPage from '@/pages/Auth/AuthPage';
 
 // 首次部署初始化向导
 import SetupWizardPage from '@/pages/Setup/SetupWizardPage';
+import RechargePage from '@/pages/RechargePage/RechargePage';
 import { getSetupStatus } from '@/services/api';
 
 // 帮助 / 文档 / 反馈 / 法律 / 关于
@@ -85,12 +89,16 @@ export default function App() {
         {/* 首次部署初始化向导（独立全屏，不走前台壳） */}
         <Route path="/setup" element={<SetupWizardPage />} />
 
+        {/* 独立充值承接页（全屏沉浸式，不嵌套在 Layout 里） */}
+        <Route path="/recharge" element={<RechargePage />} />
+
         {/* 前台工作台壳（原有素材/角色/模型功能） */}
         <Route element={<Layout />}>
           <Route path="workspace" element={<RequireAuth><WorkspacePage /></RequireAuth>} />
           <Route path="library/:category?" element={<RequireAuth><LibraryPage /></RequireAuth>} />
           <Route path="characters" element={<RequireAuth><CharactersPage /></RequireAuth>} />
           <Route path="model-hub" element={<RequireAdmin><ModelHubPage /></RequireAdmin>} />
+          <Route path="model-console" element={<RequireAuth><ModelConsole /></RequireAuth>} />
           <Route path="edit/:id" element={<RequireAuth><ImageEditorPage /></RequireAuth>} />
           <Route path="account" element={<RequireAuth><AccountPage /></RequireAuth>} />
           {/* 创作者公开主页（无需登录，可分享） */}
@@ -119,7 +127,7 @@ export default function App() {
           <Route path="users" element={<UsersPage />} />
           <Route path="samples" element={<SamplesPage />} />
           <Route path="reference-styles" element={<ReferenceStylesReviewPage />} />
-          <Route path="models" element={<ModelHubPage />} />
+          <Route path="models" element={<ModelPricePage />} />
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="ecommerce" element={<EcommerceAdminPage />} />
@@ -130,6 +138,9 @@ export default function App() {
           <Route path="errors" element={<ErrorLogsPage />} />
           <Route path="monitoring" element={<MonitoringPage />} />
         </Route>
+
+        {/* 全局监控独立弹出页（不走 AdminLayout，全屏单 tab 视图） */}
+        <Route path="/monitoring/:tab" element={<RequireAdmin><MonitoringStandalonePage /></RequireAdmin>} />
 
         {/* 创作工作室壳（需登录） */}
         <Route path="/studio" element={<RequireAuth><StudioLayout /></RequireAuth>}>

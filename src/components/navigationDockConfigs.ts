@@ -156,7 +156,7 @@ export function adminDockConfig(userRole?: string): NavigationDockProps {
           { key: 'admin-users', label: '用户管理', icon: Users, path: '/admin/users' },
           { key: 'admin-samples', label: '示例库', icon: Library, path: '/admin/samples' },
           { key: 'admin-reference-styles', label: '参考样式审核', icon: Palette, path: '/admin/reference-styles' },
-          { key: 'admin-models', label: '模型管理', icon: Cpu, path: '/admin/models' },
+          { key: 'admin-models', label: '模型价格', icon: Cpu, path: '/admin/models' },
         ],
       },
       {

@@ -911,9 +911,14 @@ function GenerationBar({
     const rewardRequired = modelRewardPrice(currentModel);
     const reward = user.rewardCredits || 0;
     const recharge = user.rechargeCredits || 0;
+    // 价格为 0 的模型直接放行（免费/未定价模型），避免弹窗出现"需 0"的荒谬文案
+    if (cost === 0 && rewardRequired === 0) return { ok: true };
+
     if (supportsReward) {
-      if (reward >= rewardRequired && rewardRequired > 0) return { ok: true };
-      if (recharge >= cost && cost > 0) {
+      // 明确需要赠送积分且赠送余额足够
+      if (rewardRequired > 0 && reward >= rewardRequired) return { ok: true };
+      // 充值余额足够时回退到充值池
+      if (cost > 0 && recharge >= cost) {
         return {
           ok: true,
           reason: 'FALLBACK',
@@ -921,15 +926,24 @@ function GenerationBar({
           message: `当前模型支持赠送余额：赠送余额需 ${rewardRequired}，您现有赠送 ${reward} 不足，将自动使用充值余额（${recharge}）抵扣 ${cost} 积分。`,
         };
       }
+      // 不足提示：避免"需 0"的文案
+      let insufficientMsg: string;
+      if (cost === 0) {
+        insufficientMsg = `当前模型支持赠送余额：赠送余额需 ${rewardRequired}，您现有赠送 ${reward} 不足，无法支付本次生成。`;
+      } else if (rewardRequired === 0) {
+        insufficientMsg = `当前模型支持赠送余额：充值余额需 ${cost}，您现有充值 ${recharge} 不足，无法支付本次生成。`;
+      } else {
+        insufficientMsg = `当前模型支持赠送余额：赠送余额需 ${rewardRequired}，充值余额需 ${cost}。\n您现有 赠送 ${reward} · 充值 ${recharge}，均不足以支付本次生成。`;
+      }
       return {
         ok: false,
         reason: 'INSUFFICIENT',
         title: '积分不足',
-        message: `当前模型支持赠送余额：赠送余额需 ${rewardRequired}，充值余额需 ${cost}。\n您现有 赠送 ${reward} · 充值 ${recharge}，均不足以支付本次生成。`,
+        message: insufficientMsg,
       };
     }
     // 不支持赠送：只能走充值
-    if (recharge >= cost && cost > 0) return { ok: true };
+    if (cost > 0 && recharge >= cost) return { ok: true };
     return {
       ok: false,
       reason: 'NEED_RECHARGE',
@@ -1905,8 +1919,8 @@ function GenerationBar({
             {user && (
               <button
                 type="button"
-                onClick={() => navigate('/account')}
-                title="赠送余额（平台赠送/活动发放，限定模型可用，优先扣减）· 充值余额（真钱充值，全部模型可用）。点击前往账户充值"
+                onClick={() => setLimitDialog({ open: true, title: '前往充值', message: '是否前往充值页面为账户充值？', reason: 'NEED_RECHARGE' })}
+                title="赠送余额（平台赠送/活动发放，限定模型可用，优先扣减）· 充值余额（真钱充值，全部模型可用）。点击前往充值"
                 className="flex shrink-0 items-center gap-1.5 rounded-full bg-zinc-800/50 px-2 py-1 text-[10px] font-semibold tabular-nums hover:bg-zinc-800 transition-colors"
               >
                 <span className="text-emerald-400" title="赠送余额">赠送 {user.rewardCredits || 0}</span>
@@ -2312,7 +2326,7 @@ function GenerationBar({
               ) : (
                 <button
                   type="button"
-                  onClick={() => { setLimitDialog((d) => ({ ...d, open: false })); navigate('/account'); }}
+                  onClick={() => { setLimitDialog((d) => ({ ...d, open: false })); navigate('/recharge'); }}
                   className="rounded-full bg-emerald-500 px-4 py-1.5 text-xs font-bold text-black hover:bg-emerald-400 transition-colors"
                 >
                   去充值

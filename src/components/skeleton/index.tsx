@@ -214,13 +214,15 @@ export function TabBar<T extends string>({
   tabs,
   active,
   onChange,
+  className,
 }: {
   tabs: Array<{ key: T; label: string; icon?: ReactNode }>;
   active: T;
   onChange: (key: T) => void;
+  className?: string;
 }) {
   return (
-    <div className="flex items-center gap-1 overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900/60 p-1">
+    <div className={cn('flex items-center gap-1 overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-900/60 p-1', className)}>
       {tabs.map((t) => {
         const on = t.key === active;
         return (

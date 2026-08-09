@@ -131,6 +131,23 @@ export async function apiPatchModel(id: string, patch: Record<string, any>) {
   try { return await apiFetch(`/api/models/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }); } catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
 }
 
+export interface ModelPriceHistory {
+  found: boolean;
+  modelId: string;
+  displayName?: string;
+  creditCost?: number;
+  updatedAt?: string;
+}
+/** 查询某 model_id 的历史价格（再添加模型时是否沿用原价格） */
+export async function apiGetModelPriceHistory(modelId: string): Promise<ModelPriceHistory> {
+  try {
+    const r = await apiFetch<ModelPriceHistory>(`/api/admin/model-price-history?modelId=${encodeURIComponent(modelId)}`);
+    return r || { found: false, modelId };
+  } catch {
+    return { found: false, modelId };
+  }
+}
+
 /**
  * 代理下载外部图片（绕开浏览器 CORS）
  * 后端服务器对服务器 fetch，无 CORS 限制

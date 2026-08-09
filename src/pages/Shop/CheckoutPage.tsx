@@ -1,7 +1,7 @@
 // 结算（#364 真实数据接入）—— POST /api/orders（积分三段式预扣结算）
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, CreditCard, ShieldCheck } from 'lucide-react';
+import { Loader2, CreditCard, ShieldCheck, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiGetCart, apiCreateOrder, type CartItem } from '@/pages/Admin/UsersPage';
 import { useAuth, refreshUser } from '@/services/authStore';
@@ -133,7 +133,18 @@ export default function CheckoutPage() {
                 <span className={enough ? 'text-emerald-300' : 'text-red-400'}>{balance} 积分</span>
               </div>
             </div>
-            {!enough && <p className="mt-2 text-xs text-red-400">积分不足，还差 {total - balance} 积分（赠送 + 充值合计）</p>}
+            {!enough && (
+              <div className="mt-2 space-y-2">
+                <p className="text-xs text-red-400">积分不足，还差 {total - balance} 积分（赠送 + 充值合计）</p>
+                <button
+                  type="button"
+                  onClick={() => navigate('/recharge')}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-2.5 text-sm font-medium text-black transition-colors hover:bg-amber-400"
+                >
+                  <Wallet className="size-4" /> 去充值
+                </button>
+              </div>
+            )}
             <button
               onClick={submit}
               disabled={submitting || !enough}
