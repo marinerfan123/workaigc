@@ -992,6 +992,8 @@ export interface PaymentSettings {
   dailyLimit: number;
   maxOpenOrders: number;
   allowTest: boolean;
+  enableWxpay: boolean;
+  enableAlipay: boolean;
   updatedAt: string;
 }
 export interface PaymentProvider {

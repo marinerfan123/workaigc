@@ -73,6 +73,8 @@ function GlobalSettings({ settings, onSaved }: { settings: PaymentSettings | nul
         dailyLimit: settings.dailyLimit,
         maxOpenOrders: settings.maxOpenOrders,
         allowTest: settings.allowTest,
+        enableWxpay: settings.enableWxpay,
+        enableAlipay: settings.enableAlipay,
       });
     }
   }, [settings]);
@@ -87,6 +89,8 @@ function GlobalSettings({ settings, onSaved }: { settings: PaymentSettings | nul
       dailyLimit: form.dailyLimit,
       maxOpenOrders: form.maxOpenOrders,
       allowTest: form.allowTest,
+      enableWxpay: form.enableWxpay,
+      enableAlipay: form.enableAlipay,
     });
     setSaving(false);
     if (!r.ok) alert(r.error || '保存失败');
@@ -103,6 +107,8 @@ function GlobalSettings({ settings, onSaved }: { settings: PaymentSettings | nul
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         <ToggleField label="启用支付" value={!!form.enabled} onChange={(v) => setForm({ ...form, enabled: v })} />
+        <ToggleField label="微信支付" value={!!form.enableWxpay} onChange={(v) => setForm({ ...form, enableWxpay: v })} />
+        <ToggleField label="支付宝" value={!!form.enableAlipay} onChange={(v) => setForm({ ...form, enableAlipay: v })} />
         <NumField label="订单超时(分钟)" value={form.defaultExpiresMin} onChange={(v) => setForm({ ...form, defaultExpiresMin: v })} />
         <NumField label="最小充值(分)" value={form.minAmount} onChange={(v) => setForm({ ...form, minAmount: v })} />
         <NumField label="最大充值(分)" value={form.maxAmount} onChange={(v) => setForm({ ...form, maxAmount: v })} />

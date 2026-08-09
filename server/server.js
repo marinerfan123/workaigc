@@ -442,6 +442,9 @@ async function initDB() {
         updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       INSERT INTO payment_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+      -- 支付方式独立开关（默认开启，便于单独关闭微信/支付宝）
+      ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS enable_wxpay BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE payment_settings ADD COLUMN IF NOT EXISTS enable_alipay BOOLEAN NOT NULL DEFAULT TRUE;
 
       -- 支付服务商（多行；pid/pkey/webhook_secret 加密入库，API 永不返回明文）
       CREATE TABLE IF NOT EXISTS payment_providers (

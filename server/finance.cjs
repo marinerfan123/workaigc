@@ -265,7 +265,8 @@ function createFinance(ctx) {
   // 全局支付参数（单行 id=1）
   async function getPaymentSettings() {
     const r = await pg().query(
-      `SELECT id, enabled, default_expires_min, min_amount, max_amount, daily_limit, max_open_orders, allow_test, updated_at
+      `SELECT id, enabled, default_expires_min, min_amount, max_amount, daily_limit, max_open_orders, allow_test,
+              enable_wxpay, enable_alipay, updated_at
        FROM payment_settings WHERE id=1`);
     if (!r.rows.length) return null;
     const x = r.rows[0];
@@ -278,6 +279,8 @@ function createFinance(ctx) {
       dailyLimit: Number(x.daily_limit),
       maxOpenOrders: Number(x.max_open_orders),
       allowTest: x.allow_test,
+      enableWxpay: x.enable_wxpay !== false,
+      enableAlipay: x.enable_alipay !== false,
       updatedAt: x.updated_at,
     };
   }
@@ -291,6 +294,8 @@ function createFinance(ctx) {
     if (body.dailyLimit !== undefined) set('daily_limit', Math.max(1, Math.floor(Number(body.dailyLimit) || 1)));
     if (body.maxOpenOrders !== undefined) set('max_open_orders', Math.max(1, Math.floor(Number(body.maxOpenOrders) || 1)));
     if (body.allowTest !== undefined) set('allow_test', !!body.allowTest);
+    if (body.enableWxpay !== undefined) set('enable_wxpay', !!body.enableWxpay);
+    if (body.enableAlipay !== undefined) set('enable_alipay', !!body.enableAlipay);
     if (!fields.length) return { ok: true, noop: true };
     set('updated_at', new Date());
     await pg().query(`UPDATE payment_settings SET ${fields.join(',')} WHERE id=1`, vals);
