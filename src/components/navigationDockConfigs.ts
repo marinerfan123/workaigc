@@ -24,6 +24,7 @@ import {
   Activity,
   ScrollText,
   XCircle,
+  Database,
   Library,
   Palette,
   Wallet,
@@ -35,7 +36,6 @@ import {
 } from 'lucide-react';
 import type { MediaCounts } from '@/services/api';
 import type { NavigationDockProps, NavSection } from '@/components/NavigationDock';
-import { isPathLocked } from '@/config/moduleLocks';
 
 // ───────────────────────────────────────────────
 // 全站跨模块导航（每个导航台底部都带，方便任意页面跳转）
@@ -53,9 +53,7 @@ function globalNavSection(
     ...(userRole === 'admin'
       ? [{ key: 'global-admin', label: '管理后台', icon: ShieldAlert, path: '/admin', end: true }]
       : []),
-  ]
-    // 锁定模块不进入全局导航（单一事实来源：moduleLocks.ts）
-    .filter((it) => !isPathLocked(it.path));
+  ];
   return {
     title: '全站',
     items,
@@ -148,6 +146,7 @@ export function adminDockConfig(userRole?: string): NavigationDockProps {
           { key: 'admin-monitor', label: 'API 活动流', icon: Activity, path: '/admin/monitor' },
           { key: 'admin-logs', label: '实时日志', icon: ScrollText, path: '/admin/logs' },
           { key: 'admin-errors', label: '核心错误', icon: XCircle, path: '/admin/errors' },
+          { key: 'admin-monitoring', label: '全局监控', icon: Database, path: '/admin/monitoring' },
         ],
       },
       {

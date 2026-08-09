@@ -1128,6 +1128,90 @@ export async function apiClearErrors(category?: string): Promise<{ ok: boolean }
   }
 }
 
+// ─── 后台监控：跨用户生成 / 资产链接 / 合并报错（#monitor）───
+// 纯后端 REST（admin 鉴权），无前端依赖；此处仅封装浏览器端拉取。
+export interface GenerationItem {
+  taskId: string;
+  createdAt: string;
+  status: string; // running / done / failed
+  model: string | null;
+  contentType: string;
+  prompt: string;
+  error: string;
+  cost: number;
+  latencyMs: number | null;
+  userId: string | null;
+  user: string | null;
+}
+export interface AssetItem {
+  id: string;
+  title: string | null;
+  type: string;
+  url: string | null;
+  thumbnail: string | null;
+  ossUrl: string | null;
+  fullUrl: string | null;
+  userId: string | null;
+  user: string | null;
+  isDeleted: boolean;
+  fileSize: number | null;
+  category: string | null;
+  model: string | null;
+  createdAt: string;
+}
+export interface IssueItem {
+  id: string | number;
+  kind: 'generation' | 'system';
+  model?: string | null;
+  userId?: string | null;
+  user?: string | null;
+  error: string;
+  category?: string;
+  source?: string;
+  meta?: any;
+  createdAt: string;
+}
+export interface MonitorListResponse<T> {
+  total: number;
+  items: T[];
+  nextCursor: string | null;
+}
+export type GenerationsResponse = MonitorListResponse<GenerationItem>;
+export type AssetsResponse = MonitorListResponse<AssetItem>;
+export type IssuesResponse = MonitorListResponse<IssueItem>;
+
+// 通用游标分页拉取（before=ISO 时间游标，服务端 created_at < before）
+async function apiGetMonitorList<T>(path: string, params: Record<string, string | number | boolean | undefined | null>): Promise<MonitorListResponse<T>> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+  });
+  try {
+    return await apiFetch<MonitorListResponse<T>>(`${path}?${qs.toString()}`);
+  } catch {
+    return { total: 0, items: [], nextCursor: null };
+  }
+}
+
+export async function apiGetGenerations(params: {
+  status?: string; content_type?: string; model?: string; user?: string;
+  before?: string; limit?: number;
+} = {}): Promise<GenerationsResponse> {
+  return apiGetMonitorList<GenerationItem>('/api/admin/generations', params);
+}
+export async function apiGetAssets(params: {
+  type?: string; user?: string; q?: string; is_deleted?: string;
+  before?: string; limit?: number;
+} = {}): Promise<AssetsResponse> {
+  return apiGetMonitorList<AssetItem>('/api/admin/assets', params);
+}
+export async function apiGetIssues(params: {
+  scope?: string; keyword?: string; category?: string;
+  before?: string; limit?: number;
+} = {}): Promise<IssuesResponse> {
+  return apiGetMonitorList<IssueItem>('/api/admin/issues', params);
+}
+
 // ─── 首次部署初始化向导（公开接口，无需 token）───
 export interface ISetupModelPreset {
   id: string;
