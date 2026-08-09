@@ -24,7 +24,7 @@ function createAdmin(ctx) {
   async function listUsers(query) {
     const q = (query.q || '').trim();
     const role = (query.role || '').trim();
-    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 1000);
     const offset = parseInt(query.offset || '0', 10) || 0;
     const params = [];
     let where = '1=1';
@@ -94,7 +94,7 @@ function createAdmin(ctx) {
 
   // ───────────────────────── 积分流水（M2） ─────────────────────────
   async function listTransactions(query) {
-    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 1000);
     const offset = parseInt(query.offset || '0', 10) || 0;
     const type = (query.type || '').trim();
     const userId = (query.userId || '').trim();
@@ -440,7 +440,7 @@ function createAdmin(ctx) {
     if (query.from) { const d = new Date(query.from); if (!isNaN(d.getTime())) w('t.created_at >= $n', d); }
     if (query.to) { const d = new Date(query.to); if (!isNaN(d.getTime())) w('t.created_at <= $n', d); }
     if (query.before) { const d = new Date(query.before); if (!isNaN(d.getTime())) w('t.created_at < $n', d); }
-    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 1000);
     const ws = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const countR = await pg().query(
       `SELECT COUNT(*) FROM generation_tasks t LEFT JOIN users u ON u.id=t.user_id ${ws}`, params);
@@ -484,7 +484,7 @@ function createAdmin(ctx) {
     if (query.from) { const d = new Date(query.from); if (!isNaN(d.getTime())) w('m.created_at >= $n', d); }
     if (query.to) { const d = new Date(query.to); if (!isNaN(d.getTime())) w('m.created_at <= $n', d); }
     if (query.before) { const d = new Date(query.before); if (!isNaN(d.getTime())) w('m.created_at < $n', d); }
-    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 1000);
     const ws = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const countR = await pg().query(
       `SELECT COUNT(*) FROM media m LEFT JOIN users u ON u.id=m.user_id ${ws}`, params);
@@ -519,7 +519,7 @@ function createAdmin(ctx) {
     const scope = (query.scope || 'all').toLowerCase();
     const keyword = (query.keyword || '').trim();
     const category = (query.category || '').trim();
-    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
+    const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 1000);
     const from = query.from ? new Date(query.from) : null;
     const to = query.to ? new Date(query.to) : null;
     const before = query.before ? new Date(query.before) : null;

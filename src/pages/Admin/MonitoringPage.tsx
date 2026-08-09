@@ -32,10 +32,26 @@ import {
   type IssueItem,
 } from '@/services/api';
 
-const PAGE = 50;
+const PAGE_OPTIONS = [50, 100, 500, 1000];
+const DEFAULT_PAGE = 50;
 
-/* 通用游标分页 tab 状态机：filters 变化→防抖重载；loadMore→追加下一页 */
-function useMonitorTab<T>(apiFn: (p: any) => Promise<{ total: number; items: T[]; nextCursor: string | null }>, filters: any) {
+function LimitSelector({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value))}
+      className="rounded-lg bg-zinc-800 px-2 py-1 text-xs text-zinc-200 outline-none border border-zinc-700"
+      title="每页加载数量"
+    >
+      {PAGE_OPTIONS.map((n) => (
+        <option key={n} value={n}>每页 {n}</option>
+      ))}
+    </select>
+  );
+}
+
+/* 通用游标分页 tab 状态机：filters/limit 变化→防抖重载；loadMore→追加下一页 */
+function useMonitorTab<T>(apiFn: (p: any) => Promise<{ total: number; items: T[]; nextCursor: string | null }>, filters: any, limit: number) {
   const [items, setItems] = useState<T[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -46,14 +62,14 @@ function useMonitorTab<T>(apiFn: (p: any) => Promise<{ total: number; items: T[]
     async (reset: boolean) => {
       const myId = ++reqIdRef.current;
       setLoading(true);
-      const res = await apiFn({ ...filters, limit: PAGE, before: reset ? undefined : cursorRef.current ?? undefined });
+      const res = await apiFn({ ...filters, limit, before: reset ? undefined : cursorRef.current ?? undefined });
       if (myId !== reqIdRef.current) return; // 丢弃过期响应
       setTotal(res.total);
       setItems((prev) => (reset ? res.items : [...prev, ...(res.items as T[])]));
       cursorRef.current = res.nextCursor ?? null;
       setLoading(false);
     },
-    [filters, apiFn],
+    [filters, apiFn, limit],
   );
 
   useEffect(() => {
@@ -101,8 +117,9 @@ function GenerationsTab() {
   const [contentType, setContentType] = useState('');
   const [model, setModel] = useState('');
   const [user, setUser] = useState('');
+  const [limit, setLimit] = useState(DEFAULT_PAGE);
   const filters = { status, content_type: contentType, model, user };
-  const { items, total, loading, loadMore } = useMonitorTab<GenerationItem>(apiGetGenerations, filters);
+  const { items, total, loading, loadMore } = useMonitorTab<GenerationItem>(apiGetGenerations, filters, limit);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const failedOnPage = items.filter((i) => i.status === 'failed').length;
@@ -137,6 +154,7 @@ function GenerationsTab() {
               <Search className="size-3 text-zinc-500" />
               <input value={user} onChange={(e) => setUser(e.target.value)} placeholder="用户(昵称)" className="w-28 bg-transparent text-zinc-200 placeholder:text-zinc-600 outline-none" />
             </div>
+            <LimitSelector value={limit} onChange={setLimit} />
           </div>
         }
       >
@@ -202,8 +220,9 @@ function AssetsTab() {
   const [user, setUser] = useState('');
   const [q, setQ] = useState('');
   const [isDeleted, setIsDeleted] = useState('');
+  const [limit, setLimit] = useState(DEFAULT_PAGE);
   const filters = { type, user, q, is_deleted: isDeleted };
-  const { items, total, loading, loadMore } = useMonitorTab<AssetItem>(apiGetAssets, filters);
+  const { items, total, loading, loadMore } = useMonitorTab<AssetItem>(apiGetAssets, filters, limit);
   const deletedOnPage = items.filter((i) => i.isDeleted).length;
 
   return (
@@ -235,6 +254,7 @@ function AssetsTab() {
               <Search className="size-3 text-zinc-500" />
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="标题/URL" className="w-32 bg-transparent text-zinc-200 placeholder:text-zinc-600 outline-none" />
             </div>
+            <LimitSelector value={limit} onChange={setLimit} />
           </div>
         }
       >
@@ -293,8 +313,9 @@ function IssuesTab() {
   const [scope, setScope] = useState('all');
   const [keyword, setKeyword] = useState('');
   const [category, setCategory] = useState('');
+  const [limit, setLimit] = useState(DEFAULT_PAGE);
   const filters = { scope, keyword, category };
-  const { items, total, loading, loadMore } = useMonitorTab<IssueItem>(apiGetIssues, filters);
+  const { items, total, loading, loadMore } = useMonitorTab<IssueItem>(apiGetIssues, filters, limit);
   const [expanded, setExpanded] = useState<Set<string | number>>(new Set());
 
   return (
@@ -321,6 +342,7 @@ function IssuesTab() {
               <Search className="size-3 text-zinc-500" />
               <input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="关键字" className="w-32 bg-transparent text-zinc-200 placeholder:text-zinc-600 outline-none" />
             </div>
+            <LimitSelector value={limit} onChange={setLimit} />
           </div>
         }
       >
