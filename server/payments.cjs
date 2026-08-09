@@ -104,10 +104,10 @@ const payments = {
         return sendJSON(res, 400, { error: `该支付通道不支持「${method === 'alipay' ? '支付宝' : '微信支付'}」，请选择其他方式` });
       }
       if (amount < settings.minAmount) {
-        return sendJSON(res, 400, { error: `单笔充值不得低于 ¥${(settings.minAmount / 100).toFixed(0)}` });
+        return sendJSON(res, 400, { error: `单笔充值不得低于 ¥${(settings.minAmount / 100).toFixed(2)}` });
       }
       if (amount > settings.maxAmount) {
-        return sendJSON(res, 400, { error: `单笔充值不得超过 ¥${(settings.maxAmount / 100).toFixed(0)}` });
+        return sendJSON(res, 400, { error: `单笔充值不得超过 ¥${(settings.maxAmount / 100).toFixed(2)}` });
       }
       // 单用户当日已用额度（paid + pending 合计）
       const todayStart = new Date();
@@ -221,20 +221,26 @@ const payments = {
       });
     }
 
-    // 公开接口：返回当前可用的支付方式列表（provider 支持列表 ∩ 全局开关；无需登录）
+    // 公开接口：返回当前可用的支付方式列表（provider 支持列表 ∩ 全局开关）+ 金额阈值（元，便于前端拦截）
     async function listPaymentMethods(req, res) {
       const [methods, settings] = await Promise.all([
         loader.getSupportedMethods().catch(() => []),
         loadPaymentSettings(),
       ]);
       // fails-closed：设置读不出 → 不返回任何支付方式
-      if (!settings) return sendJSON(res, 200, { items: [] });
+      if (!settings) return sendJSON(res, 200, { items: [], limits: { min: 0, max: 0 } });
       const enabled = methods.filter((m) => {
         if (m === 'wxpay') return settings.enableWxpay;
         if (m === 'alipay') return settings.enableAlipay;
         return true;
       });
-      return sendJSON(res, 200, { items: enabled });
+      return sendJSON(res, 200, {
+        items: enabled,
+        limits: {
+          min: Math.max(0, settings.minAmount) / 100,
+          max: Math.max(0, settings.maxAmount) / 100,
+        },
+      });
     }
 
     function handlePayments(req, res, url, method) {

@@ -1014,13 +1014,16 @@ export interface PaymentProvider {
   createdAt: string;
   updatedAt: string;
 }
-/** 当前可用的充值支付方式（由后台 payment_providers.supported_methods 并集决定） */
-export async function apiGetPaymentMethods(): Promise<string[]> {
+export interface PaymentMethodsInfo {
+  items: string[];
+  limits: { min: number; max: number };
+}
+/** 当前可用的充值支付方式 + 金额阈值（元） */
+export async function apiGetPaymentMethods(): Promise<PaymentMethodsInfo> {
   try {
-    const r = await apiFetch<{ items: string[] }>('/api/credits/payment-methods');
-    return r?.items || [];
+    return await apiFetch<PaymentMethodsInfo>('/api/credits/payment-methods');
   } catch {
-    return ['alipay', 'wxpay'];
+    return { items: ['alipay', 'wxpay'], limits: { min: 1, max: 100000 } };
   }
 }
 export async function apiAdminPaymentSettings(): Promise<PaymentSettings | null> {
