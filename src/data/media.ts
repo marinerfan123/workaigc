@@ -50,7 +50,7 @@ export const MOCK_MEDIA_LIST: IMediaItem[] = [
   },
   {
     id: '2',
-    title: 'Oriental classical beauty',
+    title: '古典汉服肖像',
     type: 'image',
     thumbnail: '/spark/app/app_17b6nt94h30/runtime/api/v1/storage/object/bucket_aadknriz7eihs_static/static%2Faadknr6mdrgcu_ve_miaoda',
     fullUrl: '/spark/app/app_17b6nt94h30/runtime/api/v1/storage/object/bucket_aadknriz7eihs_static/static%2Faadknr6mdrgcu_ve_miaoda',
@@ -80,7 +80,7 @@ export const MOCK_MEDIA_LIST: IMediaItem[] = [
   },
   {
     id: '4',
-    title: 'Eastern beauty dancing rhythm',
+    title: '庭院舞韵',
     type: 'image',
     thumbnail: '/spark/app/app_17b6nt94h30/runtime/api/v1/storage/object/bucket_aadknriz7eihs_static/static%2Faadknr2igusfu_ve_miaoda',
     fullUrl: '/spark/app/app_17b6nt94h30/runtime/api/v1/storage/object/bucket_aadknriz7eihs_static/static%2Faadknr2igusfu_ve_miaoda',

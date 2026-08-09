@@ -3,7 +3,7 @@ import { SupportLayout, SupportCard } from './SupportLayout';
 
 const tutorials = [
   {
-    title: '5 分钟上手漫创 AI',
+    title: '5 分钟上手墨灵AI',
     duration: '05:20',
     desc: '从注册、生成第一张图到管理素材库，完整走一遍核心流程。',
   },
@@ -26,7 +26,7 @@ const tutorials = [
 
 export default function TutorialsPage() {
   return (
-    <SupportLayout title="视频教程" subtitle="跟着视频快速掌握漫创 AI">
+    <SupportLayout title="视频教程" subtitle="跟着视频快速掌握墨灵AI">
       <div className="grid gap-5 sm:grid-cols-2">
         {tutorials.map((t) => (
           <SupportCard key={t.title}>

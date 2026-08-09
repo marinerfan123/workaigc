@@ -3,19 +3,19 @@ import { SupportLayout, SupportCard } from './SupportLayout';
 
 export default function AboutPage() {
   return (
-    <SupportLayout title="关于我们" subtitle="漫创 AI 的使命与团队">
+    <SupportLayout title="关于我们" subtitle="墨灵AI 的使命与团队">
       <SupportCard>
         <div className="flex items-center gap-4">
-          <div className="flex size-16 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-400 text-2xl font-bold text-black">
-            漫
-          </div>
+            <div className="flex size-16 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-400 text-2xl font-bold text-black">
+              墨
+            </div>
           <div>
-            <h2 className="text-lg font-semibold text-white">漫创 AI</h2>
+            <h2 className="text-lg font-semibold text-white">墨灵AI</h2>
             <p className="text-sm text-zinc-500">AI 驱动的视觉创作平台</p>
           </div>
         </div>
         <p className="mt-5 text-sm leading-relaxed text-zinc-400">
-          漫创 AI 致力于让每个人都能用自然语言创作高质量的图像与视频。我们相信，AI 不是替代创作者，而是放大创意的工具。
+          墨灵AI 致力于让每个人都能用自然语言创作高质量的图像与视频。我们相信，AI 不是替代创作者，而是放大创意的工具。
           从灵感闪现到成品输出，我们提供一站式创作工作台、模型 Hub、AI 市集与创作工作室，帮助创作者把想法快速落地。
         </p>
       </SupportCard>
@@ -51,8 +51,8 @@ export default function AboutPage() {
         <div className="flex items-center gap-2 text-sm text-zinc-400">
           <Mail className="size-4 text-emerald-400" />
           商务与合作：
-          <a href="mailto:hello@manchuang.ai" className="text-emerald-400 hover:underline">
-            hello@manchuang.ai
+          <a href="mailto:hello@moling.ai" className="text-emerald-400 hover:underline">
+            hello@moling.ai
           </a>
         </div>
       </SupportCard>

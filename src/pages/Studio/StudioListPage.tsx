@@ -235,7 +235,7 @@ export default function StudioListPage() {
               <Input
                 value={form.title}
                 onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
-                placeholder="例如：东方古典美人"
+                placeholder="例如：古风角色"
                 className="border-zinc-700 bg-zinc-800/50 text-white placeholder:text-zinc-600 focus-visible:border-emerald-500/50"
               />
             </div>

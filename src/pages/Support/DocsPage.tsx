@@ -63,7 +63,7 @@ const sections = [
 
 export default function DocsPage() {
   return (
-    <SupportLayout title="使用文档" subtitle="漫创 AI 核心功能指南">
+    <SupportLayout title="使用文档" subtitle="墨灵AI 核心功能指南">
       {sections.map((s) => {
         const Icon = s.icon;
         return (

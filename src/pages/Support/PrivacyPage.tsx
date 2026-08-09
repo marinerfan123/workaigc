@@ -43,7 +43,7 @@ export default function PrivacyPage() {
       <SupportCard title="联系我们">
         <p className="text-sm leading-relaxed text-zinc-400">
           如有关于隐私的疑问，请通过「发送应用反馈」或发送邮件至
-          <a href="mailto:privacy@manchuang.ai" className="mx-1 text-emerald-400 hover:underline">privacy@manchuang.ai</a>
+          <a href="mailto:privacy@moling.ai" className="mx-1 text-emerald-400 hover:underline">privacy@moling.ai</a>
           与我们联系。
         </p>
       </SupportCard>

@@ -47,7 +47,7 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
       if (r.ok && r.url) {
         const a = document.createElement('a');
         a.href = r.url;
-        a.download = r.filename || `manchuang-export-${Date.now()}.json`;
+        a.download = r.filename || `moling-export-${Date.now()}.json`;
         document.body.appendChild(a);
         a.click();
         a.remove();

@@ -54,6 +54,7 @@ import financeMod from './finance.cjs';  // Phase 4 后台账务系统（底层�
 import meMod from './me.cjs';            // 用户侧账务（积分流水 / 充值订单 / 概览）
 import referenceStylesMod from './reference-styles.cjs'; // 参考样式库：用户投稿 + AI 预审 + 人工终审
 import referenceStyleAudit from './reference-style-audit.cjs'; // 参考样式 AI 预审
+import agentResolver from './agent-model-resolver.cjs';         // 智能体文本模型统一解析（全局兜底模型）
 import seedDefaultsMod from './seed-defaults.cjs'; // 首次部署兜底种子（占位服务商 + 常用模型）
 
 // 初始化向导限流（同一进程内 ≤20 次/10min；真正防护靠"建好即锁定"）
@@ -1556,6 +1557,52 @@ async function handleAPI(req, res) {
     }
   }
 
+  // 创作者公开主页（无需登录）：/api/users/:id 与 /api/users/:id/media
+  if (method === 'GET') {
+    const userPath = /^\/api\/users\/([^/]+)$/.exec(url.split('?')[0]);
+    const mediaPath = /^\/api\/users\/([^/]+)\/media$/.exec(url.split('?')[0]);
+    if (userPath || mediaPath) {
+      const uid = decodeURIComponent((userPath || mediaPath)[1]);
+      try {
+        const ur = await pgPool.query('SELECT id, display_name, created_at FROM users WHERE id=$1', [uid]);
+        if (!ur.rows.length) return sendJSON(res, 404, { error: '用户不存在' });
+        const u = ur.rows[0];
+        if (mediaPath) {
+          const mr = await pgPool.query(
+            'SELECT id, title, type, category, thumbnail, full_url, oss_url, created_at FROM media WHERE user_id=$1 AND is_deleted=FALSE ORDER BY created_at DESC LIMIT 200',
+            [uid]
+          );
+          const items = mr.rows.map((x) => {
+            const url = x.oss_url || x.full_url || x.thumbnail || '';
+            return {
+              id: x.id,
+              title: x.title || '',
+              thumbnail: url,
+              fullUrl: url,
+              type: x.type || 'image',
+              category: x.category || 'generated',
+            };
+          });
+          return sendJSON(res, 200, { items });
+        }
+        const cnt = await pgPool.query(
+          'SELECT COUNT(*)::int AS n FROM media WHERE user_id=$1 AND is_deleted=FALSE',
+          [uid]
+        );
+        return sendJSON(res, 200, {
+          user: {
+            id: u.id,
+            displayName: u.display_name || '',
+            createdAt: u.created_at ? new Date(u.created_at).toISOString() : new Date().toISOString(),
+          },
+          stats: { media: (cnt.rows[0] && cnt.rows[0].n) || 0 },
+        });
+      } catch (e) {
+        return sendJSON(res, 500, { error: '查询失败：' + (e?.message || e) });
+      }
+    }
+  }
+
   // 应用网关：API_TOKEN 或 用户会话 cookie 任一通过
   if (!appGateway(req)) return sendJSON(res, 401, { error: 'Unauthorized' });
 
@@ -2417,50 +2464,12 @@ async function handleAPI(req, res) {
     let lastModel = null;
     let lastError = '';
     try {
-      // 三层优先级选候选模型列表（后续支持降级重试）：
+      // 四层优先级选候选模型列表（统一由 agent-model-resolver 维护）：
       //  1) 后台显式指定 settings.app.promptOptimizeModel
-      //  2) 智能体专属 agent_providers(agent_key='prompt_optimizer') 启用模型
-      //  3) 回退：所有启用的 type=text 模型（按成本排序）
-      let appPromptModel = '';
-      try {
-        const sr = await pgPool.query("SELECT value FROM settings WHERE key='app'");
-        const sv = (sr.rows[0] && sr.rows[0].value) || {};
-        appPromptModel = sv && sv.promptOptimizeModel ? String(sv.promptOptimizeModel) : '';
-      } catch (_) { /* ignore */ }
-
-      const COLS = "m.id AS m_id, m.model_id, m.display_name, m.credit_cost, " +
-        "p.id AS p_id, p.base_url, p.api_key, p.protocol ";
-      const GUARD = "m.enabled=true AND p.enabled=true AND p.api_key IS NOT NULL AND LENGTH(p.api_key) >= 6 ";
-
-      const candidates = [];
-      // 1) 后台显式指定
-      if (appPromptModel) {
-        const r = await pgPool.query(
-          "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
-          "WHERE m.id=$1 AND " + GUARD,
-          [appPromptModel]
-        );
-        if (r.rows.length) candidates.push(r.rows[0]);
-      }
-      // 2) 智能体专属 agent_providers
-      if (candidates.length === 0) {
-        const r = await pgPool.query(
-          "SELECT " + COLS + "FROM agent_providers ap JOIN models m ON m.id = ap.model " +
-          "JOIN providers p ON p.id = m.provider_id " +
-          "WHERE ap.agent_key='prompt_optimizer' AND ap.enabled=true AND " + GUARD +
-          "ORDER BY ap.priority ASC, ap.weight DESC, m.credit_cost ASC"
-        );
-        for (const row of r.rows) candidates.push(row);
-      }
-      // 3) 回退：所有启用的 type=text 模型
-      if (candidates.length === 0) {
-        const r = await pgPool.query(
-          "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
-          "WHERE m.type='text' AND " + GUARD +
-          "ORDER BY (p.base_url LIKE '%agnes-ai.com%') ASC, m.credit_cost ASC, m.id ASC"
-        );
-        for (const row of r.rows) candidates.push(row);
-      }
+      //  2) 智能体专属 agent_providers(agent_key='prompt_optimizer')
+      //  3) 全局兜底模型 settings.app.fallbackModel
+      //  4) 回退：所有启用的 type=text 模型（按成本排序）
+      const candidates = await agentResolver.resolveTextCandidates(pgPool, 'prompt_optimizer', 'promptOptimizeModel');
       if (candidates.length === 0) {
         return sendJSON(res, 200, {
           success: false,
@@ -2633,44 +2642,12 @@ async function handleAPI(req, res) {
     let lastModel = null;
     let lastError = '';
     try {
-      // 三层优先级选候选模型（与 optimize-prompt 一致，agent_key 区分）
-      let appPromptModel = '';
-      try {
-        const sr = await pgPool.query("SELECT value FROM settings WHERE key='app'");
-        const sv = (sr.rows[0] && sr.rows[0].value) || {};
-        appPromptModel = sv && sv.promptTranslateModel ? String(sv.promptTranslateModel) : '';
-      } catch (_) { /* ignore */ }
-
-      const COLS = "m.id AS m_id, m.model_id, m.display_name, m.credit_cost, " +
-        "p.id AS p_id, p.base_url, p.api_key, p.protocol ";
-      const GUARD = "m.enabled=true AND p.enabled=true AND p.api_key IS NOT NULL AND LENGTH(p.api_key) >= 6 ";
-
-      const candidates = [];
-      if (appPromptModel) {
-        const r = await pgPool.query(
-          "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
-          "WHERE m.id=$1 AND " + GUARD,
-          [appPromptModel]
-        );
-        if (r.rows.length) candidates.push(r.rows[0]);
-      }
-      if (candidates.length === 0) {
-        const r = await pgPool.query(
-          "SELECT " + COLS + "FROM agent_providers ap JOIN models m ON m.id = ap.model " +
-          "JOIN providers p ON p.id = m.provider_id " +
-          "WHERE ap.agent_key='prompt_translator' AND ap.enabled=true AND " + GUARD +
-          "ORDER BY ap.priority ASC, ap.weight DESC, m.credit_cost ASC"
-        );
-        for (const row of r.rows) candidates.push(row);
-      }
-      if (candidates.length === 0) {
-        const r = await pgPool.query(
-          "SELECT " + COLS + "FROM models m JOIN providers p ON p.id = m.provider_id " +
-          "WHERE m.type='text' AND " + GUARD +
-          "ORDER BY (p.base_url LIKE '%agnes-ai.com%') ASC, m.credit_cost ASC, m.id ASC"
-        );
-        for (const row of r.rows) candidates.push(row);
-      }
+      // 候选模型四层优先级（与 optimize-prompt 统一由 agent-model-resolver 维护）：
+      //  1) 后台显式指定 settings.app.promptTranslateModel
+      //  2) 智能体专属 agent_providers(agent_key='prompt_translator')
+      //  3) 全局兜底模型 settings.app.fallbackModel
+      //  4) 回退：所有启用的 type=text 模型（按成本排序）
+      const candidates = await agentResolver.resolveTextCandidates(pgPool, 'prompt_translator', 'promptTranslateModel');
       if (candidates.length === 0) {
         return sendJSON(res, 200, {
           success: false,

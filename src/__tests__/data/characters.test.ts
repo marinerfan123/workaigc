@@ -44,8 +44,8 @@ describe('data/characters.ts', () => {
       assert.strictEqual(uniqueIds.size, ids.length);
     });
 
-    it('first character should have name "东方古典美人"', () => {
-      assert.strictEqual(MOCK_CHARACTERS[0].name, '东方古典美人');
+    it('first character should have name "示例角色·青鸾"', () => {
+      assert.strictEqual(MOCK_CHARACTERS[0].name, '示例角色·青鸾');
     });
 
     it('first character should have 3 reference images', () => {

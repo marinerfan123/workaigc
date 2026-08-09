@@ -92,7 +92,7 @@ export default function ReportPage() {
               <input
                 value={targetUrl}
                 onChange={(e) => setTargetUrl(e.target.value)}
-                placeholder="例如：https://manchuang.ai/user/xxx 或 素材 ID"
+                placeholder="例如：https://moling.ai/user/xxx 或 素材 ID"
                 className="w-full rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500/50"
               />
             </div>

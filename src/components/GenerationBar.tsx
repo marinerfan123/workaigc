@@ -1250,9 +1250,9 @@ function GenerationBar({
       toast.error('请先输入提示词');
       return;
     }
-    if (trimmed.length < 60) {
+    if (trimmed.length < 20) {
       toast.error('提示词过短，无法优化', {
-        description: '请将提示词补充到 60 字以上后再使用 AI 优化',
+        description: '请将提示词补充到 20 字以上后再使用 AI 优化',
         duration: 3000,
       });
       return;
@@ -2191,13 +2191,13 @@ function GenerationBar({
                 </button>
                 <span
                   className="ml-1 inline-flex items-center rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-400"
-                  title="提示词低于 60 字时无法提交 AI 优化"
+                  title="提示词低于 20 字时无法提交 AI 优化"
                 >
-                  需 60 字以上
+                  需 20 字以上
                 </span>
               </DialogTitle>
               <DialogDescription className="text-zinc-500">
-                在此撰写详细的生成提示词（支持 Enter 直接换行，Shift+Enter 同）。提示词过短会导致优化失败，建议超过 60 字后再点击「AI 优化提示词」。
+                在此撰写详细的生成提示词（支持 Enter 直接换行，Shift+Enter 同）。提示词过短会导致优化失败，建议超过 20 字后再点击「AI 优化提示词」。
               </DialogDescription>
             </DialogHeader>
 

@@ -27,6 +27,9 @@ export default function AgentsPage() {
   const [textModels, setTextModels] = useState<{ id: string; displayName: string; modelId: string }[]>([]);
   const [promptOptimizeModel, setPromptOptimizeModel] = useState('');
   const [savingModel, setSavingModel] = useState(false);
+  // 全局兜底模型（写入 settings.app.fallbackModel）：所有文本智能体在没有显式/专属模型时的统一回退
+  const [fallbackModel, setFallbackModel] = useState('');
+  const [savingFallback, setSavingFallback] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -37,6 +40,7 @@ export default function AgentsPage() {
     setAgents(a); setProviders(p); setRules(r); setSkills(sk);
     setTextModels(ms.filter((m) => m.type === 'text' && m.enabled).map((m) => ({ id: m.id, displayName: m.displayName || '', modelId: m.modelId || '' })));
     if (s && s.promptOptimizeModel) setPromptOptimizeModel(String(s.promptOptimizeModel));
+    if (s && s.fallbackModel) setFallbackModel(String(s.fallbackModel));
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -64,6 +68,19 @@ export default function AgentsPage() {
       toast.error('保存失败');
     } finally {
       setSavingModel(false);
+    }
+  };
+
+  const saveFallbackModel = async () => {
+    setSavingFallback(true);
+    try {
+      const cur = (await apiGetSettings().catch(() => ({}))) || {};
+      await apiSaveSettings({ ...cur, fallbackModel });
+      toast.success(fallbackModel ? '已设置全局兜底模型' : '已清除兜底模型（回退到最便宜 text 模型）');
+    } catch {
+      toast.error('保存失败');
+    } finally {
+      setSavingFallback(false);
     }
   };
 
@@ -242,6 +259,40 @@ export default function AgentsPage() {
             })}
             {agents.length === 0 && !loading && <div className="py-6 text-center text-xs text-zinc-500">暂无智能体</div>}
           </div>
+        </SectionCard>
+      )}
+
+      {tab === 'agents' && (
+        <SectionCard
+          title="全局文本推理模型"
+          hint="兜底模型：当某智能体没有显式指定模型、也没有专属 agent_providers 时，统一回退到该模型"
+        >
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <label className="block sm:max-w-sm">
+              <span className="mb-1.5 block text-xs text-zinc-400">全局兜底模型（fallbackModel）</span>
+              <select
+                value={fallbackModel}
+                onChange={(e) => setFallbackModel(e.target.value)}
+                className="w-full rounded-xl bg-zinc-900/50 px-3 py-2 text-sm text-zinc-200 border border-zinc-700/50 focus:outline-none focus:border-emerald-500/50"
+              >
+                <option value="">关闭兜底（无模型时直接报错）</option>
+                {textModels.map((m) => (
+                  <option key={m.id} value={m.id}>{m.displayName || m.modelId}</option>
+                ))}
+              </select>
+            </label>
+            <button
+              onClick={() => saveFallbackModel()}
+              disabled={savingFallback}
+              className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-emerald-500/15 px-4 py-2 text-sm font-medium text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50"
+            >
+              {savingFallback ? <Loader2 className="size-4 animate-spin" /> : <Wand2 className="size-4" />}
+              保存兜底模型
+            </button>
+          </div>
+          <p className="mt-3 text-xs text-zinc-500">
+            优先级：① 智能体显式模型（如提示词优化 / 翻译） ② 智能体专属 agent_providers ③ <span className="text-emerald-300">全局兜底模型</span> ④ 最便宜的启用 text 模型。
+          </p>
         </SectionCard>
       )}
 
