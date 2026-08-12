@@ -28,6 +28,7 @@ import {
   type RechargeOrder,
   type TopupPackage,
 } from '@/services/api';
+import { formatCredits } from '@/utils/format';
 
 const PRESETS = [6, 30, 98, 198, 648];
 const QUICK_AMOUNTS = [10, 50, 100, 200, 500, 1000];
@@ -148,7 +149,7 @@ export default function RechargePage() {
     }
     setBusy(true);
     setMsg('');
-    const r = await apiCreateRechargeOrder({ amount: finalAmount, channel, packageId: selectedPackageId });
+    const r = await apiCreateRechargeOrder({ amount: finalAmount * 100, channel, packageId: selectedPackageId });
     setBusy(false);
     if (r.ok && r.order) {
       setOrder(r.order);
@@ -229,16 +230,16 @@ export default function RechargePage() {
                 <div className="mt-3 space-y-2">
                   <div className="flex items-baseline justify-between">
                     <span className="text-sm text-zinc-500">赠送积分</span>
-                    <span className="text-2xl font-bold tabular-nums text-emerald-400">{user.rewardCredits ?? 0}</span>
+                    <span className="text-2xl font-bold tabular-nums text-emerald-400">{formatCredits(user.rewardCredits)}</span>
                   </div>
                   <div className="flex items-baseline justify-between">
                     <span className="text-sm text-zinc-500">充值积分</span>
-                    <span className="text-2xl font-bold tabular-nums text-amber-400">{user.rechargeCredits ?? 0}</span>
+                    <span className="text-2xl font-bold tabular-nums text-amber-400">{formatCredits(user.rechargeCredits)}</span>
                   </div>
                 </div>
                 {step === 'form' && valid && (
                   <div className="mt-4 rounded-2xl border border-dashed border-emerald-500/30 bg-emerald-500/5 p-3 text-xs text-emerald-300">
-                    预计充值后：赠送 <b>{user.rewardCredits ?? 0}</b> / 充值 <b>{(user.rechargeCredits ?? 0) + creditsPreview}</b>
+                    预计充值后：赠送 <b>{formatCredits(user.rewardCredits)}</b> / 充值 <b>{formatCredits((user.rechargeCredits ?? 0) + creditsPreview)}</b>
                   </div>
                 )}
               </div>

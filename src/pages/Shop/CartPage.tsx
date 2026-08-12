@@ -5,6 +5,7 @@ import { ShoppingCart, Loader2, Minus, Plus, Trash2, ArrowRight } from 'lucide-r
 import { toast } from 'sonner';
 import { apiGetCart, apiUpdateCartItem, apiRemoveCartItem, type CartItem } from '@/pages/Admin/UsersPage';
 import { useAuth } from '@/services/authStore';
+import { formatCredits } from '@/utils/format';
 
 export default function CartPage() {
   const navigate = useNavigate();
@@ -79,7 +80,7 @@ export default function CartPage() {
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium text-white">{it.title}</div>
                   {it.productStatus !== 'active' && <div className="mt-1 text-xs text-amber-400">已下架</div>}
-                  <div className="mt-1 text-sm text-emerald-400">{it.unitCreditPrice} 积分</div>
+                  <div className="mt-1 text-sm text-emerald-400">{formatCredits(it.unitCreditPrice)} 积分</div>
                 </div>
                 <div className="flex items-center rounded-xl border border-zinc-800">
                   <button disabled={busyId === it.id} onClick={() => changeQty(it, it.qty - 1)} className="px-2.5 py-1 text-zinc-400 hover:text-white disabled:opacity-40"><Minus className="size-3.5" /></button>
@@ -99,7 +100,7 @@ export default function CartPage() {
             </div>
             <div className="mt-2 flex items-center justify-between text-xs text-zinc-500">
               <span>当前余额</span>
-              <span className="text-emerald-300">{user?.credits ?? 0} 积分</span>
+              <span className="text-emerald-300">{formatCredits(user?.credits)} 积分</span>
             </div>
             <button
               onClick={() => navigate('/checkout')}

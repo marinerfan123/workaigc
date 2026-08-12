@@ -16,7 +16,6 @@ import {
   Settings2,
   Receipt,
   Store,
-  Cpu,
   Home,
   ShoppingCart,
   Package,
@@ -67,8 +66,8 @@ export function workspaceDockConfig(
     showSearch: true,
     searchPlaceholder: '搜索',
     sections: [
+      // ── 总览（overview）────────────────────────
       {
-        // 置顶常驻：工作台首页入口（始终可见，不折叠）
         items: [
           {
             key: 'workspace',
@@ -80,9 +79,11 @@ export function workspaceDockConfig(
           },
         ],
       },
+      // ── 供给与成本（supply）─────────────────────
+      // 后台注册表把模型 Hub / 技能 / 智能体 / 创作空间 / 参考图 / 盈亏归为供给侧；
+      // 前台对应创作者的生产入口：素材库全部分类 + 角色管理。
       {
-        // 主要大类：手风琴，默认展开；点标题展开小类，其余大类自动折叠
-        title: '素材库',
+        title: '创作',
         collapsible: true,
         defaultExpanded: true,
         items: [
@@ -94,22 +95,36 @@ export function workspaceDockConfig(
           { key: 'lib-prop', label: '道具', icon: Sparkles, path: '/library/prop', end: true, count: counts?.prop },
           { key: 'lib-other', label: '其他', icon: MoreHorizontal, path: '/library/other', end: true, count: counts?.other },
           { key: 'lib-upload', label: '上传的内容', icon: Upload, path: '/library/upload', end: true, count: counts?.upload },
+          { key: 'characters', label: '角色管理', icon: User, path: '/characters', end: true },
         ],
       },
-      // 管理板块：创作者的资源管理，手风琴折叠
+      // ── 集市与推荐（demand）─────────────────────
       {
-        title: '管理',
+        title: '探索',
         collapsible: true,
         items: [
-          { key: 'characters', label: '角色管理', icon: User, path: '/characters', end: true },
-          ...(userRole === 'admin'
-            ? [{ key: 'model-hub', label: '模型 Hub', icon: Cpu, path: '/model-hub', end: true }]
-            : []),
-          { key: 'account', label: '账户设置', icon: Settings2, path: '/account', end: true },
+          { key: 'global-studio', label: '创作工作室', icon: Clapperboard, path: '/studio', end: true },
+          { key: 'global-shop', label: 'AI 市集', icon: ShoppingBag, path: '/shop', end: true },
         ],
       },
-      // 全站跨模块跳转：手风琴，不重复放置置顶「工作台」项
-      globalNavSection(userRole, { collapsible: true, excludeWorkspace: true }),
+      // ── 用户与财务（people）─────────────────────
+      {
+        title: '我的',
+        collapsible: true,
+        items: [{ key: 'account', label: '账户设置', icon: Settings2, path: '/account', end: true }],
+      },
+      // ── 平台基座（platform）：仅管理员可见 ───────
+      // 模型 Hub 已在后台供给侧注册（/model-hub），前台不再重复挂出；
+      // 此处只保留进入管理后台的总入口。
+      ...(userRole === 'admin'
+        ? [
+            {
+              title: '平台',
+              collapsible: true,
+              items: [{ key: 'global-admin', label: '管理后台', icon: ShieldAlert, path: '/admin', end: true }],
+            },
+          ]
+        : []),
     ],
   };
 }

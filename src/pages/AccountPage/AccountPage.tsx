@@ -12,6 +12,7 @@ import {
   apiMeSummary, apiMeTransactions, apiMeRecharges,
   type MeTx, type MeRecharge,
 } from '@/services/api';
+import { formatCredits } from '@/utils/format';
 
 // ═══════════════════════════════════════════════════════════════
 // 设计约定（与全站刻度保持一致）
@@ -331,6 +332,7 @@ export default function AccountPage() {
                   icon={Crown}
                   accent="emerald"
                   suffix="积分"
+                  format="credits"
                 />
                 <StatTile
                   label="充值余额"
@@ -338,6 +340,7 @@ export default function AccountPage() {
                   icon={Wallet}
                   accent="cyan"
                   suffix="积分"
+                  format="credits"
                 />
                 <StatTile
                   label="图片"
@@ -536,12 +539,15 @@ function StatTile({
   icon: Icon,
   accent,
   suffix,
+  format,
 }: {
   label: string;
   value: number;
   icon: ElementType;
   accent: 'emerald' | 'cyan' | 'zinc';
   suffix?: string;
+  /** 'credits'：1 位小数（用于积分余额/统计）；'number'（默认）：千分位整数（用于图片视频等计数） */
+  format?: 'credits' | 'number';
 }) {
   const accentClass =
     accent === 'emerald'
@@ -549,6 +555,7 @@ function StatTile({
       : accent === 'cyan'
       ? 'from-cyan-500/15 to-cyan-500/5 text-cyan-400'
       : 'from-zinc-700/40 to-zinc-800/30 text-zinc-300';
+  const display = format === 'credits' ? formatCredits(value) : value.toLocaleString('zh-CN');
   return (
     <div className="relative overflow-hidden rounded-2xl border border-zinc-800/80 bg-gradient-to-br p-4 text-center transition-all hover:border-zinc-700/80 hover:-translate-y-0.5">
       <div className={cn('absolute inset-x-0 top-0 h-1 opacity-80', accent === 'emerald' ? 'bg-emerald-500' : accent === 'cyan' ? 'bg-cyan-500' : 'bg-zinc-600')} />
@@ -556,7 +563,7 @@ function StatTile({
         <Icon className="size-4" />
       </div>
       <div className="text-2xl font-bold tracking-tight text-white">
-        {value.toLocaleString('zh-CN')}
+        {display}
         {suffix && <span className="ml-0.5 text-xs font-medium text-zinc-500">{suffix}</span>}
       </div>
       <div className="mt-1 text-xs text-zinc-500">{label}</div>
@@ -574,7 +581,7 @@ function Metric({ label, value, tone }: { label: string; value: number; tone: 'e
   return (
     <div className={cn('flex items-center justify-between rounded-xl border px-3 py-2', toneClass)}>
       <span className="text-xs">{label}</span>
-      <span className="text-sm font-semibold tabular-nums">{value}</span>
+      <span className="text-sm font-semibold tabular-nums">{formatCredits(value)}</span>
     </div>
   );
 }
@@ -618,9 +625,9 @@ function TransactionRow({ t }: { t: MeTx }) {
       </div>
       <div className="text-right">
         <div className={cn('text-sm font-semibold tabular-nums', negative ? 'text-red-400' : 'text-emerald-400')}>
-          {txSign(t)}{Math.abs(t.amount)}
+          {txSign(t)}{formatCredits(Math.abs(t.amount))}
         </div>
-        <div className="text-[10px] text-zinc-500">余 {t.balanceAfter ?? '—'}</div>
+        <div className="text-[10px] text-zinc-500">余 {t.balanceAfter == null ? '—' : formatCredits(t.balanceAfter)}</div>
       </div>
     </div>
   );

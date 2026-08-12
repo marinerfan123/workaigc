@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, ChevronDown, Package } from 'lucide-react';
 import { apiGetOrders, apiGetOrder, type ShopOrder } from '@/pages/Admin/UsersPage';
+import { formatCredits } from '@/utils/format';
 
 const STATUS: Record<string, { label: string; cls: string }> = {
   pending: { label: '待支付', cls: 'bg-amber-500/10 text-amber-300' },
@@ -91,7 +92,7 @@ export default function OrdersPage() {
                         {d.items.map((it: any, i: number) => (
                           <div key={i} className="flex items-center justify-between text-sm">
                             <span className="truncate text-zinc-300">{it.title} <span className="text-zinc-600">× {it.qty}</span></span>
-                            <span className="text-emerald-400">{(it.unitCreditPrice || 0) * (it.qty || 0)} 积分</span>
+                            <span className="text-emerald-400">{formatCredits((it.unitCreditPrice || 0) * (it.qty || 0))} 积分</span>
                           </div>
                         ))}
                         <div className="mt-2 flex items-center justify-between border-t border-zinc-800 pt-2 text-xs text-zinc-500">

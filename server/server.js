@@ -111,7 +111,7 @@ async function initDB() {
   try {
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT DEFAULT 'official', base_url TEXT DEFAULT '', api_key TEXT DEFAULT '', supported_types TEXT[] DEFAULT '{}', enabled BOOLEAN DEFAULT TRUE, protocol TEXT DEFAULT 'openai-compatible', remark TEXT DEFAULT '', default_endpoint JSONB DEFAULT '{}', capacity_model TEXT DEFAULT 'limited', bucket_max INT, cooldown_ms INT DEFAULT 60000, created_at TIMESTAMPTZ DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, mapping_name TEXT DEFAULT '', type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', param_template JSONB DEFAULT '{}'::jsonb, credit_cost INT DEFAULT 0, supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE, reward_credits_required INT NOT NULL DEFAULT 0, max_concurrent INT, created_at TIMESTAMPTZ DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, mapping_name TEXT DEFAULT '', type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', param_template JSONB DEFAULT '{}'::jsonb, credit_cost NUMERIC(18,4) DEFAULT 0, supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE, reward_credits_required NUMERIC(18,4) NOT NULL DEFAULT 0, max_concurrent INT, created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, title TEXT DEFAULT '', type TEXT DEFAULT 'image', thumbnail TEXT DEFAULT '', full_url TEXT DEFAULT '', prompt TEXT DEFAULT '', model TEXT DEFAULT '', ratio TEXT DEFAULT '1:1', source TEXT DEFAULT 'user', is_favorite BOOLEAN DEFAULT FALSE, is_deleted BOOLEAN DEFAULT FALSE, oss_url TEXT DEFAULT '', oss_object_key TEXT DEFAULT '', oss_uploaded BOOLEAN DEFAULT FALSE, category TEXT DEFAULT 'generated', status TEXT DEFAULT 'success', error_message TEXT DEFAULT '', failed_at TIMESTAMPTZ, file_size BIGINT, created_at TIMESTAMPTZ DEFAULT NOW());
       -- 兼容旧库：缺失列自动补齐
       DO $$ BEGIN
@@ -121,15 +121,21 @@ async function initDB() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='file_size') THEN ALTER TABLE media ADD COLUMN file_size BIGINT; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='character_id') THEN ALTER TABLE media ADD COLUMN character_id TEXT DEFAULT NULL; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='mapping_name') THEN ALTER TABLE models ADD COLUMN mapping_name TEXT DEFAULT ''; END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='credit_cost') THEN ALTER TABLE models ADD COLUMN credit_cost INT DEFAULT 0; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='credit_cost') THEN ALTER TABLE models ADD COLUMN credit_cost NUMERIC(18,4) DEFAULT 0; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='estimated_seconds') THEN ALTER TABLE models ADD COLUMN estimated_seconds INT; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='category') THEN ALTER TABLE models ADD COLUMN category TEXT DEFAULT ''; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='creator') THEN ALTER TABLE models ADD COLUMN creator JSONB DEFAULT '{}'::jsonb; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='commercial_use') THEN ALTER TABLE models ADD COLUMN commercial_use BOOLEAN; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='max_concurrent') THEN ALTER TABLE models ADD COLUMN max_concurrent INT; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='supports_reward_balance') THEN ALTER TABLE models ADD COLUMN supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE; END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='reward_credits_required') THEN ALTER TABLE models ADD COLUMN reward_credits_required INT NOT NULL DEFAULT 0; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='reward_credits_required') THEN ALTER TABLE models ADD COLUMN reward_credits_required NUMERIC(18,4) NOT NULL DEFAULT 0; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='param_template') THEN ALTER TABLE models ADD COLUMN param_template JSONB DEFAULT '{}'::jsonb; END IF;
+        -- 价格/积分字段从 INT 扩为 NUMERIC(18,4)，支持小数；幂等，旧整数数据无损
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='credit_cost' AND data_type='integer') THEN ALTER TABLE models ALTER COLUMN credit_cost TYPE NUMERIC(18,4); END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='reward_credits_required' AND data_type='integer') THEN ALTER TABLE models ALTER COLUMN reward_credits_required TYPE NUMERIC(18,4); END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='model_price_history' AND column_name='credit_cost' AND data_type='integer') THEN ALTER TABLE model_price_history ALTER COLUMN credit_cost TYPE NUMERIC(18,4); END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='model_pricing' AND column_name='credit_price' AND data_type='integer') THEN ALTER TABLE model_pricing ALTER COLUMN credit_price TYPE NUMERIC(18,4); END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='model_pricing' AND column_name='reward_price' AND data_type='integer') THEN ALTER TABLE model_pricing ALTER COLUMN reward_price TYPE NUMERIC(18,4); END IF;
         -- ── ModelHub V3 Phase 3 乐观锁 + 审计列（revision / updated_at / updated_by）──
         -- 旧库无这些列：ADD COLUMN ... DEFAULT 在 PG11+ 对旧行瞬时回填（无全表重写），旧库安全。
         -- 新库：CREATE TABLE 未含这些列，靠下面的 ALTER 补齐（与 house style 一致：新增列走兼容块）。
@@ -174,26 +180,38 @@ async function initDB() {
       ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS pool TEXT;
       ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS cost_pool TEXT;
       DO $$
-      DECLARE v_gen TEXT;
+      DECLARE v_gen TEXT; v_type TEXT;
       BEGIN
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reward_credits') THEN
-          ALTER TABLE users ADD COLUMN reward_credits INT NOT NULL DEFAULT 0;
+          ALTER TABLE users ADD COLUMN reward_credits NUMERIC(18,4) NOT NULL DEFAULT 0;
         END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='recharge_credits') THEN
-          ALTER TABLE users ADD COLUMN recharge_credits INT NOT NULL DEFAULT 0;
+          ALTER TABLE users ADD COLUMN recharge_credits NUMERIC(18,4) NOT NULL DEFAULT 0;
         END IF;
+        -- 余额池扩精度：若 credits 生成列依赖 INT 池，必须先 DROP 才能改类型；改完后再重建为 NUMERIC 生成列
+        SELECT is_generated, data_type INTO v_gen, v_type FROM information_schema.columns WHERE table_name='users' AND column_name='credits';
+        IF v_gen IS NOT DISTINCT FROM 'ALWAYS' AND v_type = 'integer' THEN
+          ALTER TABLE users DROP COLUMN credits;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reward_credits' AND data_type='integer') THEN
+          ALTER TABLE users ALTER COLUMN reward_credits TYPE NUMERIC(18,4);
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='recharge_credits' AND data_type='integer') THEN
+          ALTER TABLE users ALTER COLUMN recharge_credits TYPE NUMERIC(18,4);
+        END IF;
+        -- 最终确保 credits 是 NUMERIC 生成列
         SELECT is_generated INTO v_gen FROM information_schema.columns WHERE table_name='users' AND column_name='credits';
         IF v_gen IS NOT DISTINCT FROM 'ALWAYS' THEN
-          NULL; -- 已是生成列（新库），无需迁移
+          NULL; -- 已是生成列，无需迁移
         ELSIF v_gen IS NOT NULL THEN
           -- 老库：credits 仍是普通列 → 旧余额并入 recharge 池（保留全模型可用性），再转生成列
           UPDATE users SET recharge_credits = COALESCE(recharge_credits,0) + COALESCE(credits,0)
            WHERE reward_credits = 0 AND recharge_credits = 0;
           ALTER TABLE users DROP COLUMN credits;
-          ALTER TABLE users ADD COLUMN credits INT GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED;
+          ALTER TABLE users ADD COLUMN credits NUMERIC(18,4) GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED;
         ELSE
-          -- credits 列缺失（理论不会发生，CREATE 已建）：补生成列
-          ALTER TABLE users ADD COLUMN credits INT GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED;
+          -- credits 列缺失：补生成列
+          ALTER TABLE users ADD COLUMN credits NUMERIC(18,4) GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED;
         END IF;
       END $$;
       -- 存量模型奖励价默认等于充值价（一次性，幂等，settings 标记防重跑覆盖）
@@ -313,9 +331,9 @@ async function initDB() {
         email         TEXT UNIQUE NOT NULL,
         display_name  TEXT NOT NULL DEFAULT '',
         password_hash TEXT NOT NULL,
-        reward_credits   INT NOT NULL DEFAULT 0,
-        recharge_credits INT NOT NULL DEFAULT 0,
-        credits          INT GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED,
+        reward_credits   NUMERIC(18,4) NOT NULL DEFAULT 0,
+        recharge_credits NUMERIC(18,4) NOT NULL DEFAULT 0,
+        credits          NUMERIC(18,4) GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED,
         role          TEXT NOT NULL DEFAULT 'user',
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -324,9 +342,9 @@ async function initDB() {
         id            BIGSERIAL PRIMARY KEY,
         user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         kind          TEXT NOT NULL,
-        amount        INT  NOT NULL,
+        amount        NUMERIC(18,4) NOT NULL,
         ref           TEXT,
-        balance_after INT,
+        balance_after NUMERIC(18,4),
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS ix_ct_user ON credit_transactions(user_id);
@@ -351,7 +369,10 @@ async function initDB() {
       CREATE INDEX IF NOT EXISTS ix_media_user ON media(user_id);
       ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS user_id         TEXT REFERENCES users(id);
       ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
-      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS cost            INT DEFAULT 0;
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS cost            NUMERIC(18,4) DEFAULT 0;
+      ALTER TABLE generation_tasks ALTER COLUMN cost TYPE NUMERIC(18,4);
+      ALTER TABLE credit_transactions ALTER COLUMN amount TYPE NUMERIC(18,4);
+      ALTER TABLE credit_transactions ALTER COLUMN balance_after TYPE NUMERIC(18,4);
       CREATE INDEX IF NOT EXISTS ix_gt_user ON generation_tasks(user_id);
       CREATE UNIQUE INDEX IF NOT EXISTS ux_gt_idem
         ON generation_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL;
@@ -733,7 +754,7 @@ async function initDB() {
         id            TEXT PRIMARY KEY DEFAULT 'mph-' || gen_random_uuid()::text,
         model_id      TEXT NOT NULL,
         display_name  TEXT DEFAULT '',
-        credit_cost   INT DEFAULT 0,
+        credit_cost   NUMERIC(18,4) DEFAULT 0,
         updated_at    TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS ix_mph_model ON model_price_history(model_id, updated_at DESC);
@@ -745,12 +766,24 @@ async function initDB() {
       -- 取代 models.credit_cost / model_price_history 的「用户价」角色（旧表保留不删，作回退）。
       CREATE TABLE IF NOT EXISTS model_pricing (
         model_id     TEXT PRIMARY KEY,                       -- 逻辑模型 id（= models.model_id）
-        credit_price INT NOT NULL DEFAULT 0,                 -- 用户积分售价（普通余额）
-        reward_price INT NOT NULL DEFAULT 0,                 -- 奖励余额售价
+        credit_price NUMERIC(18,4) NOT NULL DEFAULT 0,       -- 用户积分售价（普通余额）
+        reward_price NUMERIC(18,4) NOT NULL DEFAULT 0,       -- 奖励余额售价
         currency     TEXT DEFAULT 'CNY',
         updated_at   TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS ix_mp_model ON model_pricing(model_id);
+
+      -- 迁移：从 models.credit_cost 初始化 model_pricing（逻辑模型统一价）。
+      -- 同一 model_id 多行时取第一个非零值；若全为 0 则写 0。后续价格页保存会覆盖为统一价。
+      INSERT INTO model_pricing (model_id, credit_price, reward_price, currency, updated_at)
+      SELECT DISTINCT ON (model_id) model_id,
+        COALESCE(NULLIF(credit_cost, 0), 0) AS credit_price,
+        0 AS reward_price,
+        'CNY' AS currency,
+        NOW() AS updated_at
+      FROM models
+      WHERE model_id NOT IN (SELECT model_id FROM model_pricing)
+      ORDER BY model_id, credit_cost DESC;
 
       -- 每线路成本：一条「线路」= 一个 provider_model_bindings.id。
       -- 复合主键 (binding_id, unit)：同一线路可按单位拆多行（如 A 线路 3 行：
@@ -949,6 +982,8 @@ const SNAKE_MAP = {
   app_id:'appId', active_id:'activeId',
   // ── ModelHub V3 Phase 3 定价层：新列同步 SNAKE_MAP（避免前端 undefined 假死）──
   binding_id:'bindingId', credit_price:'creditPrice', reward_price:'rewardPrice', effective_at:'effectiveAt',
+  // ── 用户双余额池（admin 用户管理展示用）──
+  reward_credits:'rewardCredits', recharge_credits:'rechargeCredits',
   // ── 智能路由尝试数据：generation_jobs / generation_attempts 新列 ──
   job_id:'jobId', finished_at:'finishedAt', attempt_count:'attemptCount',
   attempt_id:'attemptId', attempt_no:'attemptNo', started_at:'startedAt', latency_ms:'latencyMs',
@@ -958,7 +993,13 @@ function fromSnake(obj) {
   if (!obj) return obj;
   const out = {};
   for (const [k, v] of Object.entries(obj)) {
-    out[SNAKE_MAP[k] || k] = v;
+    const key = SNAKE_MAP[k] || k;
+    // PG numeric 类型通过 pg 驱动以字符串返回，前端/计费链路期望 number
+    if (['credit_cost', 'reward_credits_required', 'credit_price', 'reward_price', 'cost', 'reward_credits', 'recharge_credits', 'credits', 'amount', 'balance_after'].includes(k) && typeof v === 'string') {
+      out[key] = Number(v);
+    } else {
+      out[key] = v;
+    }
   }
   return out;
 }
@@ -2674,12 +2715,15 @@ async function handleAPI(req, res) {
     const canonicalModel = resolvedIds[0];
 
     // 成本解析（L5）：按 canonical model_id 查计费维度（充值价 + 是否支持奖励 + 奖励价），再解析实际扣费池
+    // 价格走 accounting 双读链（model_pricing → history → models 回退），保证与价格页统一；奖励价也优先读 model_pricing。
+    const priceInfo = await accounting.getModelPrice(pgPool, canonicalModel);
+    const creditCost = priceInfo.creditPrice;
+    const rewardRequired = priceInfo.rewardPrice;
     const costRes = await pgPool.query(
-      'SELECT credit_cost, supports_reward_balance, reward_credits_required FROM models WHERE model_id=$1 LIMIT 1', [canonicalModel]);
+      'SELECT supports_reward_balance FROM models WHERE model_id=$1 LIMIT 1', [canonicalModel]);
     const mrow = costRes.rows[0];
-    const creditCost = mrow ? Number(mrow.credit_cost) || 0 : 0;
-    const supportsReward = mrow ? (mrow.supports_reward_balance === true || mrow.supports_reward_balance === 't' || mrow.supports_reward_balance === 'true') : false;
-    const rewardRequired = mrow ? Math.max(0, Number(mrow.reward_credits_required) || 0) : 0;
+    // 仅当显式支持奖励余额且奖励价大于 0 时才启用奖励池；否则按普通积分价从充值池扣。
+    const supportsReward = mrow ? (mrow.supports_reward_balance === true || mrow.supports_reward_balance === 't' || mrow.supports_reward_balance === 'true') && rewardRequired > 0 : false;
     // 解析实际扣费池（奖励优先；不足回退充值；都不够拦截）。双池账务核心。
     let pay;
     try {
@@ -3269,11 +3313,14 @@ async function handleAPI(req, res) {
         const exists = await pgPool.query('SELECT id FROM models WHERE id=$1', [s.id]);
         if (exists.rows[0]) return sendJSON(res, 409, { error: '模型已存在', id: s.id });
         const supportReward = (s.supports_reward_balance === true || s.supports_reward_balance === 'true') ? true : (s.supports_reward_balance === false || s.supports_reward_balance === 'false' ? false : true);
-        const rewardReq = (s.reward_credits_required != null && s.reward_credits_required !== '') ? Math.max(0, Math.floor(Number(s.reward_credits_required))) : Math.max(0, Math.floor(Number(s.credit_cost) || 0));
+        const creditCost = Math.max(0, Number((Number(s.credit_cost) || 0).toFixed(4)));
+        const rewardReq = (s.reward_credits_required != null && s.reward_credits_required !== '') ? Math.max(0, Number(Number(s.reward_credits_required).toFixed(4))) : creditCost;
         await pgPool.query(
           `INSERT INTO models (id,model_id,display_name,mapping_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint,param_template,credit_cost,supports_reward_balance,reward_credits_required,max_concurrent,estimated_seconds,category,commercial_use,creator,revision,updated_at,updated_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,1,NOW(),$20)`,
-          [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, pid, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), JSON.stringify(s.param_template || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0)), supportReward, rewardReq, (s.max_concurrent == null ? null : Math.max(0, Math.floor(Number(s.max_concurrent)))), (s.estimated_seconds == null ? null : Math.max(0, Math.floor(Number(s.estimated_seconds)))), (s.category == null ? '' : String(s.category)), (s.commercial_use === true || s.commercial_use === 'true' ? true : (s.commercial_use === false || s.commercial_use === 'false' ? false : null)), (s.creator && typeof s.creator === 'object' ? JSON.stringify(s.creator) : (s.creator == null ? null : JSON.stringify(s.creator))), (realUser && realUser.id) || '']
+          [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, pid, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), JSON.stringify(s.param_template || {}), creditCost, supportReward, rewardReq, (s.max_concurrent == null ? null : Math.max(0, Math.floor(Number(s.max_concurrent)))), (s.estimated_seconds == null ? null : Math.max(0, Math.floor(Number(s.estimated_seconds)))), (s.category == null ? '' : String(s.category)), (s.commercial_use === true || s.commercial_use === 'true' ? true : (s.commercial_use === false || s.commercial_use === 'false' ? false : null)), (s.creator && typeof s.creator === 'object' ? JSON.stringify(s.creator) : (s.creator == null ? null : JSON.stringify(s.creator))), (realUser && realUser.id) || '']
         );
+        // 同步写入 model_pricing 作为逻辑模型统一价；不支持奖励时 reward_price 置 0
+        await accounting.upsertModelPrice(pgPool, { modelId: s.model_id, creditPrice: creditCost, rewardPrice: supportReward ? rewardReq : 0, currency: 'CNY' }).catch((e) => console.warn('[models] upsertModelPrice 失败', e.message));
         return sendJSON(res, 201, { ok: true, id: s.id, revision: 1 });
       } catch (e) {
         console.error('[models] POST 失败', e.message);
@@ -3316,9 +3363,9 @@ async function handleAPI(req, res) {
         if (!(camel in patch)) continue;
         let v = patch[camel];
         if (col === 'enabled') v = v !== false;
-        else if (col === 'credit_cost') v = Math.max(0, Math.floor(Number(v) || 0));
+        else if (col === 'credit_cost') v = Math.max(0, Number(Number(v).toFixed(4)) || 0);
         else if (col === 'supports_reward_balance') v = (v === true || v === 'true' || v === 1) ? true : (v === false || v === 'false' || v === 0 ? false : true);
-        else if (col === 'reward_credits_required') v = (v == null || v === '' || Number.isNaN(Number(v))) ? 0 : Math.max(0, Math.floor(Number(v)));
+        else if (col === 'reward_credits_required') v = (v == null || v === '' || Number.isNaN(Number(v))) ? 0 : Math.max(0, Number(Number(v).toFixed(4)));
         else if (col === 'max_concurrent') v = (v == null || v === '' || Number.isNaN(Number(v))) ? null : Math.max(0, Math.floor(Number(v)));
         else if (col === 'estimated_seconds') v = (v == null || v === '') ? null : Math.max(0, Math.floor(Number(v)));
         else if (col === 'commercial_use') v = (v === true || v === 'true' || v === 1) ? true : (v === false || v === 'false' || v === 0 ? false : null);
@@ -3335,7 +3382,7 @@ async function handleAPI(req, res) {
       const touchReward = ('supportsRewardBalance' in patch) || ('rewardCreditsRequired' in patch);
       if (touchReward) {
         const willSupportReward = ('supportsRewardBalance' in patch) ? (patch.supportsRewardBalance === true || patch.supportsRewardBalance === 'true' || patch.supportsRewardBalance === 1) : (cur.supports_reward_balance === true || cur.supports_reward_balance === 't');
-        const rewardVal = ('rewardCreditsRequired' in patch) ? Math.max(0, Math.floor(Number(patch.rewardCreditsRequired) || 0)) : Number(cur.reward_credits_required) || 0;
+        const rewardVal = ('rewardCreditsRequired' in patch) ? Math.max(0, Number((Number(patch.rewardCreditsRequired) || 0).toFixed(4))) : Number(cur.reward_credits_required) || 0;
         if (willSupportReward && rewardVal <= 0) {
           return sendJSON(res, 400, { error: '支持奖励余额的模型必须填写奖励积分（且需大于 0）' });
         }
@@ -3344,15 +3391,29 @@ async function handleAPI(req, res) {
       const r = await optimisticUpdate(pgPool, { table: 'models', id, expectedRevision, columns: cols, values: vals, actor: realUser.id });
       if (r.status === 'notFound') return sendJSON(res, 404, { error: '模型不存在' });
       if (r.status === 'conflict') return sendJSON(res, 409, { error: '数据已被其他管理员修改（revision 不匹配），请刷新后重试', currentRevision: r.currentRevision });
-      // 价格变更归档：写入 model_price_history，供「再添加时提醒沿用原价格」
-      if ('creditCost' in patch) {
-        const newCost = Math.max(0, Math.floor(Number(patch.creditCost) || 0));
+      // 价格/奖励变更归档：写入 model_price_history，并同步 model_pricing（逻辑模型统一用户价）
+      const priceChanged = ('creditCost' in patch) || ('rewardCreditsRequired' in patch) || ('supportsRewardBalance' in patch);
+      if (priceChanged) {
         const m = await pgPool.query('SELECT model_id, display_name FROM models WHERE id=$1', [id]);
         if (m.rows[0]) {
+          const newCost = Math.max(0, Number((Number(patch.creditCost) || 0).toFixed(4)));
+          const newReward = ('rewardCreditsRequired' in patch)
+            ? Math.max(0, Number((Number(patch.rewardCreditsRequired) || 0).toFixed(4)))
+            : Number(cur.reward_credits_required) || 0;
+          const newSupport = ('supportsRewardBalance' in patch)
+            ? (patch.supportsRewardBalance === true || patch.supportsRewardBalance === 'true' || patch.supportsRewardBalance === 1)
+            : (cur.supports_reward_balance === true || cur.supports_reward_balance === 't');
           await pgPool.query(
             'INSERT INTO model_price_history (model_id, display_name, credit_cost) VALUES ($1,$2,$3)',
             [m.rows[0].model_id, m.rows[0].display_name || '', newCost]
           ).catch(() => {});
+          // 同步写入 model_pricing：不支持奖励时 reward_price 置 0，避免生成链路误读
+          await accounting.upsertModelPrice(pgPool, {
+            modelId: m.rows[0].model_id,
+            creditPrice: newCost,
+            rewardPrice: newSupport ? newReward : 0,
+            currency: 'CNY',
+          }).catch((e) => console.warn('[models] upsertModelPrice 失败', e.message));
         }
       }
       const row = await pgPool.query('SELECT * FROM models WHERE id=$1', [id]);

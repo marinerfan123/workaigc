@@ -4,6 +4,7 @@
 import { Activity, Zap, Film, Coins, CheckCircle2, Timer, CircleAlert, Radio } from 'lucide-react';
 import { PageHeader, StatCard, SectionCard, TabBar, cn } from '@/components/skeleton';
 import { useEffect, useRef, useState } from 'react';
+import { formatCredits } from '@/utils/format';
 
 interface Metrics {
   online: number;
@@ -97,7 +98,7 @@ export default function ConsolePage() {
       {/* 6 KPI */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         {KPI_DEFS.map((k) => (
-          <StatCard key={k.key} label={k.label} value={String(k.fmt(metrics))} icon={k.icon} />
+          <StatCard key={k.key} label={k.label} value={k.key === 'credit_today' ? formatCredits(k.fmt(metrics) as number) : String(k.fmt(metrics))} icon={k.icon} />
         ))}
       </div>
 
@@ -131,7 +132,7 @@ export default function ConsolePage() {
                 <div key={f.id} className="flex items-center justify-between rounded-lg bg-white/5 px-2.5 py-1.5 text-xs">
                   <span className="text-zinc-300">{f.user}</span>
                   <span className={cn('font-medium', f.amount >= 0 ? 'text-emerald-300' : 'text-rose-300')}>
-                    {f.amount >= 0 ? '+' : ''}{f.amount} · {f.type}
+                    {f.amount >= 0 ? '+' : '-'}{formatCredits(Math.abs(f.amount))} · {f.type}
                   </span>
                 </div>
               ))}

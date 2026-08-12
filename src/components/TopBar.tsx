@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authStore';
 import { apiExportMyMedia } from '@/services/api';
+import { formatCredits } from '@/utils/format';
 
 interface TopBarProps {
   onSettingsOpen: () => void;
@@ -141,9 +142,9 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
               title="赠送余额（平台赠送/活动发放，限定模型可用，优先扣减）· 充值余额（真钱充值，全部模型可用）。点击充值"
             >
               <Wallet className="size-3.5 text-amber-300" />
-              <span className="text-emerald-300 tabular-nums" title="赠送余额">{user.rewardCredits ?? 0}</span>
+              <span className="text-emerald-300 tabular-nums" title="赠送余额">{formatCredits(user.rewardCredits)}</span>
               <span className="text-zinc-500">/</span>
-              <span className="text-amber-300 tabular-nums" title="充值余额">{user.rechargeCredits ?? 0}</span>
+              <span className="text-amber-300 tabular-nums" title="充值余额">{formatCredits(user.rechargeCredits)}</span>
             </button>
 
             {/* 头像菜单 */}
@@ -181,9 +182,9 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
                         <div>
                           <div className="text-[11px] text-zinc-500">账户余额</div>
                           <div className="flex items-baseline gap-2 text-2xl font-bold tabular-nums text-white">
-                            <span className="text-emerald-400" title="赠送余额">{user.rewardCredits ?? 0}</span>
+                            <span className="text-emerald-400" title="赠送余额">{formatCredits(user.rewardCredits)}</span>
                             <span className="text-zinc-600">/</span>
-                            <span className="text-amber-400" title="充值余额">{user.rechargeCredits ?? 0}</span>
+                            <span className="text-amber-400" title="充值余额">{formatCredits(user.rechargeCredits)}</span>
                           </div>
                           <div className="mt-0.5 text-[10px] text-zinc-500">赠送 · 充值</div>
                         </div>

@@ -4,6 +4,7 @@ import { Receipt } from 'lucide-react';
 import { PageHeader, SectionCard, cn } from '@/components/skeleton';
 import { useCallback, useEffect, useState } from 'react';
 import { apiAdminTransactions, type AdminTx } from '@/services/api';
+import { formatCredits } from '@/utils/format';
 
 const TYPE_OPTS = [
   { v: '', label: '全部类型' },
@@ -87,9 +88,9 @@ export default function TransactionsPage() {
                     </span>
                   </td>
                   <td className={cn('py-2.5 pr-4 font-medium', t.amount >= 0 ? 'text-emerald-300' : 'text-rose-300')}>
-                    {t.amount >= 0 ? '+' : ''}{t.amount}
+                    {t.amount >= 0 ? '+' : '-'}{formatCredits(Math.abs(t.amount))}
                   </td>
-                  <td className="py-2.5 pr-4 text-zinc-400">{t.balanceAfter ?? '—'}</td>
+                  <td className="py-2.5 pr-4 text-zinc-400">{t.balanceAfter == null ? '—' : formatCredits(t.balanceAfter)}</td>
                   <td className="py-2.5 pr-4 max-w-[12rem] truncate text-xs text-zinc-500">{t.ref || '—'}</td>
                   <td className="py-2.5 text-xs text-zinc-500">{new Date(t.createdAt).toLocaleString()}</td>
                 </tr>

@@ -335,6 +335,7 @@ function DockBody({
   const location = useLocation();
   const [search, setSearch] = useState('');
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const searching = search.trim().length > 0;
 
   const visibleSections = useMemo(() => {
     const q = searching ? search.trim().toLowerCase() : '';
@@ -354,7 +355,6 @@ function DockBody({
     const def = sections.find((s) => s.collapsible && s.defaultExpanded && s.title);
     return def ? (def.title as string) : null;
   });
-  const searching = search.trim().length > 0;
 
   return (
     <>

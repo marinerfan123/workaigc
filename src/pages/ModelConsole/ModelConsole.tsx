@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { apiGetModels, apiGenerate, apiGetGenerationStatus, apiSaveMedia } from '../../services/api';
 import { getEffectiveModelName, type IAiModel, type IModelParamTemplate } from '../../data/models';
 import { useOssConfig } from '@/hooks/useOssConfig';
+import { formatCredits } from '@/utils/format';
 
 type ModelRow = IAiModel & {
   paramTemplate?: IModelParamTemplate & {
@@ -398,7 +399,7 @@ export default function ModelConsole() {
                     </div>
                   )}
                   {selected.creditCost ? (
-                    <div className="mt-2 text-xs text-white/50">单次消耗积分：{selected.creditCost}</div>
+                    <div className="mt-2 text-xs text-white/50">单次消耗积分：{formatCredits(selected.creditCost)}</div>
                   ) : (
                     <div className="mt-2 text-xs text-white/40">单次积分：未设置（后台 ModelHub 可配置）</div>
                   )}

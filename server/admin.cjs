@@ -34,7 +34,7 @@ function createAdmin(ctx) {
     const countR = await pg().query(`SELECT COUNT(*) FROM users WHERE ${where}`, params);
     const total = parseInt(countR.rows[0].count, 10);
     const r = await pg().query(
-      `SELECT id, email, display_name, role, credits, status, plan, created_at
+      `SELECT id, email, display_name, role, reward_credits, recharge_credits, credits, status, plan, created_at
        FROM users WHERE ${where} ORDER BY created_at DESC LIMIT $${i} OFFSET $${i + 1}`,
       [...params, limit, offset],
     );
@@ -42,35 +42,48 @@ function createAdmin(ctx) {
   }
 
   // 管理员手动充值 / 调整（§C.7，M2 后台调整流水；kind='adjust'，审计留痕）
-  async function recharge(userId, amount, note, actorId) {
-    const amt = Math.floor(Number(amount));
-    if (!Number.isFinite(amt) || amt === 0) throw new Error('金额必须为非零整数');
+  // pool: 'recharge' | 'reward'，支持小数（users 已 NUMERIC(18,4)）
+  async function recharge(userId, amount, note, actorId, pool = 'recharge') {
+    const col = pool === 'reward' ? 'reward_credits' : 'recharge_credits';
+    const amt = Number(Number(amount).toFixed(4));
+    if (!Number.isFinite(amt) || amt === 0) throw new Error('金额必须为非零数字');
     if (amt < 0) {
-      const cur = await pg().query('SELECT recharge_credits FROM users WHERE id=$1', [userId]);
+      const cur = await pg().query(`SELECT ${col} FROM users WHERE id=$1`, [userId]);
       if (!cur.rows.length) throw new Error('用户不存在');
-      if (cur.rows[0].recharge_credits + amt < 0) throw new Error('扣减后余额不能为负');
+      if (Number(cur.rows[0][col]) + amt < 0) throw new Error('扣减后余额不能为负');
     }
     const u = await pg().query(
-      'UPDATE users SET recharge_credits = recharge_credits + $1, updated_at=NOW() WHERE id=$2 RETURNING credits',
+      `UPDATE users SET ${col} = ${col} + $1, updated_at=NOW() WHERE id=$2 RETURNING credits`,
       [amt, userId],
     );
     if (!u.rows.length) throw new Error('用户不存在');
     const newCredits = u.rows[0].credits;
     await pg().query(
       `INSERT INTO credit_transactions (user_id, kind, amount, ref, pool, balance_after)
-       VALUES ($1,'adjust',$2,$3,'recharge',(SELECT credits FROM users WHERE id=$1))`,
-      [userId, amt, `admin:${actorId}`],
+       VALUES ($1,'adjust',$2,$3,$4,(SELECT credits FROM users WHERE id=$1))`,
+      [userId, amt, `admin:${actorId}:${note || ''}`, pool],
     );
     await pg().query(
       `INSERT INTO audit_logs (actor_id, action, target, detail)
        VALUES ($1,'recharge',$2,$3)`,
       [actorId, userId, JSON.stringify({
         level: amt > 0 ? 'info' : 'warn',
-        msg: `管理员${amt > 0 ? '充值' : '扣减'} ${Math.abs(amt)} 积分`,
-        note: note || '', amount: amt,
+        msg: `管理员${amt > 0 ? '增加' : '扣减'}${pool === 'reward' ? '赠送' : '充值'}积分 ${Math.abs(amt)}`,
+        note: note || '', amount: amt, pool,
       })],
     );
     return { ok: true, credits: newCredits };
+  }
+
+  async function setUserPassword(userId, password) {
+    const pw = (password || '').toString();
+    if (pw.length < 6) throw new Error('密码至少 6 位');
+    const u = await pg().query(
+      'UPDATE users SET password_hash=$1, updated_at=NOW() WHERE id=$2 RETURNING id',
+      [session.hashPassword(pw), userId],
+    );
+    if (!u.rows.length) throw new Error('用户不存在');
+    return { ok: true };
   }
 
   // ───────────────────────── 用户运营（商用多用户 §C.8） ─────────────────────────
@@ -86,10 +99,84 @@ function createAdmin(ctx) {
     if (!u.rows.length) throw new Error('用户不存在');
     return { ok: true, role };
   }
-  async function deleteUser(userId) {
-    const u = await pg().query('DELETE FROM users WHERE id=$1 RETURNING id', [userId]);
+  // 用户内容型资源表（有这些记录的账户视为「有资源的用户」，删除前需二次确认）
+  // col：外键列名（characters/studio_projects 用 owner_id，其余用 user_id）
+  const RESOURCE_TABLES = [
+    { key: 'generationTasks', table: 'generation_tasks', col: 'user_id', label: '生成任务' },
+    { key: 'media', table: 'media', col: 'user_id', label: '素材/图片' },
+    { key: 'referenceStyles', table: 'reference_styles', col: 'user_id', label: '参考图样式' },
+    { key: 'studioProjects', table: 'studio_projects', col: 'owner_id', label: '创作项目' },
+    { key: 'feedback', table: 'feedback', col: 'user_id', label: '反馈' },
+    { key: 'reports', table: 'reports', col: 'user_id', label: '举报' },
+  ];
+  // 纯账务/会话型子表（user_id ON DELETE CASCADE，删除 users 时自动清理；这里也显式清以便原子化）
+  const CASCADE_TABLES = [
+    { table: 'credit_transactions', col: 'user_id' },
+    { table: 'refresh_tokens', col: 'user_id' },
+    { table: 'recharge_orders', col: 'user_id' },
+    { table: 'user_skills', col: 'user_id' },
+  ];
+
+  // 统计用户的内容型资源数量（用于「有资源需确认」提示与展示）
+  async function countUserResources(userId) {
+    const counts = {};
+    let total = 0;
+    for (const t of RESOURCE_TABLES) {
+      const r = await pg().query(`SELECT COUNT(*)::int AS c FROM ${t.table} WHERE ${t.col}=$1`, [userId]);
+      const c = Number(r.rows[0].c);
+      counts[t.key] = c;
+      total += c;
+    }
+    return { counts, total };
+  }
+
+  // 删除用户。
+  // force=false：有内容型资源时抛 HAS_RESOURCES（路由返回 409 + counts）；无资源直接删。
+  // force=true ：事务内按依赖顺序显式级联删除全部子表（含 RESTRICT 的 generation_tasks）后再删 users。
+  async function deleteUser(userId, force = false) {
+    const u = await pg().query('SELECT id FROM users WHERE id=$1', [userId]);
     if (!u.rows.length) throw new Error('用户不存在');
-    return { ok: true };
+
+    if (!force) {
+      const { counts, total } = await countUserResources(userId);
+      if (total > 0) {
+        const e = new Error('该用户存在关联资源，需确认后强制删除');
+        e.code = 'HAS_RESOURCES';
+        e.hasResources = true;
+        e.counts = counts;
+        e.total = total;
+        throw e;
+      }
+      await pg().query('DELETE FROM users WHERE id=$1', [userId]);
+      return { ok: true };
+    }
+
+    // force：事务级联删除（先删 RESTRICT/SET NULL 子表，再删 users，CASCADE 子表一并显式清）
+    const client = await pg().connect();
+    try {
+      await client.query('BEGIN');
+      // 1) RESTRICT 子表（不先清会阻断删除 users）—— 必须最先删
+      await client.query('DELETE FROM generation_tasks WHERE user_id=$1', [userId]);
+      // 2) SET NULL 内容子表（显式删以真正移除用户资源，避免变孤儿）
+      await client.query('DELETE FROM media WHERE user_id=$1', [userId]);
+      await client.query('DELETE FROM reference_styles WHERE user_id=$1', [userId]);
+      await client.query('DELETE FROM studio_projects WHERE owner_id=$1', [userId]);
+      await client.query('DELETE FROM feedback WHERE user_id=$1', [userId]);
+      await client.query('DELETE FROM reports WHERE user_id=$1', [userId]);
+      // 3) CASCADE 子表（显式清，逻辑清晰；删 users 时也会自动级联）
+      for (const t of CASCADE_TABLES) {
+        await client.query(`DELETE FROM ${t.table} WHERE ${t.col}=$1`, [userId]);
+      }
+      // 4) 最后删 users
+      await client.query('DELETE FROM users WHERE id=$1', [userId]);
+      await client.query('COMMIT');
+    } catch (err) {
+      try { await client.query('ROLLBACK'); } catch (_) { /* 已回滚或连接断开 */ }
+      throw err;
+    } finally {
+      client.release();
+    }
+    return { ok: true, force: true };
   }
 
   // ───────────────────────── 积分流水（M2） ─────────────────────────
@@ -600,7 +687,14 @@ function createAdmin(ctx) {
     let     m = url.match(/^\/api\/admin\/users\/([^/]+)\/credits$/);
     if (m && method === 'POST') {
       const body = await parseBody(req);
-      try { return sendJSON(res, 200, await recharge(decodeURIComponent(m[1]), body.amount, body.note, actorId)); }
+      try { return sendJSON(res, 200, await recharge(decodeURIComponent(m[1]), body.amount, body.note, actorId, body.pool)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+    }
+    m = url.match(/^\/api\/admin\/users\/([^/]+)\/password$/);
+    if (m && method === 'POST') {
+      if (decodeURIComponent(m[1]) === actorId) return sendJSON(res, 400, { error: '不能修改自己的密码' });
+      const body = await parseBody(req);
+      try { return sendJSON(res, 200, await setUserPassword(decodeURIComponent(m[1]), body.password)); }
       catch (e) { return sendJSON(res, 400, { error: e.message }); }
     }
     m = url.match(/^\/api\/admin\/users\/([^/]+)\/status$/);
@@ -620,8 +714,26 @@ function createAdmin(ctx) {
     m = url.match(/^\/api\/admin\/users\/([^/]+)$/);
     if (m && method === 'DELETE') {
       if (decodeURIComponent(m[1]) === actorId) return sendJSON(res, 400, { error: '不能删除自己' });
-      try { return sendJSON(res, 200, await deleteUser(decodeURIComponent(m[1]))); }
-      catch (e) { return sendJSON(res, 400, { error: e.message }); }
+      const force = query.force === '1' || query.force === 'true' || query.force === true;
+      try { return sendJSON(res, 200, await deleteUser(decodeURIComponent(m[1]), force)); }
+      catch (e) {
+        const code = e && e.code;
+        const msg = (e && e.message) || '';
+        // 有内容型资源：返回 409 + 资源清单，前端弹二次确认框
+        if (code === 'HAS_RESOURCES') {
+          return sendJSON(res, 409, {
+            error: '该用户存在关联资源，删除将一并清除其全部内容，是否确认？',
+            hasResources: true,
+            counts: e.counts || {},
+            total: e.total || 0,
+          });
+        }
+        // Postgres 外键违反统一码 23503；同时兼容中文/英文错误文本（兜底，正常情况下已被显式级联覆盖）
+        if (code === '23503' || /foreign key|外键约束/i.test(msg)) {
+          return sendJSON(res, 409, { error: '该用户存在关联记录（生成任务/资产/流水等），无法直接删除。如需禁止登录，请使用“停用”。' });
+        }
+        return sendJSON(res, 400, { error: msg || '删除失败' });
+      }
     }
     if (url === '/api/admin/transactions' && method === 'GET') {
       return sendJSON(res, 200, await listTransactions(query));

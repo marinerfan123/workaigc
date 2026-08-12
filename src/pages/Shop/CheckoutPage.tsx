@@ -5,6 +5,7 @@ import { Loader2, CreditCard, ShieldCheck, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiGetCart, apiCreateOrder, type CartItem } from '@/pages/Admin/UsersPage';
 import { useAuth, refreshUser } from '@/services/authStore';
+import { formatCredits } from '@/utils/format';
 
 /** 生成幂等键（兼容非安全上下文下的 crypto.randomUUID 缺失） */
 function uuid(): string {
@@ -91,7 +92,7 @@ export default function CheckoutPage() {
                       <div className="truncate text-sm text-white">{it.title}</div>
                       <div className="text-xs text-zinc-500">× {it.qty}</div>
                     </div>
-                    <div className="text-sm text-emerald-400">{it.subtotal} 积分</div>
+                    <div className="text-sm text-emerald-400">{formatCredits(it.subtotal)} 积分</div>
                   </div>
                 ))}
               </div>

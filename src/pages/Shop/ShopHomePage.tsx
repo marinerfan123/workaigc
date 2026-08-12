@@ -5,10 +5,11 @@ import { useNavigate } from 'react-router-dom';
 import { ShoppingBag, Sparkles } from 'lucide-react';
 import { PageHeader, SectionCard, Placeholder } from '@/components/skeleton';
 import { apiGetShopProducts, type IShopProduct } from '@/services/api';
+import { formatCredits } from '@/utils/format';
 
 function priceLabel(p: IShopProduct) {
   if (p.priceCents > 0) return `¥${(p.priceCents / 100).toFixed(2)}`;
-  if (p.priceCredits > 0) return `${p.priceCredits} 积分`;
+  if (p.priceCredits > 0) return `${formatCredits(p.priceCredits)} 积分`;
   return '免费';
 }
 

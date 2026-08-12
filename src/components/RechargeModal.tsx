@@ -10,6 +10,7 @@ import {
   type RechargeOrder,
   type TopupPackage,
 } from '@/services/api';
+import { formatCredits } from '@/utils/format';
 
 const PRESETS = [6, 30, 98, 198, 648];
 type Step = 'form' | 'paying' | 'success' | 'error';
@@ -130,7 +131,7 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
     }
     setBusy(true);
     setMsg('');
-    const r = await apiCreateRechargeOrder({ amount: finalAmount, channel, packageId: selectedPackageId });
+    const r = await apiCreateRechargeOrder({ amount: finalAmount * 100, channel, packageId: selectedPackageId });
     setBusy(false);
     if (r.ok && r.order) {
       setOrder(r.order);
@@ -187,7 +188,7 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
                       >
                         <span>¥{pkg.price}</span>
                         <span className={`mt-0.5 text-[10px] font-normal ${pkg.bonus > 0 ? 'text-amber-300' : 'text-zinc-500'}`}>
-                          {totalCredits} 积分
+                          {formatCredits(totalCredits)} 积分
                         </span>
                       </button>
                     );

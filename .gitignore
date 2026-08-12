@@ -149,3 +149,6 @@ cookies.txt
 # ===== 重构基线排除（2026-08-11）=====
 Toonflow-app/
 output/
+
+# 真实 provider 密钥（本地注入用，绝不入库）
+scripts/prod-keys.json

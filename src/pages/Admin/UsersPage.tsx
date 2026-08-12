@@ -5,7 +5,10 @@
 import type { IMediaItem } from '@/data/media';
 import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
-import { Search, ShieldCheck, ShieldAlert, Trash2, Crown } from 'lucide-react';
+import {
+  Search, ShieldCheck, ShieldAlert, Trash2, Crown, Wallet, Lock, Key,
+  X, Plus,
+} from 'lucide-react';
 
 const cn = (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' ');
 
@@ -166,7 +169,6 @@ export function stripBlobItems<T extends { thumbnail?: string }>(items: T[]): T[
 // ─── 服务端生成分发 ─────────────────────────────
 /**
  * 调用后端 /api/generate（默认异步）：立即返回 taskId，前端再用 taskId 轮询状态。
- * 旧调用方式（同步返回完整结果）仍兼容：传 `sync: true` 时后端会一次性返回 images。
  */
 export type GenerateResponse =
   | { status: 'pending'; taskId: string; error?: string }
@@ -182,7 +184,6 @@ export async function apiGenerate(payload: {
   referenceImages?: string[];
   pendingIds?: string[]; // 把前端的 pending 占位 id 告诉后端，便于刷新恢复
   idempotencyKey?: string; // 幂等键：每次生成请求一个 UUID，防网络抖动双扣（后端必需）
-  sync?: boolean;         // 兼容旧测试：传 true 后端一次性返回结果
 }): Promise<GenerateResponse> {
   try {
     return await apiFetch('/api/generate', { method: 'POST', body: JSON.stringify(payload) }) as GenerateResponse;
@@ -427,6 +428,8 @@ export interface AdminUser {
   email: string;
   displayName: string;
   role: string;
+  rewardCredits: number;
+  rechargeCredits: number;
   credits: number;
   status: string;
   plan: string;
@@ -438,11 +441,27 @@ export async function apiAdminUsers(params: { q?: string; role?: string; limit?:
   try { return await apiFetch(`/api/admin/users?${qs.toString()}`); } catch { return { items: [], total: 0 }; }
 }
 
-export async function apiAdminRecharge(userId: string, amount: number, note?: string): Promise<{ ok: boolean; credits?: number; error?: string }> {
+export async function apiAdminRecharge(
+  userId: string,
+  amount: number,
+  note?: string,
+  pool: 'reward' | 'recharge' = 'recharge',
+): Promise<{ ok: boolean; credits?: number; error?: string }> {
   try {
     return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/credits`, {
       method: 'POST',
-      body: JSON.stringify({ amount, note }),
+      body: JSON.stringify({ amount, note, pool }),
+    });
+  } catch (e) {
+    return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+export async function apiAdminSetPassword(userId: string, password: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
     });
   } catch (e) {
     return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
@@ -457,9 +476,34 @@ export async function apiAdminSetUserRole(userId: string, role: 'user' | 'admin'
   try { return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, { method: 'PUT', body: JSON.stringify({ role }) }); }
   catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
 }
-export async function apiAdminDeleteUser(userId: string): Promise<{ ok: boolean; error?: string }> {
-  try { return await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE' }); }
-  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+export interface DeleteUserResult {
+  ok: boolean;
+  error?: string;
+  hasResources?: boolean;
+  counts?: Record<string, number>;
+  total?: number;
+}
+export async function apiAdminDeleteUser(userId: string, force = false): Promise<DeleteUserResult> {
+  try {
+    await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}${force ? '?force=1' : ''}`, { method: 'DELETE' });
+    return { ok: true };
+  } catch (e) {
+    const raw = (e instanceof Error ? e.message : String(e)).slice(0, 500);
+    const body = raw.match(/^API \d+:\s*(.*)$/)?.[1] || raw;
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && typeof parsed.error === 'string') {
+        return {
+          ok: false,
+          error: parsed.error,
+          hasResources: !!parsed.hasResources,
+          counts: parsed.counts || {},
+          total: parsed.total || 0,
+        };
+      }
+    } catch {}
+    return { ok: false, error: raw || '删除失败' };
+  }
 }
 
 export interface AdminTx {
@@ -540,6 +584,13 @@ export default function UsersPage() {
   const [q, setQ] = useState('');
   const [role, setRole] = useState('');
   const [loading, setLoading] = useState(true);
+  const [rechargeModal, setRechargeModal] = useState<AdminUser | null>(null);
+  const [passwordModal, setPasswordModal] = useState<AdminUser | null>(null);
+  const [rechargeForm, setRechargeForm] = useState({ amount: '', pool: 'recharge' as 'reward' | 'recharge', note: '' });
+  const [passwordForm, setPasswordForm] = useState({ password: '' });
+  const [submitting, setSubmitting] = useState(false);
+  // 删除有资源的用户：二次确认弹窗（后端返回 hasResources 时触发）
+  const [deleteConfirm, setDeleteConfirm] = useState<{ user: AdminUser; counts: Record<string, number>; total: number } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -564,9 +615,29 @@ export default function UsersPage() {
     else toast.error(r.error || '操作失败');
   };
   const remove = async (u: AdminUser) => {
-    if (!confirm(`确认删除用户 ${u.displayName}（${u.email}）？此操作不可恢复。`)) return;
+    // 先尝试普通删除；若用户存在关联资源，后端返回 hasResources + counts，弹二次确认框
     const r = await apiAdminDeleteUser(u.id);
-    if (r.ok) { toast.success('已删除'); load(); } else toast.error(r.error || '删除失败');
+    if (r.ok) { toast.success('已删除'); load(); return; }
+    if (r.hasResources) {
+      setDeleteConfirm({ user: u, counts: r.counts || {}, total: r.total || 0 });
+      return;
+    }
+    toast.error(r.error || '删除失败');
+  };
+  // 二次确认后强制执行级联删除
+  const confirmForceDelete = async () => {
+    if (!deleteConfirm) return;
+    const u = deleteConfirm.user;
+    setSubmitting(true);
+    const r = await apiAdminDeleteUser(u.id, true);
+    setSubmitting(false);
+    if (r.ok) {
+      toast.success('已删除并清除其全部资源');
+      setDeleteConfirm(null);
+      load();
+    } else {
+      toast.error(r.error || '删除失败');
+    }
   };
 
   return (
@@ -609,7 +680,7 @@ export default function UsersPage() {
             <tr className="text-left text-xs text-zinc-500">
               <th className="py-2.5 px-4 font-medium">用户</th>
               <th className="py-2.5 px-4 font-medium">角色</th>
-              <th className="py-2.5 px-4 font-medium">积分</th>
+              <th className="py-2.5 px-4 font-medium">积分（赠送 / 充值 / 合计）</th>
               <th className="py-2.5 px-4 font-medium">状态</th>
               <th className="py-2.5 px-4 font-medium">注册时间</th>
               <th className="py-2.5 px-4 font-medium text-right">操作</th>
@@ -627,13 +698,27 @@ export default function UsersPage() {
                 <td className="py-2.5 px-4">
                   <span className={cn('rounded-full px-2 py-0.5 text-xs', u.role === 'admin' ? 'bg-violet-400/10 text-violet-300' : 'bg-white/10 text-zinc-300')}>{u.role}</span>
                 </td>
-                <td className="py-2.5 px-4 font-medium text-emerald-300">{u.credits}</td>
+                <td className="py-2.5 px-4">
+                  <div className="text-xs text-zinc-500">
+                    <span className="text-violet-300">{Number(u.rewardCredits || 0).toFixed(1)}</span>
+                    <span className="mx-1">/</span>
+                    <span className="text-sky-300">{Number(u.rechargeCredits || 0).toFixed(1)}</span>
+                    <span className="mx-1">/</span>
+                    <span className="font-medium text-emerald-300">{Number(u.credits || 0).toFixed(1)}</span>
+                  </div>
+                </td>
                 <td className="py-2.5 px-4">
                   <span className={cn('rounded-full px-2 py-0.5 text-xs', u.status === 'active' ? 'bg-emerald-400/10 text-emerald-300' : 'bg-rose-400/10 text-rose-300')}>{u.status}</span>
                 </td>
                 <td className="py-2.5 px-4 text-xs text-zinc-500">{u.createdAt ? new Date(u.createdAt).toLocaleString() : '—'}</td>
                 <td className="py-2.5 px-4 text-right">
                   <div className="flex justify-end gap-1">
+                    <button onClick={() => { setRechargeForm({ amount: '', pool: 'recharge', note: '' }); setRechargeModal(u); }} title="调账（赠送/充值积分）" className="flex size-8 items-center justify-center rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white transition-colors">
+                      <Wallet className="size-4" />
+                    </button>
+                    <button onClick={() => { setPasswordForm({ password: '' }); setPasswordModal(u); }} title="修改密码" className="flex size-8 items-center justify-center rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white transition-colors">
+                      <Key className="size-4" />
+                    </button>
                     <button onClick={() => toggleStatus(u)} title={u.status === 'active' ? '停用' : '启用'} className="flex size-8 items-center justify-center rounded-lg bg-white/5 text-zinc-300 hover:bg-white/10 hover:text-white transition-colors">
                       {u.status === 'active' ? <ShieldAlert className="size-4" /> : <ShieldCheck className="size-4" />}
                     </button>
@@ -650,6 +735,191 @@ export default function UsersPage() {
           </tbody>
         </table>
       </div>
+
+      {/* 调账弹窗 */}
+      {rechargeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-zinc-900 p-5 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-white">用户调账</h3>
+              <button onClick={() => setRechargeModal(null)} className="text-zinc-500 hover:text-zinc-300"><X className="size-4" /></button>
+            </div>
+            <div className="mb-4 text-xs text-zinc-400">
+              {rechargeModal.displayName}（{rechargeModal.email}）
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs text-zinc-500">调整池</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setRechargeForm({ ...rechargeForm, pool: 'recharge' })}
+                    className={cn('flex-1 rounded-xl border px-3 py-2 text-xs', rechargeForm.pool === 'recharge' ? 'border-sky-500/50 bg-sky-500/10 text-sky-300' : 'border-zinc-700 text-zinc-400 hover:border-zinc-600')}
+                  >充值积分</button>
+                  <button
+                    onClick={() => setRechargeForm({ ...rechargeForm, pool: 'reward' })}
+                    className={cn('flex-1 rounded-xl border px-3 py-2 text-xs', rechargeForm.pool === 'reward' ? 'border-violet-500/50 bg-violet-500/10 text-violet-300' : 'border-zinc-700 text-zinc-400 hover:border-zinc-600')}
+                  >赠送积分</button>
+                </div>
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-xs text-zinc-500">金额（正数增加，负数扣减，最多 1 位小数）</span>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={rechargeForm.amount}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (/^-?\d*\.?\d{0,1}$/.test(val)) setRechargeForm({ ...rechargeForm, amount: val });
+                  }}
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-800/40 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500/50"
+                  placeholder="如 100 或 -50.5"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs text-zinc-500">备注</span>
+                <input
+                  value={rechargeForm.note}
+                  onChange={(e) => setRechargeForm({ ...rechargeForm, note: e.target.value })}
+                  className="w-full rounded-xl border border-zinc-700 bg-zinc-800/40 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500/50"
+                  placeholder="调账原因"
+                />
+              </label>
+            </div>
+            <div className="mt-5 flex gap-2">
+              <button
+                disabled={submitting || rechargeForm.amount === '' || Number(rechargeForm.amount) === 0}
+                onClick={async () => {
+                  setSubmitting(true);
+                  const r = await apiAdminRecharge(
+                    rechargeModal.id,
+                    Number(rechargeForm.amount),
+                    rechargeForm.note,
+                    rechargeForm.pool,
+                  );
+                  setSubmitting(false);
+                  if (r.ok) {
+                    toast.success('调账成功');
+                    setRechargeModal(null);
+                    setRechargeForm({ amount: '', pool: 'recharge', note: '' });
+                    load();
+                  } else {
+                    toast.error(r.error || '调账失败');
+                  }
+                }}
+                className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-emerald-500 py-2 text-sm font-bold text-black hover:bg-emerald-400 disabled:opacity-50"
+              >
+                {submitting ? '处理中…' : '确认调账'}
+              </button>
+              <button
+                onClick={() => setRechargeModal(null)}
+                className="rounded-xl border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+              >取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 改密弹窗 */}
+      {passwordModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-zinc-900 p-5 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-base font-semibold text-white">修改密码</h3>
+              <button onClick={() => setPasswordModal(null)} className="text-zinc-500 hover:text-zinc-300"><X className="size-4" /></button>
+            </div>
+            <div className="mb-4 text-xs text-zinc-400">
+              {passwordModal.displayName}（{passwordModal.email}）
+            </div>
+            <label className="block">
+              <span className="mb-1 block text-xs text-zinc-500">新密码（至少 6 位）</span>
+              <input
+                type="password"
+                value={passwordForm.password}
+                onChange={(e) => setPasswordForm({ password: e.target.value })}
+                className="w-full rounded-xl border border-zinc-700 bg-zinc-800/40 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500/50"
+                placeholder="输入新密码"
+              />
+            </label>
+            <div className="mt-5 flex gap-2">
+              <button
+                disabled={submitting || passwordForm.password.length < 6}
+                onClick={async () => {
+                  setSubmitting(true);
+                  const r = await apiAdminSetPassword(passwordModal.id, passwordForm.password);
+                  setSubmitting(false);
+                  if (r.ok) {
+                    toast.success('密码已修改');
+                    setPasswordModal(null);
+                    setPasswordForm({ password: '' });
+                  } else {
+                    toast.error(r.error || '修改失败');
+                  }
+                }}
+                className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-emerald-500 py-2 text-sm font-bold text-black hover:bg-emerald-400 disabled:opacity-50"
+              >
+                <Lock className="size-4" /> {submitting ? '保存中…' : '确认修改'}
+              </button>
+              <button
+                onClick={() => setPasswordModal(null)}
+                className="rounded-xl border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+              >取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 删除有资源的用户：二次确认弹窗 */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-red-500/30 bg-zinc-900 p-5 shadow-2xl">
+            <div className="mb-3 flex items-center gap-2">
+              <Trash2 className="size-5 text-red-400" />
+              <h3 className="text-base font-semibold text-white">确认删除该用户及其全部资源？</h3>
+            </div>
+            <div className="mb-4 text-xs text-zinc-400">
+              即将删除 <span className="text-white">{deleteConfirm.user.displayName}</span>（{deleteConfirm.user.email}）。
+              该用户存在以下关联内容，删除后将<span className="text-red-300">一并清除且不可恢复</span>：
+            </div>
+            <div className="mb-4 space-y-1.5 rounded-xl border border-white/10 bg-black/30 p-3">
+              {([
+                ['generationTasks', '生成任务'],
+                ['media', '素材 / 图片'],
+                ['referenceStyles', '参考图样式'],
+                ['characters', '角色'],
+                ['studioProjects', '创作项目'],
+                ['feedback', '反馈'],
+                ['reports', '举报'],
+              ] as const).map(([key, label]) => {
+                const c = deleteConfirm.counts[key] || 0;
+                if (c <= 0) return null;
+                return (
+                  <div key={key} className="flex items-center justify-between text-xs">
+                    <span className="text-zinc-400">{label}</span>
+                    <span className="font-medium text-zinc-200">{c} 项</span>
+                  </div>
+                );
+              })}
+              <div className="flex items-center justify-between border-t border-white/10 pt-1.5 text-xs">
+                <span className="text-zinc-500">合计</span>
+                <span className="font-semibold text-red-300">{deleteConfirm.total} 项资源</span>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                disabled={submitting}
+                onClick={confirmForceDelete}
+                className="flex flex-1 items-center justify-center gap-1 rounded-xl bg-red-500 py-2 text-sm font-bold text-white hover:bg-red-400 disabled:opacity-50"
+              >
+                <Trash2 className="size-4" /> {submitting ? '删除中…' : '确认删除并清除资源'}
+              </button>
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="rounded-xl border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+              >取消</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

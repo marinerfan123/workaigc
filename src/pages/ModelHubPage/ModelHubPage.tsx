@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { logger } from '@/services/client-capabilities';
+import { formatCredits } from '@/utils/format';
 import {
   Plus,
   Search,
@@ -1545,18 +1546,18 @@ export default function ModelHubPage() {
                                   )}
                                   {group.supportsRewardBalance !== false && (group.rewardCreditsRequired || 0) > 0 && (
                                     <span
-                                      title={`支持赠送余额：单次需 ${group.rewardCreditsRequired} 赠送积分（全局优先扣）`}
+                                      title={`支持赠送余额：单次需 ${formatCredits(group.rewardCreditsRequired)} 赠送积分（全局优先扣）`}
                                       className="ml-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle"
                                     >
-                                      赠 {group.rewardCreditsRequired}
+                                      赠 {formatCredits(group.rewardCreditsRequired)}
                                     </span>
                                   )}
                                   {(group.creditCost || 0) > 0 && (
                                     <span
-                                      title={`单次生成消耗 ${group.creditCost} 积分（充值价）`}
+                                      title={`单次生成消耗 ${formatCredits(group.creditCost)} 积分（充值价）`}
                                       className="ml-1.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle"
                                     >
-                                      {group.creditCost} 积分
+                                      {formatCredits(group.creditCost)} 积分
                                     </span>
                                   )}
                                   {(group.creditCost || 0) === 0 && (group.supportsRewardBalance === false || (group.rewardCreditsRequired || 0) === 0) && (
@@ -1742,7 +1743,7 @@ export default function ModelHubPage() {
                                   <span className="text-[10px] text-zinc-500">赠送积分 / 张</span>
                                 </div>
                                 <p className="mt-1 text-[10px] text-zinc-500">
-                                  支持赠送余额时必填且需大于 0；未填写将按充值价（{typeof group.creditCost === 'number' ? group.creditCost : 0}）兜底。
+                                  支持赠送余额时必填且需大于 0；未填写将按充值价（{formatCredits(typeof group.creditCost === 'number' ? group.creditCost : 0)}）兜底。
                                 </p>
                               </div>
                               <div className="flex items-center justify-end gap-1.5 pt-1">

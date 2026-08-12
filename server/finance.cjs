@@ -80,6 +80,190 @@ function createFinance(ctx) {
     };
   }
 
+  // ───────────────────────── KPI 卡片明细下钻 ─────────────────────────
+  // 统一入口：?metric=balance|recharge|consumed|granted|pending|failed|users|adjusted|reward-balance|recharge-balance|reward-granted|recharge-granted
+  async function kpiDetail(metric) {
+    const p = pg();
+    const limit = Math.min(50, Math.max(10, parseInt(metric._limit || '20', 10)) || 20);
+    const m = (metric.metric || '').trim();
+    if (!m) throw new Error('缺少 metric 参数');
+
+    switch (m) {
+      // ── 系统总积分余额：Top 用户 + 池分布 ──
+      case 'balance': {
+        const top = await p.query(
+          'SELECT id, display_name, email, credits, reward_credits, recharge_credits FROM users ORDER BY credits DESC NULLS LAST LIMIT $1', [limit]);
+        const poolSum = await p.query('SELECT COALESCE(SUM(credits),0) AS total, COALESCE(SUM(reward_credits),0) AS reward, COALESCE(SUM(recharge_credits),0) AS recharge FROM users');
+        return {
+          metric: m,
+          summary: { totalCredits: Number(poolSum.rows[0].total), rewardPool: Number(poolSum.rows[0].reward), rechargePool: Number(poolSum.rows[0].recharge) },
+          items: top.rows.map((x) => ({ userId: x.id, name: x.display_name || x.email || '—', email: x.email || null, credits: Number(x.credits), rewardCredits: Number(x.reward_credits || 0), rechargeCredits: Number(x.recharge_credits || 0) })),
+        };
+      }
+
+      // ── 累计充值(成功)：最近订单 + 渠道分布 ──
+      case 'recharge': {
+        const list = await p.query(
+          `SELECT ro.id, ro.user_id, u.display_name AS user, ro.channel, ro.amount, ro.status,
+                  ro.pay_order_no, ro.created_at, ro.paid_at
+           FROM recharge_orders ro LEFT JOIN users u ON u.id=ro.user_id
+           WHERE ro.status='paid' ORDER BY ro.paid_at DESC NULLS LAST, ro.created_at DESC LIMIT $1`, [limit]);
+        const byChannel = await p.query("SELECT channel, COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM recharge_orders WHERE status='paid' GROUP BY channel ORDER BY s DESC");
+        return {
+          metric: m,
+          summary: { totalAmount: Number((await p.query("SELECT COALESCE(SUM(amount),0) AS s FROM recharge_orders WHERE status='paid'")).rows[0].s), totalCount: parseInt((await p.query("SELECT COUNT(*) AS c FROM recharge_orders WHERE status='paid'")).rows[0].c, 10) },
+          byChannel: byChannel.rows.map((x) => ({ channel: x.channel, amount: Number(x.s), count: parseInt(x.c, 10) })),
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', channel: x.channel, amount: Number(x.amount), payOrderNo: x.pay_order_no, createdAt: x.created_at, paidAt: x.paid_at })),
+        };
+      }
+
+      // ── 累计消费：最近 commit 流水 ──
+      case 'consumed': {
+        const list = await p.query(
+          `SELECT ct.id, ct.user_id, u.display_name AS user, ct.kind, ct.amount, ct.ref, ct.pool, ct.balance_after, ct.created_at
+           FROM credit_transactions ct LEFT JOIN users u ON u.id=ct.user_id
+           WHERE ct.kind='commit' ORDER BY ct.created_at DESC LIMIT $1`, [limit]);
+        const byRef = await p.query("SELECT ref, COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM credit_transactions WHERE kind='commit' AND ref IS NOT NULL AND ref<>'' GROUP BY ref ORDER BY s DESC NULLS LAST LIMIT 15");
+        const agg = await p.query("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM credit_transactions WHERE kind='commit'");
+        return {
+          metric: m,
+          summary: { totalConsumed: Number(agg.rows[0].s), txCount: parseInt(agg.rows[0].c, 10) },
+          byPurpose: byRef.rows.map((x) => ({ ref: x.ref, amount: Number(x.s), count: parseInt(x.c, 10) })),
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', kind: x.kind, amount: Number(x.amount), ref: x.ref || '', pool: x.pool || null, balanceAfter: x.balance_after != null ? Number(x.balance_after) : null, createdAt: x.created_at })),
+        };
+      }
+
+      // ── 累计发放：最近 grant 流水 ──
+      case 'granted': {
+        const list = await p.query(
+          `SELECT ct.id, ct.user_id, u.display_name AS user, ct.kind, ct.amount, ct.ref, ct.pool, ct.balance_after, ct.created_at
+           FROM credit_transactions ct LEFT JOIN users u ON u.id=ct.user_id
+           WHERE ct.kind='grant' ORDER BY ct.created_at DESC LIMIT $1`, [limit]);
+        const byPool = await p.query("SELECT pool, COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM credit_transactions WHERE kind='grant' GROUP BY pool ORDER BY s DESC");
+        const agg = await p.query("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM credit_transactions WHERE kind='grant'");
+        return {
+          metric: m,
+          summary: { totalGranted: Number(agg.rows[0].s), txCount: parseInt(agg.rows[0].c, 10) },
+          byPool: byPool.rows.map((x) => ({ pool: x.pool, amount: Number(x.s), count: parseInt(x.c, 10) })),
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', amount: Number(x.amount), ref: x.ref || '', pool: x.pool || null, balanceAfter: x.balance_after != null ? Number(x.balance_after) : null, createdAt: x.created_at })),
+        };
+      }
+
+      // ── 待支付订单：列表 ──
+      case 'pending': {
+        const list = await p.query(
+          `SELECT ro.id, ro.user_id, u.display_name AS user, ro.channel, ro.amount, ro.status,
+                  ro.pay_order_no, ro.created_at, ro.expires_at
+           FROM recharge_orders ro LEFT JOIN users u ON u.id=ro.user_id
+           WHERE ro.status='pending' ORDER BY ro.created_at DESC LIMIT $1`, [limit]);
+        const cnt = await p.query("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM recharge_orders WHERE status='pending'");
+        return {
+          metric: m,
+          summary: { totalPending: Number(cnt.rows[0].s), count: parseInt(cnt.rows[0].c, 10) },
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', channel: x.channel, amount: Number(x.amount), payOrderNo: x.pay_order_no, createdAt: x.created_at, expiresAt: x.expires_at })),
+        };
+      }
+
+      // ── 失败订单：列表+原因 ──
+      case 'failed': {
+        const list = await p.query(
+          `SELECT ro.id, ro.user_id, u.display_name AS user, ro.channel, ro.amount, ro.status,
+                  ro.pay_order_no, ro.created_at, ro.meta
+           FROM recharge_orders ro LEFT JOIN users u ON u.id=ro.user_id
+           WHERE ro.status='failed' ORDER BY ro.created_at DESC LIMIT $1`, [limit]);
+        const cnt = await p.query("SELECT COUNT(*) AS c FROM recharge_orders WHERE status='failed'");
+        return {
+          metric: m,
+          summary: { count: parseInt(cnt.rows[0].c, 10) },
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', channel: x.channel, amount: Number(x.amount), payOrderNo: x.pay_order_no, createdAt: x.created_at, reason: (x.meta && typeof x.meta === 'object' && x.meta.reason) ? x.meta.reason : null })),
+        };
+      }
+
+      // ── 用户数：用户列表（含余额） ──
+      case 'users': {
+        const list = await p.query(
+          `SELECT id, display_name, email, credits, reward_credits, recharge_credits, role, created_at, last_login_at
+           FROM users ORDER BY created_at DESC LIMIT $1`, [limit]);
+        const total = await p.query('SELECT COUNT(*) AS c FROM users');
+        const active = await p.query("SELECT COUNT(*) AS c FROM users WHERE last_login_at > NOW() - INTERVAL '30 days'");
+        return {
+          metric: m,
+          summary: { totalUsers: parseInt(total.rows[0].c, 10), activeLast30d: parseInt(active.rows[0].c, 10) },
+          items: list.rows.map((x) => ({ userId: x.id, name: x.display_name || '—', email: x.email || null, credits: Number(x.credits || 0), rewardCredits: Number(x.reward_credits || 0), rechargeCredits: Number(x.recharge_credits || 0), role: x.role, createdAt: x.created_at, lastLoginAt: x.last_login_at })),
+        };
+      }
+
+      // ── 手动调整：adjust 流水 ──
+      case 'adjusted': {
+        const list = await p.query(
+          `SELECT ct.id, ct.user_id, u.display_name AS user, ct.amount, ct.ref, ct.balance_after, ct.created_at
+           FROM credit_transactions ct LEFT JOIN users u ON u.id=ct.user_id
+           WHERE ct.kind='adjust' ORDER BY ct.created_at DESC LIMIT $1`, [limit]);
+        const agg = await p.query("SELECT COALESCE(SUM(amount),0) AS net, COUNT(*) AS c FROM credit_transactions WHERE kind='adjust'");
+        return {
+          metric: m,
+          summary: { netAdjustment: Number(agg.rows[0].net), txCount: parseInt(agg.rows[0].c, 10) },
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', amount: Number(x.amount), ref: x.ref || '', balanceAfter: x.balance_after != null ? Number(x.balance_after) : null, createdAt: x.created_at })),
+        };
+      }
+
+      // ── 赠送池余额：Top 持有者 ──
+      case 'reward-balance': {
+        const top = await p.query(
+          'SELECT id, display_name, email, credits, reward_credits, recharge_credits FROM users WHERE reward_credits > 0 ORDER BY reward_credits DESC NULLS LAST LIMIT $1', [limit]);
+        const agg = await p.query('SELECT COALESCE(SUM(reward_credits),0) AS s, COUNT(*) FILTER (WHERE reward_credits>0) AS holders FROM users');
+        return {
+          metric: m,
+          summary: { totalReward: Number(agg.rows[0].s), holders: parseInt(agg.rows[0].holders, 10) },
+          items: top.rows.map((x) => ({ userId: x.id, name: x.display_name || x.email || '—', email: x.email || null, credits: Number(x.credits || 0), rewardCredits: Number(x.reward_credits || 0), rechargeCredits: Number(x.recharge_credits || 0) })),
+        };
+      }
+
+      // ── 充值池余额：Top 持有者 ──
+      case 'recharge-balance': {
+        const top = await p.query(
+          'SELECT id, display_name, email, credits, reward_credits, recharge_credits FROM users WHERE recharge_credits > 0 ORDER BY recharge_credits DESC NULLS LAST LIMIT $1', [limit]);
+        const agg = await p.query('SELECT COALESCE(SUM(recharge_credits),0) AS s, COUNT(*) FILTER (WHERE recharge_credits>0) AS holders FROM users');
+        return {
+          metric: m,
+          summary: { totalRecharge: Number(agg.rows[0].s), holders: parseInt(agg.rows[0].holders, 10) },
+          items: top.rows.map((x) => ({ userId: x.id, name: x.display_name || x.email || '—', email: x.email || null, credits: Number(x.credits || 0), rewardCredits: Number(x.reward_credits || 0), rechargeCredits: Number(x.recharge_credits || 0) })),
+        };
+      }
+
+      // ── 累计赠送发放（reward 池） ──
+      case 'reward-granted': {
+        const list = await p.query(
+          `SELECT ct.id, ct.user_id, u.display_name AS user, ct.amount, ct.ref, ct.balance_after, ct.created_at
+           FROM credit_transactions ct LEFT JOIN users u ON u.id=ct.user_id
+           WHERE ct.kind='grant' AND ct.pool='reward' ORDER BY ct.created_at DESC LIMIT $1`, [limit]);
+        const agg = await p.query("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM credit_transactions WHERE kind='grant' AND pool='reward'");
+        return {
+          metric: m,
+          summary: { totalRewardGranted: Number(agg.rows[0].s), txCount: parseInt(agg.rows[0].c, 10) },
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', amount: Number(x.amount), ref: x.ref || '', balanceAfter: x.balance_after != null ? Number(x.balance_after) : null, createdAt: x.created_at })),
+        };
+      }
+
+      // ── 累计充值到账（recharge 池） ──
+      case 'recharge-granted': {
+        const list = await p.query(
+          `SELECT ct.id, ct.user_id, u.display_name AS user, ct.amount, ct.ref, ct.balance_after, ct.created_at
+           FROM credit_transactions ct LEFT JOIN users u ON u.id=ct.user_id
+           WHERE ct.kind='grant' AND ct.pool='recharge' ORDER BY ct.created_at DESC LIMIT $1`, [limit]);
+        const agg = await p.query("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM credit_transactions WHERE kind='grant' AND ct.pool='recharge'");
+        return {
+          metric: m,
+          summary: { totalRechargeGranted: Number(agg.rows[0].s), txCount: parseInt(agg.rows[0].c, 10) },
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', amount: Number(x.amount), ref: x.ref || '', balanceAfter: x.balance_after != null ? Number(x.balance_after) : null, createdAt: x.created_at })),
+        };
+      }
+
+      default:
+        throw new Error('未知 metric 类型: ' + m);
+    }
+  }
+
   // ───────────────────────── 充值订单列表（含失败） ─────────────────────────
   async function listRecharges(query) {
     const limit = Math.min(parseInt(query.limit || '50', 10) || 50, 200);
@@ -403,6 +587,10 @@ function createFinance(ctx) {
 
     if (url === '/api/admin/finance/overview' && method === 'GET') {
       return sendJSON(res, 200, await overview());
+    }
+    if (url === '/api/admin/finance/kpi-detail' && method === 'GET') {
+      try { return sendJSON(res, 200, await kpiDetail(q)); }
+      catch (e) { return sendJSON(res, 400, { error: e.message }); }
     }
     if (url === '/api/admin/finance/recharges' && method === 'GET') {
       return sendJSON(res, 200, await listRecharges(q));

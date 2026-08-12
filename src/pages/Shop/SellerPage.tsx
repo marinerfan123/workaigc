@@ -7,6 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { Store, Plus, Loader2, Package, ShoppingBag } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiGetShopProducts, apiGetOrders, type ShopProduct, type ShopOrder } from '@/pages/Admin/UsersPage';
+import { formatCredits } from '@/utils/format';
 
 type Tab = 'products' | 'orders';
 
@@ -89,7 +90,7 @@ export default function SellerPage() {
                 </div>
                 <div className="p-3">
                   <div className="truncate text-sm text-white">{p.title}</div>
-                  <div className="mt-0.5 text-sm text-emerald-400">{p.creditPrice} 积分</div>
+                  <div className="mt-0.5 text-sm text-emerald-400">{formatCredits(p.creditPrice)} 积分</div>
                 </div>
               </button>
             ))}

@@ -100,7 +100,6 @@ export default function App() {
           <Route path="workspace" element={<RequireAuth><WorkspacePage /></RequireAuth>} />
           <Route path="library/:category?" element={<RequireAuth><LibraryPage /></RequireAuth>} />
           <Route path="characters" element={<RequireAuth><CharactersPage /></RequireAuth>} />
-          <Route path="model-hub" element={<RequireAdmin><ModelHubPage /></RequireAdmin>} />
           <Route path="model-console" element={<RequireAuth><ModelConsole /></RequireAuth>} />
           <Route path="edit/:id" element={<RequireAuth><ImageEditorPage /></RequireAuth>} />
           <Route path="account" element={<RequireAuth><AccountPage /></RequireAuth>} />
@@ -147,6 +146,11 @@ export default function App() {
           <Route path="ledger" element={<LedgerPage />} />
           <Route path="recommend" element={<AdminPlaceholderPage title="推荐管理" note="排序、精选、个性化分发与搜索调权。" />} />
           <Route path="studio" element={<AdminPlaceholderPage title="创作空间管理" note="项目 / 画布 / 流水线等创作空间的运维治理。" />} />
+        </Route>
+
+        {/* 模型 Hub：供给侧核心，共享管理后台导航以保持体验一致。URL 保持 /model-hub 不变。 */}
+        <Route path="/model-hub" element={<RequireAuth><AdminLayout /></RequireAuth>}>
+          <Route index element={<ModelHubPage />} />
         </Route>
 
         {/* 全局监控独立弹出页（不走 AdminLayout，全屏单 tab 视图） */}

@@ -9,6 +9,7 @@ import {
   apiGetProduct, apiAcquireProduct, apiRunSkill,
   type IShopProductDetail,
 } from '@/services/api';
+import { formatCredits } from '@/utils/format';
 
 export default function ProductDetailPage() {
   const { id } = useParams();
@@ -34,7 +35,7 @@ export default function ProductDetailPage() {
 
   const priceLabel = (p: IShopProductDetail['product']) => {
     if (p.priceCents > 0) return `¥${(p.priceCents / 100).toFixed(2)}`;
-    if (p.priceCredits > 0) return `${p.priceCredits} 积分`;
+    if (p.priceCredits > 0) return `${formatCredits(p.priceCredits)} 积分`;
     return '免费';
   };
 
