@@ -1,0 +1,4097 @@
+{
+  "meta": {
+    "generatedAt": "2026-08-11T11:12:32.405Z",
+    "db": "huabu"
+  },
+  "tables": {
+    "agent_calls": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('agent_calls_id_seq'::regclass)"
+        },
+        {
+          "name": "agent_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "provider",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "ok",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "true"
+        },
+        {
+          "name": "latency_ms",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "cost_credits",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "agent_calls_pkey",
+          "def": "CREATE UNIQUE INDEX agent_calls_pkey ON public.agent_calls USING btree (id)"
+        },
+        {
+          "name": "ix_ac_created",
+          "def": "CREATE INDEX ix_ac_created ON public.agent_calls USING btree (created_at DESC)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "agent_providers": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "agent_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "provider",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "model",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "weight",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "1"
+        },
+        {
+          "name": "priority",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "10"
+        },
+        {
+          "name": "cost_per_call",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "true"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [
+        {
+          "name": "agent_providers_agent_key_fkey",
+          "def": "FOREIGN KEY (agent_key) REFERENCES agents(key) ON DELETE CASCADE"
+        }
+      ],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "agent_providers_pkey",
+          "def": "CREATE UNIQUE INDEX agent_providers_pkey ON public.agent_providers USING btree (id)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "agent_rule_logs": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('agent_rule_logs_id_seq'::regclass)"
+        },
+        {
+          "name": "rule_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "fired_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        },
+        {
+          "name": "result",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "agent_rule_logs_pkey",
+          "def": "CREATE UNIQUE INDEX agent_rule_logs_pkey ON public.agent_rule_logs USING btree (id)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "agent_rules": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "trigger",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "condition",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "action",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "true"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "agent_rules_pkey",
+          "def": "CREATE UNIQUE INDEX agent_rules_pkey ON public.agent_rules USING btree (id)"
+        }
+      ],
+      "rowCount": "3"
+    },
+    "agents": {
+      "columns": [
+        {
+          "name": "key",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "true"
+        },
+        {
+          "name": "daily_budget",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "config",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        },
+        {
+          "name": "agent_type",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'model'::text"
+        },
+        {
+          "name": "skill_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        }
+      ],
+      "pk": [
+        "key"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "agents_pkey",
+          "def": "CREATE UNIQUE INDEX agents_pkey ON public.agents USING btree (key)"
+        },
+        {
+          "name": "ix_agents_type",
+          "def": "CREATE INDEX ix_agents_type ON public.agents USING btree (agent_type)"
+        }
+      ],
+      "rowCount": "3"
+    },
+    "audit_logs": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('audit_logs_id_seq'::regclass)"
+        },
+        {
+          "name": "actor_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "action",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "target",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "detail",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "audit_logs_pkey",
+          "def": "CREATE UNIQUE INDEX audit_logs_pkey ON public.audit_logs USING btree (id)"
+        },
+        {
+          "name": "ix_audit_created",
+          "def": "CREATE INDEX ix_audit_created ON public.audit_logs USING btree (created_at DESC)"
+        }
+      ],
+      "rowCount": "3"
+    },
+    "characters": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "avatar_url",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "gender",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "age",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "tags",
+          "type": "ARRAY",
+          "udt": "_text",
+          "nullable": true,
+          "def": "'{}'::text[]"
+        },
+        {
+          "name": "style",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "reference_images",
+          "type": "ARRAY",
+          "udt": "_text",
+          "nullable": true,
+          "def": "'{}'::text[]"
+        },
+        {
+          "name": "base_model",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "source",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'user'::text"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "characters_pkey",
+          "def": "CREATE UNIQUE INDEX characters_pkey ON public.characters USING btree (id)"
+        }
+      ],
+      "rowCount": "2"
+    },
+    "consumption_ledger": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('consumption_ledger_id_seq'::regclass)"
+        },
+        {
+          "name": "scope",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'user'::text"
+        },
+        {
+          "name": "actor_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "purpose",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "provider_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "model_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "model_type",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "input_units",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "output_units",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "backend_cost_cents",
+          "type": "numeric",
+          "udt": "numeric",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "customer_charge_credits",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "customer_charge_cents",
+          "type": "numeric",
+          "udt": "numeric",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "margin_cents",
+          "type": "numeric",
+          "udt": "numeric",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "task_ref",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "idempotency_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'ok'::text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "consumption_ledger_pkey",
+          "def": "CREATE UNIQUE INDEX consumption_ledger_pkey ON public.consumption_ledger USING btree (id)"
+        },
+        {
+          "name": "ix_cl_scope_time",
+          "def": "CREATE INDEX ix_cl_scope_time ON public.consumption_ledger USING btree (scope, created_at DESC)"
+        },
+        {
+          "name": "ix_cl_actor",
+          "def": "CREATE INDEX ix_cl_actor ON public.consumption_ledger USING btree (actor_id, created_at DESC)"
+        },
+        {
+          "name": "ix_cl_purpose",
+          "def": "CREATE INDEX ix_cl_purpose ON public.consumption_ledger USING btree (purpose, created_at DESC)"
+        },
+        {
+          "name": "ix_cl_idem",
+          "def": "CREATE INDEX ix_cl_idem ON public.consumption_ledger USING btree (idempotency_key) WHERE (idempotency_key <> ''::text)"
+        }
+      ],
+      "rowCount": "270"
+    },
+    "coupons": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('coupons_id_seq'::regclass)"
+        },
+        {
+          "name": "code",
+          "type": "character varying",
+          "udt": "varchar",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "type",
+          "type": "character varying",
+          "udt": "varchar",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "value",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "min_spend",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        },
+        {
+          "name": "expire_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": null
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [
+        {
+          "name": "coupons_code_key",
+          "def": "UNIQUE (code)"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "coupons_pkey",
+          "def": "CREATE UNIQUE INDEX coupons_pkey ON public.coupons USING btree (id)"
+        },
+        {
+          "name": "coupons_code_key",
+          "def": "CREATE UNIQUE INDEX coupons_code_key ON public.coupons USING btree (code)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "credit_transactions": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('credit_transactions_id_seq'::regclass)"
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "amount",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "ref",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "balance_after",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "pool",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [
+        {
+          "name": "credit_transactions_user_id_fkey",
+          "def": "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"
+        }
+      ],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "credit_transactions_pkey",
+          "def": "CREATE UNIQUE INDEX credit_transactions_pkey ON public.credit_transactions USING btree (id)"
+        },
+        {
+          "name": "ix_ct_user",
+          "def": "CREATE INDEX ix_ct_user ON public.credit_transactions USING btree (user_id)"
+        },
+        {
+          "name": "ix_ct_ref",
+          "def": "CREATE INDEX ix_ct_ref ON public.credit_transactions USING btree (ref)"
+        }
+      ],
+      "rowCount": "447"
+    },
+    "cron_marker": {
+      "columns": [
+        {
+          "name": "name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "last_run",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "cursor",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        }
+      ],
+      "pk": [
+        "name"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "cron_marker_pkey",
+          "def": "CREATE UNIQUE INDEX cron_marker_pkey ON public.cron_marker USING btree (name)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "default_assets": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "key",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "type",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'image'::text"
+        },
+        {
+          "name": "thumbnail",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "full_url",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "prompt",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "model",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "ratio",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'1:1'::text"
+        },
+        {
+          "name": "source",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'default'::text"
+        },
+        {
+          "name": "category",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'generated'::text"
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'success'::text"
+        },
+        {
+          "name": "sort",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        },
+        {
+          "name": "tags",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'[]'::jsonb"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [
+        {
+          "name": "default_assets_key_key",
+          "def": "UNIQUE (key)"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "default_assets_pkey",
+          "def": "CREATE UNIQUE INDEX default_assets_pkey ON public.default_assets USING btree (id)"
+        },
+        {
+          "name": "default_assets_key_key",
+          "def": "CREATE UNIQUE INDEX default_assets_key_key ON public.default_assets USING btree (key)"
+        }
+      ],
+      "rowCount": "6"
+    },
+    "feedback": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "type",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'other'::text"
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "content",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "contact",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "feedback_pkey",
+          "def": "CREATE UNIQUE INDEX feedback_pkey ON public.feedback USING btree (id)"
+        }
+      ],
+      "rowCount": "1"
+    },
+    "generation_tasks": {
+      "columns": [
+        {
+          "name": "task_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'running'::text"
+        },
+        {
+          "name": "model",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "prompt",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "count",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "1"
+        },
+        {
+          "name": "content_type",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'image'::text"
+        },
+        {
+          "name": "result",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "error",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "pending_ids",
+          "type": "ARRAY",
+          "udt": "_text",
+          "nullable": true,
+          "def": "'{}'::text[]"
+        },
+        {
+          "name": "client_meta",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        },
+        {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "idempotency_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "cost",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "cost_pool",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "provider_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "model_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "provider_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "provider_task_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "resume_meta",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        }
+      ],
+      "pk": [
+        "task_id"
+      ],
+      "fks": [
+        {
+          "name": "generation_tasks_user_id_fkey",
+          "def": "FOREIGN KEY (user_id) REFERENCES users(id)"
+        }
+      ],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "generation_tasks_pkey",
+          "def": "CREATE UNIQUE INDEX generation_tasks_pkey ON public.generation_tasks USING btree (task_id)"
+        },
+        {
+          "name": "generation_tasks_status_idx",
+          "def": "CREATE INDEX generation_tasks_status_idx ON public.generation_tasks USING btree (status)"
+        },
+        {
+          "name": "generation_tasks_created_at_idx",
+          "def": "CREATE INDEX generation_tasks_created_at_idx ON public.generation_tasks USING btree (created_at)"
+        },
+        {
+          "name": "ix_gt_user",
+          "def": "CREATE INDEX ix_gt_user ON public.generation_tasks USING btree (user_id)"
+        },
+        {
+          "name": "ux_gt_idem",
+          "def": "CREATE UNIQUE INDEX ux_gt_idem ON public.generation_tasks USING btree (idempotency_key) WHERE (idempotency_key IS NOT NULL)"
+        },
+        {
+          "name": "ix_gt_provider_task",
+          "def": "CREATE INDEX ix_gt_provider_task ON public.generation_tasks USING btree (provider_task_id) WHERE (provider_task_id IS NOT NULL)"
+        },
+        {
+          "name": "ix_gt_running_provider",
+          "def": "CREATE INDEX ix_gt_running_provider ON public.generation_tasks USING btree (status, provider_task_id) WHERE ((status = 'running'::text) AND (provider_task_id IS NOT NULL))"
+        }
+      ],
+      "rowCount": "606"
+    },
+    "media": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "type",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'image'::text"
+        },
+        {
+          "name": "thumbnail",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "full_url",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "prompt",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "model",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "ratio",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'1:1'::text"
+        },
+        {
+          "name": "source",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'user'::text"
+        },
+        {
+          "name": "is_favorite",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "false"
+        },
+        {
+          "name": "is_deleted",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "false"
+        },
+        {
+          "name": "oss_url",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "oss_object_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "oss_uploaded",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "false"
+        },
+        {
+          "name": "category",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'generated'::text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'success'::text"
+        },
+        {
+          "name": "error_message",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "failed_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "is_default",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "false"
+        },
+        {
+          "name": "default_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "file_size",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "tags",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'[]'::jsonb"
+        },
+        {
+          "name": "character_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "reference_style_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [
+        {
+          "name": "media_user_id_fkey",
+          "def": "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL"
+        },
+        {
+          "name": "media_reference_style_id_fkey",
+          "def": "FOREIGN KEY (reference_style_id) REFERENCES reference_styles(id) ON DELETE SET NULL"
+        }
+      ],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "media_pkey",
+          "def": "CREATE UNIQUE INDEX media_pkey ON public.media USING btree (id)"
+        },
+        {
+          "name": "ix_media_user",
+          "def": "CREATE INDEX ix_media_user ON public.media USING btree (user_id)"
+        },
+        {
+          "name": "ix_media_default",
+          "def": "CREATE INDEX ix_media_default ON public.media USING btree (user_id, default_key) WHERE (default_key IS NOT NULL)"
+        },
+        {
+          "name": "ix_media_style",
+          "def": "CREATE INDEX ix_media_style ON public.media USING btree (reference_style_id) WHERE (reference_style_id IS NOT NULL)"
+        }
+      ],
+      "rowCount": "876"
+    },
+    "model_cost_rates": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "('mcr-'::text || (gen_random_uuid())::text)"
+        },
+        {
+          "name": "provider_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "model_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "model_type",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'text'::text"
+        },
+        {
+          "name": "input_cost_per_1k",
+          "type": "numeric",
+          "udt": "numeric",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "output_cost_per_1k",
+          "type": "numeric",
+          "udt": "numeric",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "cost_per_unit",
+          "type": "numeric",
+          "udt": "numeric",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "currency",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'CNY'::text"
+        },
+        {
+          "name": "source",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'manual'::text"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [
+        {
+          "name": "model_cost_rates_provider_id_model_id_key",
+          "def": "UNIQUE (provider_id, model_id)"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "model_cost_rates_pkey",
+          "def": "CREATE UNIQUE INDEX model_cost_rates_pkey ON public.model_cost_rates USING btree (id)"
+        },
+        {
+          "name": "model_cost_rates_provider_id_model_id_key",
+          "def": "CREATE UNIQUE INDEX model_cost_rates_provider_id_model_id_key ON public.model_cost_rates USING btree (provider_id, model_id)"
+        },
+        {
+          "name": "ix_mcr_provider",
+          "def": "CREATE INDEX ix_mcr_provider ON public.model_cost_rates USING btree (provider_id)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "model_price_history": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "('mph-'::text || (gen_random_uuid())::text)"
+        },
+        {
+          "name": "model_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "display_name",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "credit_cost",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "model_price_history_pkey",
+          "def": "CREATE UNIQUE INDEX model_price_history_pkey ON public.model_price_history USING btree (id)"
+        },
+        {
+          "name": "ix_mph_model",
+          "def": "CREATE INDEX ix_mph_model ON public.model_price_history USING btree (model_id, updated_at DESC)"
+        }
+      ],
+      "rowCount": "12"
+    },
+    "models": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "model_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "display_name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "type",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'image'::text"
+        },
+        {
+          "name": "provider_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "true"
+        },
+        {
+          "name": "supported_resolutions",
+          "type": "ARRAY",
+          "udt": "_text",
+          "nullable": true,
+          "def": "'{}'::text[]"
+        },
+        {
+          "name": "capabilities",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "endpoint",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        },
+        {
+          "name": "mapping_name",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "credit_cost",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "estimated_seconds",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "category",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "creator",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "commercial_use",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "true"
+        },
+        {
+          "name": "max_concurrent",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "supports_reward_balance",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": false,
+          "def": "true"
+        },
+        {
+          "name": "reward_credits_required",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        },
+        {
+          "name": "param_template",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [
+        {
+          "name": "models_provider_id_fkey",
+          "def": "FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE"
+        }
+      ],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "models_pkey",
+          "def": "CREATE UNIQUE INDEX models_pkey ON public.models USING btree (id)"
+        }
+      ],
+      "rowCount": "666"
+    },
+    "oss_config": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "1"
+        },
+        {
+          "name": "provider",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'aliyun-oss'::text"
+        },
+        {
+          "name": "access_point_name",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "endpoint_external",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "endpoint_internal",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "bucket",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "region",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "region_label",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "access_key_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "access_key_secret",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "path_prefix",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'images/'::text"
+        },
+        {
+          "name": "custom_domain",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "true"
+        },
+        {
+          "name": "active_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "oss_config_pkey",
+          "def": "CREATE UNIQUE INDEX oss_config_pkey ON public.oss_config USING btree (id)"
+        }
+      ],
+      "rowCount": "1"
+    },
+    "oss_configs": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "provider_type",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'aliyun-oss'::text"
+        },
+        {
+          "name": "display_name",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "bucket",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "region",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "region_label",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "app_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "access_key_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "access_key_secret",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "endpoint_external",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "path_prefix",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'images/'::text"
+        },
+        {
+          "name": "custom_domain",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "true"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "oss_configs_pkey",
+          "def": "CREATE UNIQUE INDEX oss_configs_pkey ON public.oss_configs USING btree (id)"
+        }
+      ],
+      "rowCount": "1"
+    },
+    "outbox": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('outbox_id_seq'::regclass)"
+        },
+        {
+          "name": "aggregate",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "event_type",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "payload",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "published",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": false,
+          "def": "false"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "outbox_pkey",
+          "def": "CREATE UNIQUE INDEX outbox_pkey ON public.outbox USING btree (id)"
+        },
+        {
+          "name": "ix_outbox_unpub",
+          "def": "CREATE INDEX ix_outbox_unpub ON public.outbox USING btree (published) WHERE (published = false)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "payment_audit": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('payment_audit_id_seq'::regclass)"
+        },
+        {
+          "name": "event_type",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "actor",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "order_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "provider_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "detail",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "payment_audit_pkey",
+          "def": "CREATE UNIQUE INDEX payment_audit_pkey ON public.payment_audit USING btree (id)"
+        },
+        {
+          "name": "ix_pa_created",
+          "def": "CREATE INDEX ix_pa_created ON public.payment_audit USING btree (created_at DESC)"
+        }
+      ],
+      "rowCount": "27"
+    },
+    "payment_providers": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "('pp-'::text || (gen_random_uuid())::text)"
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "''::text"
+        },
+        {
+          "name": "type",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'easypay'::text"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": false,
+          "def": "true"
+        },
+        {
+          "name": "weight",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "1"
+        },
+        {
+          "name": "sort_order",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        },
+        {
+          "name": "api_base",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "pid_enc",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "pkey_enc",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "webhook_secret_enc",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "product_name_prefix",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'充值'::text"
+        },
+        {
+          "name": "allow_refund",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": false,
+          "def": "false"
+        },
+        {
+          "name": "remark",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "supported_methods",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'[\"alipay\", \"wxpay\"]'::jsonb"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "payment_providers_pkey",
+          "def": "CREATE UNIQUE INDEX payment_providers_pkey ON public.payment_providers USING btree (id)"
+        },
+        {
+          "name": "ix_pp_enabled",
+          "def": "CREATE INDEX ix_pp_enabled ON public.payment_providers USING btree (enabled, sort_order)"
+        }
+      ],
+      "rowCount": "1"
+    },
+    "payment_settings": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "1"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": false,
+          "def": "true"
+        },
+        {
+          "name": "default_expires_min",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "15"
+        },
+        {
+          "name": "min_amount",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "100"
+        },
+        {
+          "name": "max_amount",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "10000000"
+        },
+        {
+          "name": "daily_limit",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "10000000"
+        },
+        {
+          "name": "max_open_orders",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "5"
+        },
+        {
+          "name": "allow_test",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": false,
+          "def": "true"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "enable_wxpay",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": false,
+          "def": "true"
+        },
+        {
+          "name": "enable_alipay",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": false,
+          "def": "true"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "payment_settings_pkey",
+          "def": "CREATE UNIQUE INDEX payment_settings_pkey ON public.payment_settings USING btree (id)"
+        }
+      ],
+      "rowCount": "1"
+    },
+    "products": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "('prod-'::text || (gen_random_uuid())::text)"
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "subtitle",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "cover_url",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "kind",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'skill_pack'::text"
+        },
+        {
+          "name": "ref_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "price_credits",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "price_cents",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'published'::text"
+        },
+        {
+          "name": "author",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "tags",
+          "type": "ARRAY",
+          "udt": "_text",
+          "nullable": true,
+          "def": "'{}'::text[]"
+        },
+        {
+          "name": "installs",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "products_pkey",
+          "def": "CREATE UNIQUE INDEX products_pkey ON public.products USING btree (id)"
+        },
+        {
+          "name": "ix_prod_status",
+          "def": "CREATE INDEX ix_prod_status ON public.products USING btree (status, created_at DESC)"
+        }
+      ],
+      "rowCount": "2"
+    },
+    "providers": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "type",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'official'::text"
+        },
+        {
+          "name": "base_url",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "''::text"
+        },
+        {
+          "name": "api_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "supported_types",
+          "type": "ARRAY",
+          "udt": "_text",
+          "nullable": true,
+          "def": "'{}'::text[]"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "true"
+        },
+        {
+          "name": "protocol",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'openai-compatible'::text"
+        },
+        {
+          "name": "remark",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "default_endpoint",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        },
+        {
+          "name": "max_concurrent",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "2"
+        },
+        {
+          "name": "rate_limits",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{\"1k\": 20, \"2k\": 10, \"4k\": 1}'::jsonb"
+        },
+        {
+          "name": "capacity_model",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'limited'::text"
+        },
+        {
+          "name": "bucket_max",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "cooldown_ms",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "60000"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "providers_pkey",
+          "def": "CREATE UNIQUE INDEX providers_pkey ON public.providers USING btree (id)"
+        }
+      ],
+      "rowCount": "107"
+    },
+    "recharge_orders": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "channel",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'wechat'::text"
+        },
+        {
+          "name": "amount",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'pending'::text"
+        },
+        {
+          "name": "pay_order_no",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "sign",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "paid_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "meta",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "provider_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "channel_trade_no",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "channel_method",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "channel_raw",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "expired_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "fail_reason",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "package_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "bonus",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [
+        {
+          "name": "recharge_orders_user_id_fkey",
+          "def": "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"
+        },
+        {
+          "name": "recharge_orders_provider_id_fkey",
+          "def": "FOREIGN KEY (provider_id) REFERENCES payment_providers(id) ON DELETE SET NULL"
+        }
+      ],
+      "uniques": [
+        {
+          "name": "recharge_orders_pay_order_no_key",
+          "def": "UNIQUE (pay_order_no)"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "recharge_orders_pkey",
+          "def": "CREATE UNIQUE INDEX recharge_orders_pkey ON public.recharge_orders USING btree (id)"
+        },
+        {
+          "name": "recharge_orders_pay_order_no_key",
+          "def": "CREATE UNIQUE INDEX recharge_orders_pay_order_no_key ON public.recharge_orders USING btree (pay_order_no)"
+        },
+        {
+          "name": "ix_ro_user",
+          "def": "CREATE INDEX ix_ro_user ON public.recharge_orders USING btree (user_id)"
+        },
+        {
+          "name": "ix_ro_payno",
+          "def": "CREATE INDEX ix_ro_payno ON public.recharge_orders USING btree (pay_order_no)"
+        },
+        {
+          "name": "ix_ro_provider",
+          "def": "CREATE INDEX ix_ro_provider ON public.recharge_orders USING btree (provider_id)"
+        },
+        {
+          "name": "ix_ro_ctrade",
+          "def": "CREATE INDEX ix_ro_ctrade ON public.recharge_orders USING btree (channel_trade_no)"
+        },
+        {
+          "name": "ix_ro_status",
+          "def": "CREATE INDEX ix_ro_status ON public.recharge_orders USING btree (status, created_at DESC)"
+        }
+      ],
+      "rowCount": "22"
+    },
+    "reference_styles": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "('rs-'::text || (gen_random_uuid())::text)"
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "''::text"
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "preview_url",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "''::text"
+        },
+        {
+          "name": "full_url",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "prompt",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "negative_prompt",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "model_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "ratio",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'1:1'::text"
+        },
+        {
+          "name": "tags",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'[]'::jsonb"
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'pending'::text"
+        },
+        {
+          "name": "ai_reason",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "reject_reason",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "source_media_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "reviewed_by",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "reviewed_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "is_promoted",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "false"
+        },
+        {
+          "name": "commission_rate",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [
+        {
+          "name": "reference_styles_user_id_fkey",
+          "def": "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL"
+        },
+        {
+          "name": "reference_styles_source_media_id_fkey",
+          "def": "FOREIGN KEY (source_media_id) REFERENCES media(id) ON DELETE SET NULL"
+        }
+      ],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "reference_styles_pkey",
+          "def": "CREATE UNIQUE INDEX reference_styles_pkey ON public.reference_styles USING btree (id)"
+        },
+        {
+          "name": "ix_reference_styles_status",
+          "def": "CREATE INDEX ix_reference_styles_status ON public.reference_styles USING btree (status)"
+        },
+        {
+          "name": "ix_reference_styles_user",
+          "def": "CREATE INDEX ix_reference_styles_user ON public.reference_styles USING btree (user_id)"
+        },
+        {
+          "name": "ix_reference_styles_tags",
+          "def": "CREATE INDEX ix_reference_styles_tags ON public.reference_styles USING gin (tags)"
+        },
+        {
+          "name": "ix_reference_styles_created",
+          "def": "CREATE INDEX ix_reference_styles_created ON public.reference_styles USING btree (created_at DESC)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "refresh_tokens": {
+      "columns": [
+        {
+          "name": "token_hash",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "revoked",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": false,
+          "def": "false"
+        },
+        {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "token_hash"
+      ],
+      "fks": [
+        {
+          "name": "refresh_tokens_user_id_fkey",
+          "def": "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"
+        }
+      ],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "refresh_tokens_pkey",
+          "def": "CREATE UNIQUE INDEX refresh_tokens_pkey ON public.refresh_tokens USING btree (token_hash)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "reports": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "type",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'other'::text"
+        },
+        {
+          "name": "target_url",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "content",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "evidence",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "contact",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "reports_pkey",
+          "def": "CREATE UNIQUE INDEX reports_pkey ON public.reports USING btree (id)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "request_logs": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('request_logs_id_seq'::regclass)"
+        },
+        {
+          "name": "method",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "path",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "ip",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "status",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "latency_ms",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "request_logs_pkey",
+          "def": "CREATE UNIQUE INDEX request_logs_pkey ON public.request_logs USING btree (id)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "settings": {
+      "columns": [
+        {
+          "name": "key",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "value",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": false,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "key"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "settings_pkey",
+          "def": "CREATE UNIQUE INDEX settings_pkey ON public.settings USING btree (key)"
+        }
+      ],
+      "rowCount": "2"
+    },
+    "shipments": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('shipments_id_seq'::regclass)"
+        },
+        {
+          "name": "order_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "carrier",
+          "type": "character varying",
+          "udt": "varchar",
+          "nullable": true,
+          "def": "''::character varying"
+        },
+        {
+          "name": "tracking_no",
+          "type": "character varying",
+          "udt": "varchar",
+          "nullable": true,
+          "def": "''::character varying"
+        },
+        {
+          "name": "status",
+          "type": "character varying",
+          "udt": "varchar",
+          "nullable": false,
+          "def": "'pending'::character varying"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "shipments_pkey",
+          "def": "CREATE UNIQUE INDEX shipments_pkey ON public.shipments USING btree (id)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "skill_registry": {
+      "columns": [
+        {
+          "name": "key",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "stage",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'generation'::text"
+        },
+        {
+          "name": "adapter",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "params",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "cost_credits",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": true,
+          "def": "true"
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "author",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "icon",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "version",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'1.0.0'::text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "key"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "skill_registry_pkey",
+          "def": "CREATE UNIQUE INDEX skill_registry_pkey ON public.skill_registry USING btree (key)"
+        },
+        {
+          "name": "ix_sr_enabled",
+          "def": "CREATE INDEX ix_sr_enabled ON public.skill_registry USING btree (enabled)"
+        }
+      ],
+      "rowCount": "3"
+    },
+    "studio_projects": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "('proj-'::text || (gen_random_uuid())::text)"
+        },
+        {
+          "name": "owner_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "''::text"
+        },
+        {
+          "name": "type",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'story'::text"
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'planning'::text"
+        },
+        {
+          "name": "current_stage",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'idea'::text"
+        },
+        {
+          "name": "description",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "cover_url",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "meta",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [
+        {
+          "name": "studio_projects_owner_id_fkey",
+          "def": "FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE"
+        }
+      ],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "studio_projects_pkey",
+          "def": "CREATE UNIQUE INDEX studio_projects_pkey ON public.studio_projects USING btree (id)"
+        },
+        {
+          "name": "ix_studio_owner_updated",
+          "def": "CREATE INDEX ix_studio_owner_updated ON public.studio_projects USING btree (owner_id, updated_at DESC)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "style_earnings": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "('se-'::text || (gen_random_uuid())::text)"
+        },
+        {
+          "name": "reference_style_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "designer_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "customer_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "media_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "charge_credits",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "commission_credits",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": "0"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [
+        {
+          "name": "style_earnings_reference_style_id_fkey",
+          "def": "FOREIGN KEY (reference_style_id) REFERENCES reference_styles(id) ON DELETE SET NULL"
+        }
+      ],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "style_earnings_pkey",
+          "def": "CREATE UNIQUE INDEX style_earnings_pkey ON public.style_earnings USING btree (id)"
+        },
+        {
+          "name": "ix_style_earnings_style",
+          "def": "CREATE INDEX ix_style_earnings_style ON public.style_earnings USING btree (reference_style_id)"
+        },
+        {
+          "name": "ix_style_earnings_designer",
+          "def": "CREATE INDEX ix_style_earnings_designer ON public.style_earnings USING btree (designer_id)"
+        }
+      ],
+      "rowCount": "0"
+    },
+    "system_error_logs": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('system_error_logs_id_seq'::regclass)"
+        },
+        {
+          "name": "category",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'app'::text"
+        },
+        {
+          "name": "source",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "'app'::text"
+        },
+        {
+          "name": "message",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "meta",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "stack",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "system_error_logs_pkey",
+          "def": "CREATE UNIQUE INDEX system_error_logs_pkey ON public.system_error_logs USING btree (id)"
+        },
+        {
+          "name": "ix_sel_created",
+          "def": "CREATE INDEX ix_sel_created ON public.system_error_logs USING btree (created_at DESC)"
+        },
+        {
+          "name": "ix_sel_category",
+          "def": "CREATE INDEX ix_sel_category ON public.system_error_logs USING btree (category)"
+        }
+      ],
+      "rowCount": "3"
+    },
+    "topup_packages": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "('pkg-'::text || (gen_random_uuid())::text)"
+        },
+        {
+          "name": "name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "''::text"
+        },
+        {
+          "name": "credits",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        },
+        {
+          "name": "price",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        },
+        {
+          "name": "bonus",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        },
+        {
+          "name": "sort_order",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        },
+        {
+          "name": "enabled",
+          "type": "boolean",
+          "udt": "bool",
+          "nullable": false,
+          "def": "true"
+        },
+        {
+          "name": "remark",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": "''::text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [],
+      "indexes": [
+        {
+          "name": "topup_packages_pkey",
+          "def": "CREATE UNIQUE INDEX topup_packages_pkey ON public.topup_packages USING btree (id)"
+        },
+        {
+          "name": "ix_tp_sort",
+          "def": "CREATE INDEX ix_tp_sort ON public.topup_packages USING btree (sort_order)"
+        }
+      ],
+      "rowCount": "1"
+    },
+    "user_skills": {
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "skill_key",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "acquired_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": "now()"
+        }
+      ],
+      "pk": [],
+      "fks": [
+        {
+          "name": "user_skills_user_id_fkey",
+          "def": "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"
+        }
+      ],
+      "uniques": [
+        {
+          "name": "user_skills_user_id_skill_key_key",
+          "def": "UNIQUE (user_id, skill_key)"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "user_skills_user_id_skill_key_key",
+          "def": "CREATE UNIQUE INDEX user_skills_user_id_skill_key_key ON public.user_skills USING btree (user_id, skill_key)"
+        },
+        {
+          "name": "ix_us_user",
+          "def": "CREATE INDEX ix_us_user ON public.user_skills USING btree (user_id)"
+        }
+      ],
+      "rowCount": "2"
+    },
+    "users": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "('u-'::text || (gen_random_uuid())::text)"
+        },
+        {
+          "name": "email",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "display_name",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "''::text"
+        },
+        {
+          "name": "password_hash",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "role",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'user'::text"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "plan",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'free'::text"
+        },
+        {
+          "name": "plan_expires_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'active'::text"
+        },
+        {
+          "name": "reward_credits",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        },
+        {
+          "name": "recharge_credits",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        },
+        {
+          "name": "credits",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": true,
+          "def": null
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [
+        {
+          "name": "users_email_key",
+          "def": "UNIQUE (email)"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "users_pkey",
+          "def": "CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)"
+        },
+        {
+          "name": "users_email_key",
+          "def": "CREATE UNIQUE INDEX users_email_key ON public.users USING btree (email)"
+        },
+        {
+          "name": "ix_users_status",
+          "def": "CREATE INDEX ix_users_status ON public.users USING btree (status)"
+        }
+      ],
+      "rowCount": "29"
+    },
+    "webhook_events": {
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "udt": "int8",
+          "nullable": false,
+          "def": "nextval('webhook_events_id_seq'::regclass)"
+        },
+        {
+          "name": "provider_id",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "channel_trade_no",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": null
+        },
+        {
+          "name": "event_type",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'paid'::text"
+        },
+        {
+          "name": "out_trade_no",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "udt": "text",
+          "nullable": false,
+          "def": "'new'::text"
+        },
+        {
+          "name": "attempts",
+          "type": "integer",
+          "udt": "int4",
+          "nullable": false,
+          "def": "0"
+        },
+        {
+          "name": "last_error",
+          "type": "text",
+          "udt": "text",
+          "nullable": true,
+          "def": null
+        },
+        {
+          "name": "raw",
+          "type": "jsonb",
+          "udt": "jsonb",
+          "nullable": true,
+          "def": "'{}'::jsonb"
+        },
+        {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        },
+        {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "udt": "timestamptz",
+          "nullable": false,
+          "def": "now()"
+        }
+      ],
+      "pk": [
+        "id"
+      ],
+      "fks": [],
+      "uniques": [
+        {
+          "name": "webhook_events_provider_id_channel_trade_no_event_type_key",
+          "def": "UNIQUE (provider_id, channel_trade_no, event_type)"
+        }
+      ],
+      "indexes": [
+        {
+          "name": "webhook_events_pkey",
+          "def": "CREATE UNIQUE INDEX webhook_events_pkey ON public.webhook_events USING btree (id)"
+        },
+        {
+          "name": "webhook_events_provider_id_channel_trade_no_event_type_key",
+          "def": "CREATE UNIQUE INDEX webhook_events_provider_id_channel_trade_no_event_type_key ON public.webhook_events USING btree (provider_id, channel_trade_no, event_type)"
+        },
+        {
+          "name": "ix_we_pending",
+          "def": "CREATE INDEX ix_we_pending ON public.webhook_events USING btree (status, updated_at) WHERE (status = ANY (ARRAY['new'::text, 'processing'::text, 'failed'::text]))"
+        }
+      ],
+      "rowCount": "0"
+    }
+  },
+  "extensions": [
+    {
+      "extname": "plpgsql",
+      "extversion": "1.0"
+    }
+  ],
+  "sequences": "字段 \"last_value\" 不存在",
+  "triggers": [],
+  "functions": [],
+  "integrity": {
+    "users.reward_credits": {
+      "mn": 0,
+      "mx": 5000,
+      "neg": "0"
+    },
+    "users.recharge_credits": {
+      "mn": 0,
+      "mx": 4999,
+      "neg": "0"
+    },
+    "users.credits": {
+      "mn": 0,
+      "mx": 5000,
+      "neg": "0"
+    },
+    "users.total": "29",
+    "media.status": [
+      {
+        "s": "success",
+        "n": "851"
+      },
+      {
+        "s": "failed",
+        "n": "25"
+      }
+    ],
+    "recharge_orders.status": [
+      {
+        "s": "expired",
+        "n": "18"
+      },
+      {
+        "s": "paid",
+        "n": "4"
+      }
+    ]
+  },
+  "pgVersion": "17.4",
+  "tableCount": 41,
+  "tableNames": [
+    "agent_calls",
+    "agent_providers",
+    "agent_rule_logs",
+    "agent_rules",
+    "agents",
+    "audit_logs",
+    "characters",
+    "consumption_ledger",
+    "coupons",
+    "credit_transactions",
+    "cron_marker",
+    "default_assets",
+    "feedback",
+    "generation_tasks",
+    "media",
+    "model_cost_rates",
+    "model_price_history",
+    "models",
+    "oss_config",
+    "oss_configs",
+    "outbox",
+    "payment_audit",
+    "payment_providers",
+    "payment_settings",
+    "products",
+    "providers",
+    "recharge_orders",
+    "reference_styles",
+    "refresh_tokens",
+    "reports",
+    "request_logs",
+    "settings",
+    "shipments",
+    "skill_registry",
+    "studio_projects",
+    "style_earnings",
+    "system_error_logs",
+    "topup_packages",
+    "user_skills",
+    "users",
+    "webhook_events"
+  ]
+}

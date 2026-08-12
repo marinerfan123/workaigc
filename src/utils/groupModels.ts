@@ -26,6 +26,10 @@ export interface GroupedModel {
   supportedResolutions: Resolution[];
   /** 合并后的积分数（取 max，便于用户感知最高成本） */
   creditCost: number;
+  /** 是否支持赠送余额：多行时只要有一行支持即视为支持（最宽松，给用户选择权） */
+  supportsRewardBalance?: boolean;
+  /** 合并后的赠送积分需求：取支持赠送的行中最大值 */
+  rewardCreditsRequired?: number;
   // ── ModelHub 改造（耗时 / 分类 / 创作者 / 商用） ──
   /** 预估生成耗时（秒）：取首个有定义的行；都未定义则保留 undefined，由 UI 兜底 */
   estimatedSeconds?: number;
@@ -67,6 +71,16 @@ export function groupModelsByModelId(models: IAiModel[]): GroupedModel[] {
     g.rows.push(m);
     if (m.enabled) g.enabled = true;
     if (typeof m.creditCost === 'number' && m.creditCost > g.creditCost) g.creditCost = m.creditCost;
+
+    // 双池积分聚合：支持赠送余额（任一支持即支持）；赠送价取支持行中的最大值
+    if (m.supportsRewardBalance !== false && g.supportsRewardBalance !== true) {
+      g.supportsRewardBalance = true;
+    }
+    if (m.supportsRewardBalance !== false && typeof m.rewardCreditsRequired === 'number' && m.rewardCreditsRequired > 0) {
+      if (typeof g.rewardCreditsRequired !== 'number' || m.rewardCreditsRequired > g.rewardCreditsRequired) {
+        g.rewardCreditsRequired = m.rewardCreditsRequired;
+      }
+    }
 
     if (!g.providerIds.includes(m.providerId)) {
       g.providerIds.push(m.providerId);

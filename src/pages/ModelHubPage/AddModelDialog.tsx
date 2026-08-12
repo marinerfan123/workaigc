@@ -1,11 +1,11 @@
 // 添加模型对话框 —— 流程：选服务商 → 拉取模型 → 勾选 → 导入
-// 复用 modelListClient.list() 自动走自定义端点或 OpenAI 兼容默认
+// 收编 generic：拉取模型走后端代理（apiSyncProviderModels，DB 真实 Key），浏览器不持有/不直连服务商。
 
 import { useState, useMemo } from 'react';
 import { X, Loader2, RefreshCw, Check, Search, Server, Image as ImageIcon, Video, MessageSquare } from 'lucide-react';
 import { toast } from 'sonner';
 import type { IModelProvider, IAiModel, ModelType, Resolution } from '@/data/models';
-import { modelListClient } from '@/services/genericClient';
+import { apiSyncProviderModels } from '@/services/api';
 
 interface Props {
   open: boolean;
@@ -48,7 +48,8 @@ export default function AddModelDialog({ open, onClose, providers, models, setMo
   const [typeFilter, setTypeFilter] = useState<ModelType | 'all'>('all');
 
   const provider = providers.find((p) => p.id === providerId);
-  const providerHasKey = !!provider?.apiKey && !provider?.apiKey.includes('*');
+  // 收编 generic 后浏览器不再持有真实 Key：掩码占位('***')即代表"DB 已存 Key"，后端代理用它列模型。
+  const providerHasKey = !!provider?.apiKey;
   // 已有 modelId 集合（按 provider 维度，用于去重）
   const existingModelIds = useMemo(
     () => new Set(models.filter((m) => m.providerId === providerId).map((m) => m.modelId)),
@@ -83,13 +84,14 @@ export default function AddModelDialog({ open, onClose, providers, models, setMo
     setFetching(true);
     setFetched([]);
     try {
-      // 优先使用自定义 listModels 端点，否则 OpenAI 兼容默认
-      const result = await modelListClient.list({ provider });
-      if (result.status !== 'success') {
-        toast.error(result.error || '获取失败');
+      // 收编 generic：走后端代理（DB 里的真实 Key），浏览器不持有/不直连服务商。
+      // 后端 sync 端点自动走自定义 listModels 端点或 OpenAI 兼容默认。
+      const result = await apiSyncProviderModels(provider.id);
+      if (!result.success) {
+        toast.error(result.message || '获取失败');
         return;
       }
-      if (result.models.length === 0) {
+      if (!result.models || result.models.length === 0) {
         toast.warning('该服务商返回了空模型列表');
         return;
       }

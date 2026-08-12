@@ -250,7 +250,7 @@ export const videoClient = {
         // 2. poll（轮询直到成功/失败）
         const pollEndpoint = resolveEndpoint(provider, model, 'poll').endpoint;
         if (!pollEndpoint) return { videoUrl: '', raw: body, status: 'error', error: '未配置 poll 端点（异步任务需配置轮询）' };
-        const deadline = Date.now() + 5 * 60 * 1000; // 5 分钟超时
+        const deadline = Date.now() + 90 * 60 * 1000; // 防僵尸安全线 90 分钟；超时只标 timeout，成败听生成端回复
         while (Date.now() < deadline) {
           await sleep(3000);
           const r = await callEndpoint(provider.baseUrl, pollEndpoint, provider.apiKey, { task_id: taskId, ...vars });
@@ -264,7 +264,8 @@ export const videoClient = {
             return makeErrorResult(r.body, 200, '视频生成失败', { videoUrl: '' });
           }
         }
-        return { videoUrl: '', raw: null, status: 'error', error: '视频生成超时（5分钟）' };
+        // 超时只标 timeout（非 error）：成败只能听生成端回复，时间不判失败。
+        return { videoUrl: '', raw: null, status: 'timeout', error: '等待生成端回复超过安全线（90分钟），任务保留待复核' };
       }
       // 同步模式（理论上视频很少用，保留兼容）
       const { status, body } = await callEndpoint(provider.baseUrl, endpoint!, provider.apiKey, vars);

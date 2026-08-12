@@ -102,28 +102,6 @@ export async function apiGetMediaCounts(): Promise<MediaCounts | null> {
   try { return await apiFetch<MediaCounts>('/api/media/counts'); } catch { return null; }
 }
 
-// ─── Providers ──────────────────────────────────
-export async function apiGetProviders(): Promise<any[]> {
-  try { return await apiFetch('/api/providers'); } catch { return []; }
-}
-export async function apiSaveProviders(items: any[]) {
-  try { await apiFetch('/api/providers', { method: 'POST', body: JSON.stringify(items) }); } catch {}
-}
-export async function apiDeleteProvider(id: string) {
-  try { await apiFetch(`/api/providers/${id}`, { method: 'DELETE' }); } catch {}
-}
-
-// ─── Models ─────────────────────────────────────
-export async function apiGetModels(): Promise<any[]> {
-  try { return await apiFetch('/api/models'); } catch { return []; }
-}
-export async function apiSaveModels(items: any[]) {
-  try { await apiFetch('/api/models', { method: 'POST', body: JSON.stringify(items) }); } catch {}
-}
-export async function apiDeleteModel(id: string) {
-  try { await apiFetch(`/api/models/${id}`, { method: 'DELETE' }); } catch {}
-}
-
 /**
  * 代理下载外部图片（绕开浏览器 CORS）
  * 后端服务器对服务器 fetch，无 CORS 限制

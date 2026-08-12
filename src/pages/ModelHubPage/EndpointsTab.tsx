@@ -5,7 +5,6 @@ import { useState, useMemo } from 'react';
 import { Settings2, Plus, X, Check, Loader2, FlaskConical, ChevronRight, ChevronDown, AlertTriangle, FileCode, Trash2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import type { IModelProvider, IAiModel, IEndpoint, IModelEndpoint, ProtocolType } from '@/data/models';
-import { callEndpoint, getByPath, fillTemplate } from '@/services/genericClient';
 import { apiTestProviderEndpoint, apiTestProviderDefault } from '@/services/api';
 
 interface Props {

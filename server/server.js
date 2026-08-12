@@ -35,6 +35,12 @@ import pgLib from 'pg';
 const { Pool } = pgLib;
 let pgPool = null;
 import dispatcher from './dispatcher.cjs';
+// ModelHub V3 Phase 1 — 唯一模型身份 resolver（server.js 仅在此一处调用，不再散落处理 display_name）
+import modelHubResolver from './modules/modelhub/resolver.cjs';
+import modelHubBindings from './modules/modelhub/bindings.cjs';
+import revisionHelper from './modules/modelhub/revision.cjs'; // Phase 3 乐观锁 UPDATE 助手
+const { optimisticUpdate } = revisionHelper;
+import realtime from './realtime.cjs'; // 生成任务实时通道（SSE）：终态切换推前端，替代固定轮询
 import session from './auth.cjs';   // Phase A 用户会话（cookie JWT，零依赖）
 import billing from './billing.cjs'; // Phase A 积分计费
 import accounting from './accounting.cjs'; // Phase M6+ 全局双边账务（后台量 vs 客户量）
@@ -124,6 +130,45 @@ async function initDB() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='supports_reward_balance') THEN ALTER TABLE models ADD COLUMN supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='reward_credits_required') THEN ALTER TABLE models ADD COLUMN reward_credits_required INT NOT NULL DEFAULT 0; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='param_template') THEN ALTER TABLE models ADD COLUMN param_template JSONB DEFAULT '{}'::jsonb; END IF;
+        -- ── ModelHub V3 Phase 3 乐观锁 + 审计列（revision / updated_at / updated_by）──
+        -- 旧库无这些列：ADD COLUMN ... DEFAULT 在 PG11+ 对旧行瞬时回填（无全表重写），旧库安全。
+        -- 新库：CREATE TABLE 未含这些列，靠下面的 ALTER 补齐（与 house style 一致：新增列走兼容块）。
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='providers' AND column_name='revision') THEN ALTER TABLE providers ADD COLUMN revision INT NOT NULL DEFAULT 1; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='providers' AND column_name='updated_at') THEN ALTER TABLE providers ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW(); END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='providers' AND column_name='updated_by') THEN ALTER TABLE providers ADD COLUMN updated_by TEXT DEFAULT ''; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='revision') THEN ALTER TABLE models ADD COLUMN revision INT NOT NULL DEFAULT 1; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='updated_at') THEN ALTER TABLE models ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW(); END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='updated_by') THEN ALTER TABLE models ADD COLUMN updated_by TEXT DEFAULT ''; END IF;
+      END $$;
+      -- ── ModelHub V3 Phase 2：逻辑模型 × 服务商 线路绑定 ──
+      -- models 收敛为「逻辑模型」（id/model_id/display_name/type/...），
+      -- provider_model_bindings 表示「某服务商提供某逻辑模型的具体线路」（含上游真实模型名 upstream_model_name）。
+      -- 旧 models.provider_id 等字段保留不删（双读兼容 + 回滚安全）。model_id 在 models 中非唯一，故不加 FK。
+      CREATE TABLE IF NOT EXISTS provider_model_bindings (
+        id                  TEXT PRIMARY KEY DEFAULT 'pmb-' || gen_random_uuid()::text,
+        model_id            TEXT NOT NULL,
+        provider_id         TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+        upstream_model_name TEXT NOT NULL DEFAULT '',   -- 上游真实模型名（wire name）；迁移默认取 model_id（=现状）
+        enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+        priority            INT NOT NULL DEFAULT 0,      -- 路由优先级（Phase 3 用），越大越优先
+        weight              INT NOT NULL DEFAULT 0,       -- 路由权重（Phase 3 用）
+        created_at          TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (model_id, provider_id)
+      );
+      CREATE INDEX IF NOT EXISTS ix_pmb_model ON provider_model_bindings(model_id);
+      CREATE INDEX IF NOT EXISTS ix_pmb_provider ON provider_model_bindings(provider_id);
+      -- 前向兼容：已存在表但缺列时补齐（幂等；支持老库 ALTER 升级）
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='provider_model_bindings' AND column_name='upstream_model_name') THEN
+          ALTER TABLE provider_model_bindings ADD COLUMN upstream_model_name TEXT NOT NULL DEFAULT '';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='provider_model_bindings' AND column_name='priority') THEN
+          ALTER TABLE provider_model_bindings ADD COLUMN priority INT NOT NULL DEFAULT 0;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='provider_model_bindings' AND column_name='weight') THEN
+          ALTER TABLE provider_model_bindings ADD COLUMN weight INT NOT NULL DEFAULT 0;
+        END IF;
       END $$;
       -- 双余额拆分迁移：users 加奖励/充值池 + credits 改 STORED 生成列 + 流水记 pool
       ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS pool TEXT;
@@ -216,6 +261,49 @@ async function initDB() {
       );
       CREATE INDEX IF NOT EXISTS generation_tasks_status_idx ON generation_tasks (status);
       CREATE INDEX IF NOT EXISTS generation_tasks_created_at_idx ON generation_tasks (created_at);
+
+      -- === 智能路由尝试数据（ModelHub V3）：generation_jobs / generation_attempts ===
+      -- 与 generation_tasks 共存（task_id 外键 1:1），记录每次智能路由的「向各 provider 实际尝试」全量数据。
+      -- job_id = task_id__subIndex（每个子任务一个 job），attempt_no 在单 job 内串行自增。
+      CREATE TABLE IF NOT EXISTS generation_jobs (
+        job_id        TEXT PRIMARY KEY,
+        task_id       TEXT NOT NULL REFERENCES generation_tasks(task_id) ON DELETE CASCADE,
+        model_id      TEXT,
+        provider_id   TEXT,
+        binding_id    TEXT,
+        status        TEXT NOT NULL DEFAULT 'running',   -- running | success | failed | timeout | throttled | canceled
+        cost          INT DEFAULT 0,
+        attempt_count INT NOT NULL DEFAULT 0,
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        finished_at   TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS generation_jobs_task_id_idx ON generation_jobs (task_id);
+      CREATE INDEX IF NOT EXISTS generation_jobs_status_idx ON generation_jobs (status);
+      CREATE INDEX IF NOT EXISTS generation_jobs_created_at_idx ON generation_jobs (created_at);
+
+      CREATE TABLE IF NOT EXISTS generation_attempts (
+        attempt_id          BIGSERIAL PRIMARY KEY,
+        job_id              TEXT NOT NULL REFERENCES generation_jobs(job_id) ON DELETE CASCADE,
+        task_id             TEXT NOT NULL,
+        attempt_no          INT NOT NULL,
+        model_id            TEXT,
+        binding_id          TEXT,
+        provider_id         TEXT,
+        started_at          TIMESTAMPTZ,
+        finished_at         TIMESTAMPTZ,
+        latency_ms          INT,
+        status              TEXT NOT NULL,               -- success | timeout | failed | rate_limited | error
+        http_status         INT,
+        provider_error_code TEXT,
+        cost                INT DEFAULT 0,
+        retry_reason        TEXT,
+        created_at          TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (job_id, attempt_no)
+      );
+      CREATE INDEX IF NOT EXISTS generation_attempts_job_id_idx ON generation_attempts (job_id);
+      CREATE INDEX IF NOT EXISTS generation_attempts_task_id_idx ON generation_attempts (task_id);
+      CREATE INDEX IF NOT EXISTS generation_attempts_created_at_idx ON generation_attempts (created_at);
+
       INSERT INTO oss_config (id, enabled) VALUES (1, TRUE) ON CONFLICT (id) DO NOTHING;
       INSERT INTO settings (key, value) VALUES ('app', '{}') ON CONFLICT (key) DO NOTHING;
 
@@ -267,10 +355,38 @@ async function initDB() {
       CREATE INDEX IF NOT EXISTS ix_gt_user ON generation_tasks(user_id);
       CREATE UNIQUE INDEX IF NOT EXISTS ux_gt_idem
         ON generation_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL;
+      -- 崩溃恢复续轮询地基：持久化 provider 任务标识，重启后按 taskId 续轮询（拿回崩溃前在途的视频结果）
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS provider_id      TEXT;
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS model_id        TEXT;
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS provider_key     TEXT;
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS provider_task_id TEXT;
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS resume_meta     JSONB DEFAULT '{}'::jsonb;
+      CREATE INDEX IF NOT EXISTS ix_gt_provider_task
+        ON generation_tasks(provider_task_id) WHERE provider_task_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS ix_gt_running_provider
+        ON generation_tasks(status, provider_task_id) WHERE status='running' AND provider_task_id IS NOT NULL;
     `);
 
     // === 模型级参数模板回填（后台可自定义；空模板按 type 派生默认）===
     await backfillModelParamTemplates();
+
+    // === Phase 1 回填：generation_tasks.model_id 历史空值（display_name → model_id 兜底）===
+    // 仅当存在 NULL 行时才执行 UPDATE（幂等；常态下 0 行命中，开销可忽略）。
+    try {
+      const nullCheck = await pgPool.query("SELECT 1 FROM generation_tasks WHERE model_id IS NULL LIMIT 1");
+      if (nullCheck.rows && nullCheck.rows.length) {
+        await pgPool.query(`
+          UPDATE generation_tasks
+             SET model_id = COALESCE(
+                   (SELECT m.model_id FROM models m WHERE m.display_name = generation_tasks.model LIMIT 1),
+                   (SELECT m.model_id FROM models m WHERE m.model_id    = generation_tasks.model LIMIT 1),
+                   generation_tasks.model)
+           WHERE model_id IS NULL`);
+        console.log('[initDB] 已回填 generation_tasks.model_id 历史空值');
+      }
+    } catch (e) {
+      console.warn('[initDB] 回填 generation_tasks.model_id 失败(可忽略，可手动运行迁移脚本):', e.message);
+    }
 
     // === 公共默认资产（default_assets 模板库 + media 归属标记）===
     await pgPool.query(`
@@ -624,6 +740,44 @@ async function initDB() {
       CREATE INDEX IF NOT EXISTS ix_cl_purpose ON consumption_ledger(purpose, created_at DESC);
       CREATE INDEX IF NOT EXISTS ix_cl_idem ON consumption_ledger(idempotency_key) WHERE idempotency_key <> '';
 
+      -- === ModelHub V3 Phase 3：定价层（用户价 vs 每线路成本，双读兼容，零 DELETE）===
+      -- 用户侧价：单逻辑模型一行。credit_price=用户积分售价；reward_price=奖励余额售价。
+      -- 取代 models.credit_cost / model_price_history 的「用户价」角色（旧表保留不删，作回退）。
+      CREATE TABLE IF NOT EXISTS model_pricing (
+        model_id     TEXT PRIMARY KEY,                       -- 逻辑模型 id（= models.model_id）
+        credit_price INT NOT NULL DEFAULT 0,                 -- 用户积分售价（普通余额）
+        reward_price INT NOT NULL DEFAULT 0,                 -- 奖励余额售价
+        currency     TEXT DEFAULT 'CNY',
+        updated_at   TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ix_mp_model ON model_pricing(model_id);
+
+      -- 每线路成本：一条「线路」= 一个 provider_model_bindings.id。
+      -- 复合主键 (binding_id, unit)：同一线路可按单位拆多行（如 A 线路 3 行：
+      -- per_1k_input_token / per_1k_output_token / per_asset）。这样才能让智能路由逐线路算利润。
+      -- provider_id/model_id 冗余存储，满足「线路 A/B/C 各 ¥」的人工查询与回退路径。
+      CREATE TABLE IF NOT EXISTS provider_model_costs (
+        binding_id   TEXT NOT NULL REFERENCES provider_model_bindings(id) ON DELETE CASCADE,
+        provider_id  TEXT NOT NULL,                          -- 冗余，满足 provider/model 字段查询
+        model_id     TEXT NOT NULL,                          -- 冗余，回退到 (provider_id, model_id) 路径
+        cost         NUMERIC NOT NULL DEFAULT 0,             -- 该单位下成本（分）
+        currency     TEXT DEFAULT 'CNY',
+        unit         TEXT NOT NULL DEFAULT 'per_1k_input_token',  -- per_1k_input_token|per_1k_output_token|per_asset
+        effective_at TIMESTAMPTZ DEFAULT NOW(),              -- 成本生效时间（未来可支持版本化）
+        updated_at   TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (binding_id, unit)
+      );
+      CREATE INDEX IF NOT EXISTS ix_pmc_pm ON provider_model_costs(provider_id, model_id);
+      CREATE INDEX IF NOT EXISTS ix_pmc_binding ON provider_model_costs(binding_id);
+
+      -- 消费台账补 binding_id 列：逐线路利润归因（缺列则补，幂等；绝不 DROP 旧列）
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='consumption_ledger' AND column_name='binding_id') THEN
+          ALTER TABLE consumption_ledger ADD COLUMN binding_id TEXT DEFAULT '';
+        END IF;
+      END $$;
+
       -- Node 内存 worker 游标持久化（超时扫描 / Webhook 重试调度）
       CREATE TABLE IF NOT EXISTS cron_marker (
         name      TEXT PRIMARY KEY,
@@ -771,7 +925,7 @@ const SNAKE_MAP = {
   avatar_url:'avatar', reference_images:'referenceImages', base_model:'baseModel',
   is_favorite:'isFavorite', is_deleted:'isDeleted', created_at:'createdAt', base_url:'baseUrl',
   api_key:'apiKey', supported_types:'supportedTypes', default_endpoint:'defaultEndpoint',
-  display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent', rate_limits:'rateLimits', mapping_name:'mappingName', credit_cost:'creditCost', estimated_seconds:'estimatedSeconds', commercial_use:'commercialUse', capacity_model:'capacityModel', bucket_max:'bucketMax', cooldown_ms:'cooldownMs',
+  display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent', rate_limits:'rateLimits', mapping_name:'mappingName', credit_cost:'creditCost', supports_reward_balance:'supportsRewardBalance', reward_credits_required:'rewardCreditsRequired', estimated_seconds:'estimatedSeconds', commercial_use:'commercialUse', capacity_model:'capacityModel', bucket_max:'bucketMax', cooldown_ms:'cooldownMs',
   supported_resolutions:'supportedResolutions', access_point_name:'accessPointName',
   param_template:'paramTemplate',
   endpoint_external:'endpointExternal', endpoint_internal:'endpointInternal',
@@ -781,7 +935,7 @@ const SNAKE_MAP = {
   file_size:'fileSize', character_id:'characterId',
   is_default:'isDefault', default_key:'defaultKey', tags:'tags',
   owner_id:'ownerId', current_stage:'currentStage', cover_url:'coverUrl',
-  updated_at:'updatedAt',
+  updated_at:'updatedAt', revision:'revision', updated_by:'updatedBy',
   reward_credits:'rewardCredits', recharge_credits:'rechargeCredits',
   target_url:'targetUrl',
   supports_reward_balance:'supportsRewardBalance', reward_credits_required:'rewardCreditsRequired',
@@ -793,6 +947,12 @@ const SNAKE_MAP = {
   // ── 多 OSS 槽位扩展 ──
   provider_type:'providerType', display_name:'displayName',
   app_id:'appId', active_id:'activeId',
+  // ── ModelHub V3 Phase 3 定价层：新列同步 SNAKE_MAP（避免前端 undefined 假死）──
+  binding_id:'bindingId', credit_price:'creditPrice', reward_price:'rewardPrice', effective_at:'effectiveAt',
+  // ── 智能路由尝试数据：generation_jobs / generation_attempts 新列 ──
+  job_id:'jobId', finished_at:'finishedAt', attempt_count:'attemptCount',
+  attempt_id:'attemptId', attempt_no:'attemptNo', started_at:'startedAt', latency_ms:'latencyMs',
+  http_status:'httpStatus', provider_error_code:'providerErrorCode', retry_reason:'retryReason',
 };
 function fromSnake(obj) {
   if (!obj) return obj;
@@ -1688,6 +1848,73 @@ async function handleAPI(req, res) {
       return sendJSON(res, 200, { found: false, modelId, error: e.message });
     }
   }
+  // ── 智能路由尝试数据（generation_jobs / generation_attempts）后台只读查询 ──
+  if (url === '/api/admin/routing/jobs' && method === 'GET') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    try {
+      const u = new URL(req.url, 'http://localhost');
+      const limit = Math.max(1, Math.min(200, Number(u.searchParams.get('limit')) || 50));
+      const taskId = (u.searchParams.get('taskId') || '').trim();
+      const status = (u.searchParams.get('status') || '').trim();
+      const where = []; const params = []; let pi = 1;
+      if (taskId) { where.push(`task_id=$${pi++}`); params.push(taskId); }
+      if (status) { where.push(`status=$${pi++}`); params.push(status); }
+      let jobsSql = 'SELECT * FROM generation_jobs';
+      if (where.length) jobsSql += ' WHERE ' + where.join(' AND ');
+      jobsSql += ` ORDER BY created_at DESC LIMIT $${pi}`; params.push(limit);
+      const jr = await pgPool.query(jobsSql, params);
+      const jobIds = jr.rows.map((r) => r.job_id);
+      let attempts = [];
+      if (jobIds.length) {
+        const ar = await pgPool.query('SELECT * FROM generation_attempts WHERE job_id = ANY($1) ORDER BY job_id, attempt_no', [jobIds]);
+        attempts = ar.rows;
+      }
+      return sendJSON(res, 200, { jobs: jr.rows.map(fromSnake), attempts: attempts.map(fromSnake) });
+    } catch (e) {
+      return sendJSON(res, 500, { error: '查询路由数据失败：' + (e?.message || e) });
+    }
+  }
+  // ── 智能路由「决策解释」端点（Phase 3.4）：给定 model + contentType，返回确定性路由的完整决策 ──
+  if (url === '/api/admin/routing/decide' && method === 'GET') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    try {
+      const u = new URL(req.url, 'http://localhost');
+      const model = (u.searchParams.get('model') || '').trim();
+      const contentType = (u.searchParams.get('contentType') || '').trim() || undefined;
+      const seedRaw = Number(u.searchParams.get('seed'));
+      const seed = Number.isFinite(seedRaw) ? seedRaw : 1;
+      if (!model) return sendJSON(res, 400, { error: 'model 必填' });
+      // 1) 归一化 model → canonical model_id（与 generate 同一 resolver）
+      const modelIds = await modelHubResolver.resolveModelIdentity(pgPool, model);
+      if (!modelIds.length) {
+        return sendJSON(res, 200, { model, resolved: false, resolvedIds: [], pairs: 0, chosen: null, ranking: [], rejected: [], note: '未解析到模型' });
+      }
+      // 2) 拉候选线路（已预过滤 enabled 绑定 + enabled 服务商 + 有效密钥）
+      const pairs = await modelHubBindings.loadDispatchPairs(pgPool, modelIds, contentType);
+      if (!pairs.length) {
+        return sendJSON(res, 200, { model, resolvedIds: modelIds, pairs: 0, chosen: null, ranking: [], rejected: [], note: '无可用绑定/服务商' });
+      }
+      // 3) 跑确定性路由算法，返回 chosen + ranking + rejected + 权重 + 门控顺序（可解释）
+      const tier = contentType === 'video' ? 'video' : '1k'; // 解释端点不感知分辨率，用默认档
+      // 解释端点应反映后台当前配置的权重（settings.app.routingWeights），而非仅进程内 ROUTING_WEIGHTS，
+      // 使「权重配置 UI」的改动可立即在解释面板看到；读取失败则退化为进程内权重（非阻断）。
+      let explainWeights;
+      try {
+        const sr = await pgPool.query("SELECT value FROM settings WHERE key='app'");
+        const sv = sr.rows[0] && sr.rows[0].value;
+        if (sv && sv.routingWeights && typeof sv.routingWeights === 'object') explainWeights = sv.routingWeights;
+      } catch {}
+      const decision = await dispatcher.explainRouting(pairs, { pgPool, contentType, tier, seed, weights: explainWeights });
+      return sendJSON(res, 200, {
+        model, resolvedIds: modelIds, pairs: pairs.length,
+        weights: decision.weights, gateOrder: decision.gateOrder,
+        chosen: decision.chosen, ranking: decision.ranking, rejected: decision.rejected,
+        metricsBindings: decision.metricsBindings, seed,
+      });
+    } catch (e) {
+      return sendJSON(res, 500, { error: '路由决策失败：' + (e?.message || e) });
+    }
+  }
   if (url.startsWith('/api/admin/') && method !== 'OPTIONS') return admin.handleAdmin(req, res, url.split('?')[0], method);
 
   // ── 电商模块（AI 市集 / 技能注册表 / 试用台）── 命中即处理（内部自行鉴权：目录/商品公开，试用/获取/我的技能需登录）
@@ -1883,6 +2110,32 @@ async function handleAPI(req, res) {
       mediaSql += ' ORDER BY created_at DESC';
       const r = await pgPool.query(mediaSql, mediaParams);
       const list = r.rows.map(fromSnake);
+      // 破图根治（成功即存 OSS 配套）：读路径按 oss_object_key 重签 GET URL。
+      // 存量 oss_url 是上传时签发的 7 天预签名链，过期即 403 → 破图；此处每次读取重签
+      // （纯 HMAC、无网络、不碰二进制，守"业务服务器零二进制"铁律），OSS 链接永久可用。
+      try {
+        const oss = await loadOssConfigs(pgPool);
+        const ac = oss.list.find((c) => c.id === oss.activeId);
+        if (oss.enabled && ac) {
+          const OSS_HOST = /aliyuncs\.com|myqcloud\.com/;
+          const nowSec = Math.floor(Date.now() / 1000);
+          for (const m of list) {
+            if (!m.ossObjectKey) continue;
+            // 仅当存储的签名链已过期 / 临期(<1 天)才重签；有效期内保持原 URL，
+            // 避免每次读取都换签名导致 <img> 反复重载闪烁（破图观感）。
+            const cur = (m.ossUrl && m.ossUrl.match(/Expires=(\d+)/)) || (m.ossUrl && m.ossUrl.match(/q-sign-time=(\d+)/)) || [];
+            const exp = cur[1] ? +cur[1] : 0;
+            if (exp && exp > nowSec + 24 * 3600) continue; // 还有 >1 天有效期，不动
+            try {
+              const fresh = buildOssGetUrl(ac, m.ossObjectKey).getUrl;
+              m.ossUrl = fresh;
+              // thumbnail/fullUrl 若也是该 OSS 签名链，一并刷新（详情面板/查看器/下载用的是 fullUrl）
+              if (m.thumbnail && OSS_HOST.test(m.thumbnail)) m.thumbnail = fresh;
+              if (m.fullUrl && OSS_HOST.test(m.fullUrl)) m.fullUrl = fresh;
+            } catch (_) { /* 单个重签失败保留原值 */ }
+          }
+        }
+      } catch (_) { /* OSS 未配置则跳过重签，返回原值 */ }
       // 同步预扫：只阻塞这一批，超出部分由前端 useImageProbe 异步兜底
       await probeBatchAndMarkFailed(list, pgPool);
       return sendJSON(res, 200, list);
@@ -2257,59 +2510,103 @@ async function handleAPI(req, res) {
     if (pgPool) { const r = await pgPool.query('SELECT * FROM providers ORDER BY created_at'); return sendJSON(res, 200, r.rows.map(fromSnake).map(maskKey)); }
     return sendJSON(res, 200, readJSON('providers').map(maskKey));
   }
+  // ── POST /api/providers：单条创建（RESTful，不再是破坏性全量同步）──
+  // 破坏性行为（删除列表外项）已移除：删除请走 DELETE /api/providers/:id。
   if (url === '/api/providers' && method === 'POST') {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
-    const items = await parseBody(req); if (!items) return sendJSON(res, 400, { error: 'Invalid JSON' });
-    const arr = Array.isArray(items) ? items : [items];
+    const body = await parseBody(req); if (!body || typeof body !== 'object') return sendJSON(res, 400, { error: 'Invalid JSON' });
+    if (Array.isArray(body)) return sendJSON(res, 400, { error: 'POST /api/providers 仅支持单条创建；批量请逐条调用或改用 PATCH /api/providers/:id' });
+    const s = toSnake(body);
+    if (!s.id) return sendJSON(res, 400, { error: '缺少 id' });
     if (pgPool) {
       try {
-        const client = await pgPool.connect();
-        try {
-          await client.query('BEGIN');
-          const keepIds = arr.map(it => it.id).filter(Boolean);
-          // 全量同步：先删不在列表里的模型（防孤儿），再删不在列表里的服务商
-          if (keepIds.length > 0) {
-            await client.query('DELETE FROM models WHERE provider_id <> ALL($1::text[])', [keepIds]);
-            await client.query('DELETE FROM providers WHERE id <> ALL($1::text[])', [keepIds]);
-          } else {
-            await client.query('DELETE FROM models');
-            await client.query('DELETE FROM providers');
-          }
-          for (const it of arr) {
-            const s = toSnake(it);
-            // 安全：api_key 含 '*' 或太短视为占位，沿用 DB 现有值（避免误覆盖真实密钥）
-            let apiKey = s.api_key;
-            if (!apiKey || apiKey.includes('*') || apiKey.length < 6) {
-              const ex = await client.query('SELECT api_key FROM providers WHERE id=$1', [s.id]);
-              if (ex.rows[0]?.api_key) apiKey = ex.rows[0].api_key;
-            }
-            // 容量上限校验：设了 bucket_max 则 B 不得超过（未设则不限制，前端警告可忽略）
-            const rl = (s.rate_limits && typeof s.rate_limits === 'object') ? s.rate_limits : {};
-            if (typeof rl.bucket_units_per_min === 'number' && s.bucket_max != null && rl.bucket_units_per_min > Number(s.bucket_max)) {
-              await client.query('ROLLBACK');
-              return sendJSON(res, 400, { error: `B(${rl.bucket_units_per_min}) 超过粒度上限 bucket_max(${s.bucket_max})` });
-            }
-            await client.query(
-              `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent,rate_limits,capacity_model,bucket_max,cooldown_ms) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,base_url=EXCLUDED.base_url,api_key=EXCLUDED.api_key,protocol=EXCLUDED.protocol,enabled=EXCLUDED.enabled,max_concurrent=EXCLUDED.max_concurrent,rate_limits=EXCLUDED.rate_limits,capacity_model=EXCLUDED.capacity_model,bucket_max=EXCLUDED.bucket_max,cooldown_ms=EXCLUDED.cooldown_ms`,
-              [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2, JSON.stringify(s.rate_limits || {}), s.capacity_model || 'limited', s.bucket_max != null ? Number(s.bucket_max) : null, Number(s.cooldown_ms) || 60000]
-            );
-          }
-          await client.query('COMMIT');
-          return sendJSON(res, 200, { ok: true });
-        } catch (e) {
-          await client.query('ROLLBACK').catch(() => {});
-          throw e;
-        } finally {
-          client.release();
+        // 容量上限校验：设了 bucket_max 则 B 不得超过
+        const rl = (s.rate_limits && typeof s.rate_limits === 'object') ? s.rate_limits : {};
+        if (typeof rl.bucket_units_per_min === 'number' && s.bucket_max != null && rl.bucket_units_per_min > Number(s.bucket_max)) {
+          return sendJSON(res, 400, { error: `B(${rl.bucket_units_per_min}) 超过粒度上限 bucket_max(${s.bucket_max})` });
         }
+        // 安全：创建时若 api_key 是占位（含 '*' 或 <6 字符）则落空，不写入伪密钥
+        let apiKey = s.api_key || '';
+        if (apiKey.includes('*') || apiKey.length < 6) apiKey = '';
+        const exists = await pgPool.query('SELECT id FROM providers WHERE id=$1', [s.id]);
+        if (exists.rows[0]) return sendJSON(res, 409, { error: '服务商已存在', id: s.id });
+        await pgPool.query(
+          `INSERT INTO providers (id,name,type,base_url,api_key,supported_types,enabled,protocol,remark,default_endpoint,max_concurrent,rate_limits,capacity_model,bucket_max,cooldown_ms,revision,updated_at,updated_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,1,NOW(),$16)`,
+          [s.id, s.name, s.type, s.base_url, apiKey, s.supported_types || [], s.enabled !== false, s.protocol || 'openai-compatible', s.remark || '', JSON.stringify(s.default_endpoint || {}), Number(s.max_concurrent) || 2, JSON.stringify(s.rate_limits || {}), s.capacity_model || 'limited', s.bucket_max != null ? Number(s.bucket_max) : null, Number(s.cooldown_ms) || 60000, (realUser && realUser.id) || '']
+        );
+        return sendJSON(res, 201, { ok: true, id: s.id, revision: 1 });
       } catch (e) {
         console.error('[providers] POST 失败', e.message);
-        return sendJSON(res, 400, { error: '保存失败：' + e.message });
+        return sendJSON(res, 400, { error: '创建失败：' + e.message });
       }
     }
-    // 无 PG 时直接全量替换 JSON 文件
-    writeJSON('providers', arr);
-    return sendJSON(res, 200, { ok: true });
+    // 无 PG 时 JSON 兜底（本地开发）
+    const list = readJSON('providers');
+    if (list.some(p => p.id === s.id)) return sendJSON(res, 409, { error: '服务商已存在', id: s.id });
+    list.push({ ...body, revision: 1, updatedAt: new Date().toISOString(), updatedBy: '' });
+    writeJSON('providers', list);
+    return sendJSON(res, 201, { ok: true, id: s.id, revision: 1 });
+  }
+  // ── PATCH /api/providers/:id：单条局部更新 + 乐观锁（revision 不匹配 → 409）──
+  if (url.startsWith('/api/providers/') && method === 'PATCH') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    const id = url.split('/api/providers/')[1];
+    const patch = await parseBody(req); if (!patch || typeof patch !== 'object') return sendJSON(res, 400, { error: 'Invalid JSON' });
+    const expectedRevision = Number(patch.revision);
+    if (!Number.isInteger(expectedRevision)) return sendJSON(res, 400, { error: '缺少或非整数 revision（乐观锁基线）' });
+    if (!pgPool) return sendJSON(res, 501, { error: 'JSON 兜底模式不支持 PATCH' });
+    // 字段白名单：snake 列名 → camel 前端字段名（仅这些列可被更新）
+    const allowed = {
+      name: 'name', type: 'type', base_url: 'baseUrl', api_key: 'apiKey',
+      supported_types: 'supportedTypes', enabled: 'enabled', protocol: 'protocol',
+      remark: 'remark', default_endpoint: 'defaultEndpoint', max_concurrent: 'maxConcurrent',
+      rate_limits: 'rateLimits', capacity_model: 'capacityModel', bucket_max: 'bucketMax',
+      cooldown_ms: 'cooldownMs',
+    };
+    const cols = []; const vals = [];
+    for (const [col, camel] of Object.entries(allowed)) {
+      if (!(camel in patch)) continue;
+      let v = patch[camel];
+      if (col === 'enabled') v = v !== false;
+      else if (col === 'max_concurrent') v = (v == null || v === '') ? null : Math.max(0, Math.floor(Number(v)));
+      else if (col === 'bucket_max') v = (v == null || v === '') ? null : Number(v);
+      else if (col === 'cooldown_ms') v = (v == null || v === '') ? 60000 : Number(v);
+      else if (col === 'supported_types') v = Array.isArray(v) ? v : (v ? [v] : []);
+      else if (col === 'rate_limits') v = JSON.stringify((v && typeof v === 'object') ? v : {});
+      else if (col === 'default_endpoint') v = JSON.stringify((v && typeof v === 'object') ? v : {});
+      else if (col === 'api_key') v = String(v || '');
+      else if (col === 'name') v = String(v || '');
+      else if (col === 'type') v = String(v || 'official');
+      else if (col === 'base_url') v = String(v || '');
+      else if (col === 'protocol') v = String(v || 'openai-compatible');
+      else if (col === 'remark') v = String(v || '');
+      else if (col === 'capacity_model') v = String(v || 'limited');
+      cols.push(col); vals.push(v);
+    }
+    // api_key 占位保护：传入 '*'/短串则沿用 DB 现有值（避免误覆盖真实密钥）
+    if ('apiKey' in patch) {
+      const ak = patch.apiKey || '';
+      if (ak.includes('*') || ak.length < 6) {
+        const ex = await pgPool.query('SELECT api_key FROM providers WHERE id=$1', [id]);
+        if (ex.rows[0]?.api_key) { const idx = cols.lastIndexOf('api_key'); if (idx >= 0) vals[idx] = ex.rows[0].api_key; }
+      }
+    }
+    // 容量上限校验（仅当本次改动涉及 B / bucket_max 时）
+    if ('rateLimits' in patch || 'bucketMax' in patch) {
+      const rl = (patch.rateLimits && typeof patch.rateLimits === 'object') ? patch.rateLimits : {};
+      const bmax = ('bucketMax' in patch) ? Number(patch.bucketMax) : null;
+      if (typeof rl.bucket_units_per_min === 'number' && bmax != null && rl.bucket_units_per_min > bmax) {
+        return sendJSON(res, 400, { error: `B(${rl.bucket_units_per_min}) 超过粒度上限 bucket_max(${bmax})` });
+      }
+    }
+    if (cols.length === 0) return sendJSON(res, 400, { error: '无可更新字段' });
+    const r = await optimisticUpdate(pgPool, { table: 'providers', id, expectedRevision, columns: cols, values: vals, actor: realUser.id });
+    if (r.status === 'notFound') return sendJSON(res, 404, { error: '服务商不存在' });
+    if (r.status === 'conflict') return sendJSON(res, 409, { error: '数据已被其他管理员修改（revision 不匹配），请刷新后重试', currentRevision: r.currentRevision });
+    const row = await pgPool.query('SELECT * FROM providers WHERE id=$1', [id]);
+    if (!row.rows[0]) return sendJSON(res, 404, { error: '服务商不存在' });
+    return sendJSON(res, 200, { ok: true, provider: fromSnake(row.rows[0]), revision: r.revision });
   }
   // 账号冷热状态快照（内存态，供管理面板展示 + 手动强切）
   if (url === '/api/providers/states' && method === 'GET') {
@@ -2343,7 +2640,7 @@ async function handleAPI(req, res) {
     }
     if (!pgPool) return sendJSON(res, 200, { status: 'failed', error: '数据库不可用，无法分发生成任务' });
     const body = await parseBody(req);
-    if (!body || !body.model || !body.prompt) return sendJSON(res, 400, { error: '缺少 model 或 prompt' });
+    if (!body || (!body.model && !body.modelId) || !body.prompt) return sendJSON(res, 400, { error: '缺少 model 或 prompt' });
     // 身份：必须是真实登录用户（cookie 会话），否则无法归属计费/owner（G1/G2）
     if (!realUser) return sendJSON(res, 401, { error: '未登录' });
     // 幂等键（G4）：前端每次生成请求生成一个 UUID，重试复用，防止网络抖动双扣
@@ -2368,9 +2665,17 @@ async function handleAPI(req, res) {
       }
     }
 
-    // 成本解析（L5）：查模型计费维度（充值价 + 是否支持奖励 + 奖励价），再解析实际扣费池
+    // 模型身份解析（Phase 1）：优先 modelId，回退 model（displayName / 遗留字符串）→ canonical model_id
+    const rawModel = body.modelId || body.model;
+    const resolvedIds = await modelHubResolver.resolveModelIdentity(pgPool, rawModel);
+    if (resolvedIds.length === 0) {
+      return sendJSON(res, 400, { status: 'failed', error: `未找到模型：${rawModel}` });
+    }
+    const canonicalModel = resolvedIds[0];
+
+    // 成本解析（L5）：按 canonical model_id 查计费维度（充值价 + 是否支持奖励 + 奖励价），再解析实际扣费池
     const costRes = await pgPool.query(
-      'SELECT credit_cost, supports_reward_balance, reward_credits_required FROM models WHERE id=$1 OR model_id=$1 LIMIT 1', [body.model]);
+      'SELECT credit_cost, supports_reward_balance, reward_credits_required FROM models WHERE model_id=$1 LIMIT 1', [canonicalModel]);
     const mrow = costRes.rows[0];
     const creditCost = mrow ? Number(mrow.credit_cost) || 0 : 0;
     const supportsReward = mrow ? (mrow.supports_reward_balance === true || mrow.supports_reward_balance === 't' || mrow.supports_reward_balance === 'true') : false;
@@ -2397,7 +2702,9 @@ async function handleAPI(req, res) {
     }
 
     const genOpts = {
-      model: body.model,
+      model: canonicalModel,                 // canonical model_id（dispatcher 优先据此路由）
+      modelId: canonicalModel,               // 显式冗余，便于调试 / 下游消费
+      displayModelName: body.model || rawModel, // 原始展示名（displayName 优先），落 generation_tasks.model 列供展示
       prompt: body.prompt,
       ratio: body.ratio || '1:1',
       resolution: body.resolution || '1k',
@@ -2464,6 +2771,18 @@ async function handleAPI(req, res) {
     }
   }
 
+  // POST /api/generate/cancel/:taskId — 取消在途生成任务
+  // 行为：释放 held 积分 + 停止轮询 + 标记 canceled + 推送 SSE canceled。终态（done/failed/canceled）不可取消。
+  if (url.startsWith('/api/generate/cancel/') && method === 'POST') {
+    if (!pgPool) return sendJSON(res, 503, { ok: false, error: '数据库不可用' });
+    if (!realUser) return sendJSON(res, 401, { ok: false, error: '未登录' });
+    const taskId = decodeURIComponent(url.slice('/api/generate/cancel/'.length));
+    if (!taskId) return sendJSON(res, 400, { ok: false, error: '缺少 taskId' });
+    const r = await dispatcher.cancelTask(pgPool, realUser.id, taskId);
+    // r.code: 404 不存在 / 403 越权 / 409 已结束 / 500 内部 / 503 无 DB；ok:true 成功
+    return sendJSON(res, r.ok ? 200 : (r.code || 400), r);
+  }
+
   // GET /api/generate/status/:taskId — 查询单个任务状态
   if (url.startsWith('/api/generate/status/') && method === 'GET') {
     if (!pgPool) return sendJSON(res, 200, { status: 'unknown', error: '数据库不可用' });
@@ -2478,6 +2797,30 @@ async function handleAPI(req, res) {
     if (!realUser) return sendJSON(res, 401, { error: '未登录' });
     const r = await dispatcher.listActiveTasks(pgPool, realUser.id);
     return sendJSON(res, 200, r);
+  }
+
+  // GET /api/generate/stream — SSE 实时通道（主流异步生成做法）
+  // 任务终态切换（done/waiting/failed）由 dispatcher.emitTaskUpdate 推送，替代前端固定 2s 轮询；
+  // 连接即回灌在途快照，解决「刷新/连接前」漏事件。前端另有轮询兜底，SSE 异常不影响完成判定。
+  if (url === '/api/generate/stream' && method === 'GET') {
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no', // 关闭反代缓冲，避免事件被攒批
+    });
+    res.write('retry: 3000\n\n'); // 断线后客户端（EventSource）自动重连间隔
+    const unsub = realtime.subscribe(realUser.id, res);
+    // 连接即回灌在途快照：字段形状对齐 getTaskStatus，前端无差别处理
+    try {
+      const snap = await realtime.snapshotActive(pgPool, realUser.id);
+      for (const s of snap) res.write(`data: ${JSON.stringify(s)}\n\n`);
+    } catch (_) { /* 快照失败不致命 */ }
+    // 心跳：防止代理/中间件因空闲断开长连接
+    const hb = setInterval(() => { try { res.write(': ping\n\n'); } catch (_) {} }, 20000);
+    res.on('close', () => { clearInterval(hb); try { unsub(); } catch (_) {} });
+    return; // 保持连接打开，不调用 sendJSON
   }
 
   // ── AI 提示词优化（智能体 skill：调后台启用的 text 类型推理模型）──
@@ -2865,46 +3208,95 @@ async function handleAPI(req, res) {
     }
   }
 
+  // ── 预览/列模型（未保存的服务商配置）：后端代理，避免前端持有真实 Key 直连服务商 ──
+  // 用于「添加服务商」向导：管理员在表单填 baseUrl+apiKey，后端代为请求 /models（或自定义 listModels）。
+  // 浏览器只把 key 发给本站后端（HTTPS），绝不直连服务商 —— 杜绝 Key 直连暴露 + 规避浏览器 CORS 限制。
+  if (url === '/api/providers/preview-models' && method === 'POST') {
+    if (!pgPool) return sendJSON(res, 200, { success: false, message: '数据库不可用' });
+    if (!realUser) return sendJSON(res, 401, { success: false, message: '未登录' });
+    const body = await parseBody(req);
+    const baseUrl = String((body && body.baseUrl) || '').trim().replace(/\/+$/, '');
+    const apiKey = String((body && body.apiKey) || '').trim();
+    const protocol = (body && body.protocol) || 'openai-compatible';
+    const listModels = body && body.listModels; // 自定义 listModels 端点（可选）
+    if (!baseUrl) return sendJSON(res, 200, { success: false, message: '缺少 baseUrl' });
+    if (!apiKey || apiKey.length < 6 || apiKey.includes('*')) return sendJSON(res, 200, { success: false, message: '缺少有效 API Key' });
+    try {
+      let models = [];
+      if (protocol === 'custom' && listModels && listModels.path) {
+        const { status, body: respBody } = await dispatcher.callEndpoint(baseUrl, listModels, apiKey, {});
+        if (status >= 400) return sendJSON(res, 200, { success: false, message: `同步失败 HTTP ${status}` });
+        const arr = dispatcher.getArrayByPath(respBody, listModels.listFieldPath || 'data');
+        models = arr.map((m) => ({ id: String(dispatcher.getByPath(m, listModels.listIdFieldPath || 'id') || ''), name: String(dispatcher.getByPath(m, listModels.listNameFieldPath || 'name') || '') })).filter((m) => m.id);
+      } else {
+        const resp = await fetch(`${baseUrl}/models`, { method: 'GET', headers: { Authorization: `Bearer ${apiKey}` } });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) return sendJSON(res, 200, { success: false, message: `同步失败 HTTP ${resp.status}` });
+        const arr = Array.isArray(data && data.data) ? data.data : [];
+        models = arr.map((m) => ({ id: String(m.id || ''), name: String(m.id || '') })).filter((m) => m.id);
+      }
+      return sendJSON(res, 200, { success: true, models });
+    } catch (e) {
+      return sendJSON(res, 200, { success: false, message: `同步异常：${(e && e.message) || String(e)}` });
+    }
+  }
+
   // ── Models ──
   if (url === '/api/models' && method === 'GET') {
     if (pgPool) { const r = await pgPool.query('SELECT * FROM models ORDER BY created_at'); return sendJSON(res, 200, r.rows.map(fromSnake)); }
     return sendJSON(res, 200, readJSON('models'));
   }
+  // ── POST /api/models：单条创建（RESTful，不再是破坏性全量同步）──
   if (url === '/api/models' && method === 'POST') {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
-    const items = await parseBody(req); if (!items) return sendJSON(res, 400, { error: 'Invalid JSON' });
-    const arr = Array.isArray(items) ? items : [items];
+    const body = await parseBody(req); if (!body || typeof body !== 'object') return sendJSON(res, 400, { error: 'Invalid JSON' });
+    if (Array.isArray(body)) return sendJSON(res, 400, { error: 'POST /api/models 仅支持单条创建；批量请逐条调用或改用 PATCH /api/models/:id' });
+    const s = toSnake(body);
+    if (!s.id) return sendJSON(res, 400, { error: '缺少 id' });
     if (pgPool) {
       try {
         const provRows = await pgPool.query('SELECT id FROM providers');
         const provIds = new Set((provRows.rows || []).map(r => r.id));
-        for (const it of arr) {
-          const s = toSnake(it);
-          // 外键容错：provider_id 必须引用已存在的服务商，否则置 NULL，避免整批同步因外键约束失败
-          const pid = (s.provider_id && provIds.has(s.provider_id)) ? s.provider_id : null;
-          await pgPool.query(
-            `INSERT INTO models (id,model_id,display_name,mapping_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint,param_template,credit_cost,supports_reward_balance,reward_credits_required,max_concurrent,estimated_seconds,category,commercial_use,creator) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT (id) DO UPDATE SET display_name=EXCLUDED.display_name,mapping_name=EXCLUDED.mapping_name,enabled=EXCLUDED.enabled,credit_cost=EXCLUDED.credit_cost,supports_reward_balance=EXCLUDED.supports_reward_balance,reward_credits_required=EXCLUDED.reward_credits_required,max_concurrent=EXCLUDED.max_concurrent,estimated_seconds=EXCLUDED.estimated_seconds,category=EXCLUDED.category,commercial_use=EXCLUDED.commercial_use,creator=EXCLUDED.creator,param_template=EXCLUDED.param_template`,
-            [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, pid, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), JSON.stringify(s.param_template || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0)), (s.supports_reward_balance === true || s.supports_reward_balance === 'true' ? true : (s.supports_reward_balance === false || s.supports_reward_balance === 'false' ? false : true)), (s.reward_credits_required != null && s.reward_credits_required !== '' ? Math.max(0, Math.floor(Number(s.reward_credits_required))) : Math.max(0, Math.floor(Number(s.credit_cost) || 0))), (s.max_concurrent == null ? null : Math.max(0, Math.floor(Number(s.max_concurrent)))), (s.estimated_seconds == null ? null : Math.max(0, Math.floor(Number(s.estimated_seconds)))), (s.category == null ? '' : String(s.category)), (s.commercial_use === true || s.commercial_use === 'true' ? true : (s.commercial_use === false || s.commercial_use === 'false' ? false : null)), (s.creator && typeof s.creator === 'object' ? JSON.stringify(s.creator) : (s.creator == null ? null : JSON.stringify(s.creator)))]
-          );
+        // 外键容错：provider_id 必须引用已存在的服务商，否则置 NULL
+        const pid = (s.provider_id && provIds.has(s.provider_id)) ? s.provider_id : null;
+        // 奖励校验（仅当显式传入奖励相关字段时，与 PATCH 一致）
+        const touchReward = ('supportsRewardBalance' in body) || ('rewardCreditsRequired' in body);
+        const willSupportReward = ('supportsRewardBalance' in body) ? (body.supportsRewardBalance === true || body.supportsRewardBalance === 'true' || body.supportsRewardBalance === 1) : true;
+        const rewardVal = ('rewardCreditsRequired' in body) ? Math.max(0, Math.floor(Number(body.rewardCreditsRequired) || 0)) : 0;
+        if (touchReward && willSupportReward && rewardVal <= 0) {
+          return sendJSON(res, 400, { error: '支持奖励余额的模型必须填写奖励积分（且需大于 0）' });
         }
-        return sendJSON(res, 200, { ok: true });
+        const exists = await pgPool.query('SELECT id FROM models WHERE id=$1', [s.id]);
+        if (exists.rows[0]) return sendJSON(res, 409, { error: '模型已存在', id: s.id });
+        const supportReward = (s.supports_reward_balance === true || s.supports_reward_balance === 'true') ? true : (s.supports_reward_balance === false || s.supports_reward_balance === 'false' ? false : true);
+        const rewardReq = (s.reward_credits_required != null && s.reward_credits_required !== '') ? Math.max(0, Math.floor(Number(s.reward_credits_required))) : Math.max(0, Math.floor(Number(s.credit_cost) || 0));
+        await pgPool.query(
+          `INSERT INTO models (id,model_id,display_name,mapping_name,type,provider_id,enabled,supported_resolutions,capabilities,endpoint,param_template,credit_cost,supports_reward_balance,reward_credits_required,max_concurrent,estimated_seconds,category,commercial_use,creator,revision,updated_at,updated_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,1,NOW(),$20)`,
+          [s.id, s.model_id, s.display_name, s.mapping_name || '', s.type, pid, s.enabled !== false, s.supported_resolutions || [], JSON.stringify(s.capabilities || {}), JSON.stringify(s.endpoint || {}), JSON.stringify(s.param_template || {}), Math.max(0, Math.floor(Number(s.credit_cost) || 0)), supportReward, rewardReq, (s.max_concurrent == null ? null : Math.max(0, Math.floor(Number(s.max_concurrent)))), (s.estimated_seconds == null ? null : Math.max(0, Math.floor(Number(s.estimated_seconds)))), (s.category == null ? '' : String(s.category)), (s.commercial_use === true || s.commercial_use === 'true' ? true : (s.commercial_use === false || s.commercial_use === 'false' ? false : null)), (s.creator && typeof s.creator === 'object' ? JSON.stringify(s.creator) : (s.creator == null ? null : JSON.stringify(s.creator))), (realUser && realUser.id) || '']
+        );
+        return sendJSON(res, 201, { ok: true, id: s.id, revision: 1 });
       } catch (e) {
         console.error('[models] POST 失败', e.message);
-        return sendJSON(res, 400, { error: '保存失败：' + e.message });
+        return sendJSON(res, 400, { error: '创建失败：' + e.message });
       }
     }
     const list = readJSON('models');
-    for (const it of arr) { const idx = list.findIndex(m => m.id === it.id); if (idx >= 0) list[idx] = it; else list.push(it); }
+    if (list.some(m => m.id === s.id)) return sendJSON(res, 409, { error: '模型已存在', id: s.id });
+    list.push({ ...body, revision: 1, updatedAt: new Date().toISOString(), updatedBy: '' });
     writeJSON('models', list);
-    return sendJSON(res, 200, { ok: true });
+    return sendJSON(res, 201, { ok: true, id: s.id, revision: 1 });
   }
-  // ── PATCH 单模型局部更新（admin）── 支持 enabled/creditCost/maxConcurrent/estimatedSeconds/category/commercialUse/creator/mappingName/displayName/type 任意子集
+  // ── PATCH 单模型局部更新（admin）+ 乐观锁（revision 不匹配 → 409）──
+  // 支持 enabled/creditCost/maxConcurrent/estimatedSeconds/category/commercialUse/creator/mappingName/displayName/type 任意子集
   if (url.startsWith('/api/models/') && method === 'PATCH') {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
     let id = url.split('/api/models/')[1];
     id = id.replace(/\/patch$/, '');
     const patch = await parseBody(req);
     if (!patch || typeof patch !== 'object') return sendJSON(res, 400, { error: 'Invalid JSON' });
+    const expectedRevision = Number(patch.revision);
+    if (!Number.isInteger(expectedRevision)) return sendJSON(res, 400, { error: '缺少或非整数 revision（乐观锁基线）' });
     // 字段白名单：snake 列名 → camel 前端字段名
     const allowed = {
       display_name: 'displayName', mapping_name: 'mappingName', type: 'type', enabled: 'enabled',
@@ -2919,7 +3311,7 @@ async function handleAPI(req, res) {
       const exist = await pgPool.query('SELECT supports_reward_balance, reward_credits_required FROM models WHERE id=$1', [id]);
       if (!exist.rows[0]) return sendJSON(res, 404, { error: '模型不存在' });
       const cur = exist.rows[0];
-      const sets = []; const vals = [id]; let i = 2;
+      const cols = []; const vals = [];
       for (const [col, camel] of Object.entries(allowed)) {
         if (!(camel in patch)) continue;
         let v = patch[camel];
@@ -2936,7 +3328,7 @@ async function handleAPI(req, res) {
         else if (col === 'type') v = v == null ? 'image' : String(v);
         else if (col === 'display_name') v = String(v);
         else if (col === 'param_template') v = JSON.stringify((v && typeof v === 'object') ? v : (v == null ? {} : v));
-        sets.push(`${col}=$${i++}`); vals.push(v);
+        cols.push(col); vals.push(v);
       }
       // 校验：仅当本次 patch 真正改动奖励余额相关字段时，才强制校验「支持奖励余额必须填写奖励积分(>0)」
       // 避免「纯改价 / 改显隐」等无关更新被既有奖励积分配置（seed 默认 supports_reward_balance=true 但 reward_credits_required=0）误拦截
@@ -2948,8 +3340,10 @@ async function handleAPI(req, res) {
           return sendJSON(res, 400, { error: '支持奖励余额的模型必须填写奖励积分（且需大于 0）' });
         }
       }
-      if (sets.length === 0) return sendJSON(res, 400, { error: '无可更新字段' });
-      await pgPool.query(`UPDATE models SET ${sets.join(', ')} WHERE id=$1`, vals);
+      if (cols.length === 0) return sendJSON(res, 400, { error: '无可更新字段' });
+      const r = await optimisticUpdate(pgPool, { table: 'models', id, expectedRevision, columns: cols, values: vals, actor: realUser.id });
+      if (r.status === 'notFound') return sendJSON(res, 404, { error: '模型不存在' });
+      if (r.status === 'conflict') return sendJSON(res, 409, { error: '数据已被其他管理员修改（revision 不匹配），请刷新后重试', currentRevision: r.currentRevision });
       // 价格变更归档：写入 model_price_history，供「再添加时提醒沿用原价格」
       if ('creditCost' in patch) {
         const newCost = Math.max(0, Math.floor(Number(patch.creditCost) || 0));
@@ -2961,9 +3355,9 @@ async function handleAPI(req, res) {
           ).catch(() => {});
         }
       }
-      const r = await pgPool.query('SELECT * FROM models WHERE id=$1', [id]);
-      if (!r.rows[0]) return sendJSON(res, 404, { error: '模型不存在' });
-      return sendJSON(res, 200, { ok: true, model: fromSnake(r.rows[0]) });
+      const row = await pgPool.query('SELECT * FROM models WHERE id=$1', [id]);
+      if (!row.rows[0]) return sendJSON(res, 404, { error: '模型不存在' });
+      return sendJSON(res, 200, { ok: true, model: fromSnake(row.rows[0]), revision: r.revision });
     } catch (e) {
       console.error('[models] PATCH 失败', e.message);
       return sendJSON(res, 400, { error: '更新失败：' + e.message });
@@ -3470,6 +3864,22 @@ const server = http.createServer(async (req, res) => {
 
 await initDB();
 await initRedis();
+
+// ─── 崩溃恢复：启动即扫描在途视频任务，续轮询崩溃前已提交但本进程未完成的任务 ───
+// 必须在 PG 就绪后、且 pgPool 全局已赋值后调用（resumeRunningTasks 内部用 pgPool 重新加载 provider/model）。
+// 只恢复已持久化 provider_task_id 的 running 任务；提交前崩溃的任务无 provider task id，
+// 由 billing.cjs 的 running>30min 兜底释放 held 积分，不会泄漏（此处仅负责"拿回那一笔生成结果"）。
+if (pgPool) {
+  dispatcher.resumeRunningTasks(pgPool)
+    .then((r) => { if (r && r.resumed) console.log(`[startup] 崩溃恢复：续轮询 ${r.resumed} 个在途视频任务`); })
+    .catch((e) => console.warn('[startup] 崩溃恢复扫描失败（不影响启动）:', e.message));
+  // 孤儿 running 任务看门狗：兜底回收崩溃/未捕获导致的永久 running（进程崩溃/未知竞态下积分与 pending 卡片无法自愈）。
+  dispatcher.startStuckTaskWatchdog(pgPool);
+  // 等待区崩溃恢复：重启后内存 WAITING_AREA 队列丢失，重新入队仍处于等待区的孤儿任务并启动泵重试。
+  dispatcher.resumeWaitingArea(pgPool)
+    .then((r) => { if (r && r.resumed) console.log(`[startup] 等待区恢复：重试 ${r.resumed} 个排队任务`); })
+    .catch((e) => console.warn('[startup] 等待区恢复扫描失败（不影响启动）:', e.message));
+}
 
 // ─── 核心错误持久化 + 进程级异常兜底（#449/#450）───
 // 注入连接池（供 insertError 落库）；注册 uncaughtException/unhandledRejection 兜底，

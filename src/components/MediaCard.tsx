@@ -21,6 +21,7 @@ import {
   Loader2,
   Wand2,
   X,
+  Clock,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Image from '@/components/ui/image';
@@ -36,6 +37,8 @@ interface MediaCardProps {
   onOpenViewer?: () => void;
   onToggleFavorite: (id: string) => void;
   onDelete: (id: string) => void;
+  /** 生成中卡片的取消按钮：调后端取消接口 + 移除卡片（拿不到 taskId 时回退到本地删除） */
+  onCancel?: (item: IMediaItem) => void;
   onRetry?: (item: IMediaItem) => void;
   onAddAsReference?: (url: string) => void;
   /** 示例配方复用（T1）：用该图的 prompt + model + ratio 一键复刻 */
@@ -57,6 +60,7 @@ export default function MediaCard({
   onOpenViewer,
   onToggleFavorite,
   onDelete,
+  onCancel,
   onRetry,
   onProbeFailed,
   onAddAsReference,
@@ -137,21 +141,17 @@ export default function MediaCard({
     : undefined;
   const failedAt = item.status === 'failed' ? item.failedAt : undefined;
 
-  // ── pending 自我涨进度：父级不传 progress 时，200ms 自增到 95% 后停（模拟真实生成节奏）──
-  // 父级传了 progress 则优先用父级（精确控制）
-  const [selfProgress, setSelfProgress] = useState(0);
+  // ── pending 真实等待计时：用 item.createdAt 计算实际已等待时间（不再显示虚假百分比）
+  const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     if (!isPending) return;
-    if (typeof item.progress === 'number' && item.progress >= 100) return;
-    const tid = setInterval(() => {
-      setSelfProgress((prev) => {
-        if (prev >= 95) return prev; // 到 95% 停下，等图片回来再切 100
-        return prev + 1; // 200ms +1% ≈ 19s 到 95%
-      });
-    }, 200);
+    const start = new Date(item.createdAt).getTime();
+    const tick = () => setElapsed(Math.floor((Date.now() - start) / 1000));
+    tick();
+    const tid = setInterval(tick, 1000);
     return () => clearInterval(tid);
-  }, [isPending, item.progress]);
-  const progressValue = typeof item.progress === 'number' ? item.progress : selfProgress;
+  }, [isPending, item.createdAt]);
+  const fmtElapsed = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
   const moreItems = [
     { icon: Heart, label: item.isFavorite ? '取消收藏' : '收藏' },
@@ -219,19 +219,22 @@ export default function MediaCard({
               </div>
             </div>
 
-            {/* 右上角：百分比 */}
+            {/* 右上角：已等待时间（真实） */}
             <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded-full bg-black/40 backdrop-blur-sm px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
-              <span>{Math.min(99, Math.round(progressValue))}%</span>
+              <Clock className="size-2.5" />
+              <span>{fmtElapsed(elapsed)}</span>
             </div>
 
             {/* 右上角：取消按钮（hover 显著，平时半透明） */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                onDelete(item.id);
+                // 优先走后端取消（释放 held 积分 + 移除卡片）；无 taskId 时回退本地删除
+                if (onCancel && item.taskId) onCancel(item);
+                else onDelete(item.id);
               }}
               className="absolute right-2 top-9 z-20 flex h-6 w-6 items-center justify-center rounded-full bg-zinc-900/60 backdrop-blur-md text-zinc-400 ring-1 ring-zinc-700/30 opacity-50 transition-all hover:bg-red-500/40 hover:text-red-100 hover:opacity-100"
-              title="取消"
+              title="取消生成"
             >
               <X className="size-3.5" />
             </button>
@@ -241,13 +244,10 @@ export default function MediaCard({
               <ImageIcon className="size-3.5" />
             </div>
 
-            {/* 底部进度条 */}
+            {/* 底部进度条：不确定进度（扫光动画），不再用虚假百分比 */}
             <div className="absolute inset-x-0 bottom-0 z-20 p-2.5">
               <div className="h-1 w-full overflow-hidden rounded-full bg-zinc-800/80">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-teal-400 transition-all duration-200 ease-out"
-                  style={{ width: `${progressValue}%` }}
-                />
+                <div className="h-full w-1/3 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-teal-400 shimmer" />
               </div>
             </div>
           </div>

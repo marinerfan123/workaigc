@@ -13,22 +13,9 @@ import {
   Clapperboard,
   ShoppingBag,
   ShieldAlert,
-  Wrench,
   Settings2,
-  LayoutDashboard,
-  Bot,
-  Users,
   Receipt,
-  Boxes,
   Store,
-  Activity,
-  ScrollText,
-  XCircle,
-  Database,
-  Library,
-  Palette,
-  Wallet,
-  CreditCard,
   Cpu,
   Home,
   ShoppingCart,
@@ -36,6 +23,7 @@ import {
 } from 'lucide-react';
 import type { MediaCounts } from '@/services/api';
 import type { NavigationDockProps, NavSection } from '@/components/NavigationDock';
+import { ADMIN_MODULES, ADMIN_GROUP_ORDER } from '@/config/adminRegistry';
 
 // ───────────────────────────────────────────────
 // 全站跨模块导航（每个导航台底部都带，方便任意页面跳转）
@@ -129,6 +117,25 @@ export function workspaceDockConfig(
 // ───────────────────────────────────────────────
 // 2. 管理后台壳
 // ───────────────────────────────────────────────
+// 由模块注册表（src/config/adminRegistry.ts）数据驱动生成后台导航。
+// 新增 / 调整后台模块只需改注册表，这里不再写硬编码分组。
+function buildAdminSections(): NavSection[] {
+  const sections: NavSection[] = [];
+  for (const g of ADMIN_GROUP_ORDER) {
+    const mods = ADMIN_MODULES.filter((m) => m.group === g.key);
+    if (!mods.length) continue;
+    const items = mods.map((m) => ({
+      key: m.key,
+      label: m.comingSoon ? `${m.label}（建设中）` : m.label,
+      icon: m.icon,
+      path: m.path,
+      end: m.end,
+    }));
+    sections.push(g.title ? { title: g.title, items } : { items });
+  }
+  return sections;
+}
+
 export function adminDockConfig(userRole?: string): NavigationDockProps {
   return {
     storageKey: 'admin',
@@ -139,48 +146,8 @@ export function adminDockConfig(userRole?: string): NavigationDockProps {
     },
     showSearch: true,
     searchPlaceholder: '搜索管理项',
-    sections: [
-      {
-        items: [
-          { key: 'admin-console', label: '运营总控台', icon: LayoutDashboard, path: '/admin', end: true },
-          { key: 'admin-monitor', label: 'API 活动流', icon: Activity, path: '/admin/monitor' },
-          { key: 'admin-logs', label: '实时日志', icon: ScrollText, path: '/admin/logs' },
-          { key: 'admin-errors', label: '核心错误', icon: XCircle, path: '/admin/errors' },
-          { key: 'admin-monitoring', label: '全局监控', icon: Database, path: '/admin/monitoring' },
-        ],
-      },
-      {
-        title: '业务',
-        items: [
-          { key: 'admin-agents', label: '智能体层', icon: Bot, path: '/admin/agents' },
-          { key: 'admin-users', label: '用户管理', icon: Users, path: '/admin/users' },
-          { key: 'admin-samples', label: '示例库', icon: Library, path: '/admin/samples' },
-          { key: 'admin-reference-styles', label: '参考样式审核', icon: Palette, path: '/admin/reference-styles' },
-          { key: 'admin-models', label: '模型价格', icon: Cpu, path: '/admin/models' },
-        ],
-      },
-      {
-        title: '财务与电商',
-        items: [
-          { key: 'admin-finance', label: '账务中心', icon: Wallet, path: '/admin/finance' },
-          { key: 'admin-payment-settings', label: '支付设置', icon: CreditCard, path: '/admin/payment-settings' },
-          { key: 'admin-transactions', label: '积分流水', icon: Receipt, path: '/admin/transactions' },
-          { key: 'admin-skills', label: '技能注册', icon: Boxes, path: '/admin/skills' },
-          { key: 'admin-ecommerce', label: '电商后台', icon: Store, path: '/admin/ecommerce' },
-        ],
-      },
-      globalNavSection(userRole),
-    ],
-    bottomActions: [
-      {
-        key: 'tools',
-        label: '工具',
-        icon: Wrench,
-        children: [
-          { key: 'model-hub', label: '模型 Hub', icon: Settings2, path: '/model-hub' },
-        ],
-      },
-    ],
+    // 模型 Hub 已是供给侧一级入口，移除冗余的「工具」菜单
+    sections: [...buildAdminSections(), globalNavSection(userRole)],
   };
 }
 

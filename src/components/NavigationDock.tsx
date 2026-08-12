@@ -336,10 +336,17 @@ function DockBody({
   const [search, setSearch] = useState('');
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
 
-  const visibleSections = useMemo(
-    () => sections.map((s) => ({ ...s, items: filterVisible(s.items) })).filter((s) => s.items.length > 0),
-    [sections],
-  );
+  const visibleSections = useMemo(() => {
+    const q = searching ? search.trim().toLowerCase() : '';
+    return sections
+      .map((s) => {
+        const items = filterVisible(s.items).filter(
+          (i) => !q || (i.label || '').toLowerCase().includes(q),
+        );
+        return { ...s, items };
+      })
+      .filter((s) => s.items.length > 0);
+  }, [sections, searching, search]);
   const visibleBottom = useMemo(() => filterVisible(bottomActions || []), [bottomActions]);
 
   // 手风琴：同一时刻仅一个可折叠大类展开；默认展开标记为 defaultExpanded 的那个

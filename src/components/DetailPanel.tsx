@@ -21,6 +21,7 @@ import {
   UploadCloud,
   Loader2,
   X,
+  Clock,
 } from 'lucide-react';
 import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
@@ -57,18 +58,19 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
   const previewUrl = mediaUrl.url;
   const previewProbe = useImageProbe(mediaUrl.reason === 'oss' ? '' : mediaUrl.url, { timeoutMs: 4000 });
 
-  // ── pending 进度显示：父级传 progress 则用精确值, 否则自增到 95% (和左侧 MediaCard 保持一致) ──
+  // ── pending 真实等待计时：用 item.createdAt 计算实际已等待时间（不再显示虚假百分比）
   const isPending = item?.status === 'pending';
-  const [selfProgress, setSelfProgress] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
-    if (!isPending) return;
-    if (typeof item?.progress === 'number' && item.progress >= 100) return;
-    const tid = setInterval(() => {
-      setSelfProgress((prev) => (prev >= 95 ? prev : prev + 1));
-    }, 200);
+    if (!isPending || !item) return;
+    const start = new Date(item.createdAt).getTime();
+    const tick = () => setElapsed(Math.floor((Date.now() - start) / 1000));
+    tick();
+    const tid = setInterval(tick, 1000);
     return () => clearInterval(tid);
-  }, [isPending, item?.progress]);
-  const progressValue = typeof item?.progress === 'number' ? item.progress : selfProgress;
+  }, [isPending, item?.createdAt]);
+  const fmtElapsed = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  const isVideo = item?.type === 'video';
 
   // 复制成功后 2s 内变对号, 然后自动复位
   const flashCopied = () => {
@@ -349,13 +351,14 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
                     生成中
                   </div>
                   <div className="text-[10px] text-zinc-500">
-                    约 {Math.round(progressValue * 0.4)}s · {getModelDisplayNameByDisplayName(item.model) || item.model}
+                    已等待 {fmtElapsed(elapsed)} · {isVideo ? '视频生成预计 7-15 分钟' : (getModelDisplayNameByDisplayName(item.model) || item.model)}
                   </div>
                 </div>
 
-                {/* 右上角：百分比 */}
+                {/* 右上角：已等待时间（真实） */}
                 <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded-full bg-black/40 backdrop-blur-sm px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
-                  <span>{Math.min(99, Math.round(progressValue))}%</span>
+                  <Clock className="size-3" />
+                  <span>{fmtElapsed(elapsed)}</span>
                 </div>
 
                 {/* 右上角：取消按钮 */}
@@ -367,13 +370,10 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
                   <X className="size-3" />
                 </button>
 
-                {/* 底部进度条 */}
+                {/* 底部进度条：不确定进度（扫光动画），不再用虚假百分比 */}
                 <div className="absolute inset-x-0 bottom-0 z-20 p-2.5">
                   <div className="h-1 w-full overflow-hidden rounded-full bg-zinc-800/80">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-teal-400 transition-all duration-200 ease-out"
-                      style={{ width: `${progressValue}%` }}
-                    />
+                    <div className="h-full w-1/3 rounded-full bg-gradient-to-r from-emerald-500 via-emerald-400 to-teal-400 shimmer" />
                   </div>
                 </div>
               </div>

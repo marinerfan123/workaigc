@@ -4,7 +4,7 @@ import {
   BrainCircuit, HelpCircle,
 } from 'lucide-react';
 import {
-  apiGetModels, apiPatchModel, apiSaveModels, apiGetProviders, apiGetModelPriceHistory,
+  apiGetModels, apiPatchModel, apiAddModel, apiGetProviders, apiGetModelPriceHistory,
 } from '@/services/api';
 
 type ModelRow = {
@@ -164,10 +164,18 @@ export default function ModelPricePage() {
     const id = 'model-' + mid.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     setSubmitting(true);
     try {
-      await apiSaveModels([{
+      const payload = {
         id, modelId: mid, displayName: name, type: addForm.type,
         providerId: addForm.providerId || null, enabled: true, creditCost: cost,
-      }]);
+      };
+      // 单创建；若 id 已存在（后端 409）则取最新 revision 再 PATCH（沿用旧 upsert 语义）
+      let res = await apiAddModel(payload);
+      if (res && res.ok === false && /409/.test(res.error || '')) {
+        const all = await apiGetModels();
+        const ex = all.find((m) => m.id === id);
+        res = await apiPatchModel(id, { ...payload, revision: ex ? ex.revision : 1 });
+      }
+      if (!res || res.ok === false) throw new Error((res && res.error) || '添加失败');
       setAddForm({ modelId: '', displayName: '', type: 'image', providerId: '', creditCost: '' });
       setShowAdd(false);
       await load();

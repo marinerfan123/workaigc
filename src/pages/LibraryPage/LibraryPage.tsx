@@ -22,8 +22,9 @@ import { toast } from 'sonner';
 import MediaCard from '@/components/MediaCard';
 import ImageViewer from '@/components/ImageViewer';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
-import { apiGetMedia, apiSaveMedia, apiUpdateMedia, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiUpdateMedia, apiDeleteMedia, apiProxyFetch, ensureApi, stripBlobItems } from '@/services/api';
 import { useOssConfig } from '@/hooks/useOssConfig';
+import { useLayoutOutlet } from '@/components/Layout';
 
 const CATEGORY_LABELS: Record<string, { label: string; icon: typeof ImageIcon }> = {
   all: { label: '全部素材', icon: Grid3X3 },
@@ -51,6 +52,7 @@ export default function LibraryPage() {
   const [viewerIndex, setViewerIndex] = useState(0);
 
   const { enabled: ossEnabled, uploadFile: uploadToOss } = useOssConfig();
+  const { refreshMediaCounts } = useLayoutOutlet();
 
   const handleRetry = (item: IMediaItem) => {
     // 跳转到 WorkspacePage 并把 retryItem 通过 router state 传过去
@@ -183,6 +185,8 @@ export default function LibraryPage() {
       return prev.map((m) => (m.id === id ? { ...m, isDeleted: true } : m));
     });
     if (selectedId === id) setSelectedId(null);
+    // 真删后端（PG DELETE FROM media），并立刻刷新侧边栏分类计数
+    apiDeleteMedia(id).catch(() => {}).finally(() => refreshMediaCounts());
   };
 
   const toggleBatchSelect = (id: string) => {
@@ -194,7 +198,8 @@ export default function LibraryPage() {
     });
   };
 
-  const batchDelete = () => {
+  const batchDelete = async () => {
+    const ids = Array.from(selectedIds);
     setMediaList((prev) => {
       prev.forEach((m) => {
         if (selectedIds.has(m.id) && m.thumbnail?.startsWith('blob:')) {
@@ -203,9 +208,11 @@ export default function LibraryPage() {
       });
       return prev.map((m) => (selectedIds.has(m.id) ? { ...m, isDeleted: true } : m));
     });
-    const count = selectedIds.size;
     setSelectedIds(new Set());
-    toast.success(`已删除 ${count} 项`);
+    toast.success(`已删除 ${ids.length} 项`);
+    // 真删后端（逐条 DELETE），并立刻刷新侧边栏分类计数
+    await Promise.all(ids.map((id) => apiDeleteMedia(id).catch(() => {})));
+    refreshMediaCounts();
   };
 
   const batchFavorite = () => {

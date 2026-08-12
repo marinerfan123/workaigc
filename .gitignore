@@ -123,3 +123,29 @@ backups/
 refs/
 space-landing/
 check_cols.cjs
+
+# ===== safe-git 脚手架 / 临时索引（绝不入库） =====
+_mk/
+_mt/
+_mw/
+_plumbing_tmp/
+git_index_*
+tmp_index*
+plumb_*
+git_plumb_*
+_mk_*.cjs
+server/_tmp_*.cjs
+
+# ===== 凭据 / 会话（绝不入库） =====
+cookies.txt
+
+# ===== 备份与临时产物 =====
+*.bak
+
+# ===== AI 工具目录（按需；如有意入库请移除此条） =====
+.agents/
+.codex/
+
+# ===== 重构基线排除（2026-08-11）=====
+Toonflow-app/
+output/

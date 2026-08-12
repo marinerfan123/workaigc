@@ -11,7 +11,9 @@ import { useState, useEffect } from 'react';
 export function AdminLayout() {
   const { user, ready } = useAuth();
   const navigate = useNavigate();
-  const isAdmin = user?.role === 'admin';
+  // 与 RequireAdmin 口径对齐：admin 与 system(dev token) 均视为管理员，
+  // 否则 system 用户能过路由守卫却在壳层被判"无权限"（此前不一致）。
+  const isAdmin = user?.role === 'admin' || user?.role === 'system';
   const [mobileDockOpen, setMobileDockOpen] = useState(false);
 
   useEffect(() => {

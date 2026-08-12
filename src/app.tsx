@@ -10,6 +10,7 @@ import CharactersPage from '@/pages/CharactersPage/CharactersPage';
 import ModelHubPage from '@/pages/ModelHubPage/ModelHubPage';
 import ModelConsole from '@/pages/ModelConsole/ModelConsole';
 import ModelPricePage from '@/pages/Admin/ModelPricePage';
+import RoutingPage from '@/pages/Admin/RoutingPage';
 import AccountPage from '@/pages/AccountPage/AccountPage';
 import UserPage from '@/pages/UserPage/UserPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
@@ -35,6 +36,8 @@ import MonitoringPage from '@/pages/Admin/MonitoringPage';
 import MonitoringStandalonePage from '@/pages/Admin/MonitoringStandalonePage';
 import FinancePage from '@/pages/Admin/FinancePage';
 import PaymentSettingsPage from '@/pages/Admin/PaymentSettingsPage';
+import AdminPlaceholderPage from '@/pages/Admin/AdminPlaceholderPage';
+import LedgerPage from '@/pages/Admin/LedgerPage';
 
 // 创作工作室（M5 流水线）
 import { StudioLayout } from '@/components/layouts/StudioLayout';
@@ -128,6 +131,7 @@ export default function App() {
           <Route path="samples" element={<SamplesPage />} />
           <Route path="reference-styles" element={<ReferenceStylesReviewPage />} />
           <Route path="models" element={<ModelPricePage />} />
+          <Route path="routing" element={<RoutingPage />} />
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="ecommerce" element={<EcommerceAdminPage />} />
@@ -137,6 +141,12 @@ export default function App() {
           <Route path="logs" element={<LogsPage />} />
           <Route path="errors" element={<ErrorLogsPage />} />
           <Route path="monitoring" element={<MonitoringPage />} />
+          {/* 模块注册表中的建设中占位入口（对应长期架构的分期路线） */}
+          <Route path="settings" element={<AdminPlaceholderPage title="系统设置" note="站点配置、功能开关、维护模式、品牌等平台级设置聚合。" />} />
+          <Route path="storage" element={<AdminPlaceholderPage title="存储管理" note="OSS  bucket、CDN、配额与资产生命周期管理（oss_config 表已就绪）。" />} />
+          <Route path="ledger" element={<LedgerPage />} />
+          <Route path="recommend" element={<AdminPlaceholderPage title="推荐管理" note="排序、精选、个性化分发与搜索调权。" />} />
+          <Route path="studio" element={<AdminPlaceholderPage title="创作空间管理" note="项目 / 画布 / 流水线等创作空间的运维治理。" />} />
         </Route>
 
         {/* 全局监控独立弹出页（不走 AdminLayout，全屏单 tab 视图） */}

@@ -182,19 +182,44 @@ function normalizeVideoStatus(raw, _providerKey) {
 }
 
 // ─── 共享轮询循环：pollFn 返回 { status:'success'|'failed'|'pending', videoUrl?, error? } ───
-async function pollLoop({ intervalMs = 3000, timeoutMs = 5 * 60 * 1000, pollFn } = {}) {
+// 防僵尸安全线：默认 90 分钟。超时**不判失败**（成败只听生成端回复），改返 timeout 交由上层保留待复核。
+// isCancelled：可选取消信号回调。返回 true 时立即中止轮询、返回 { status:'canceled' }（不向 provider 继续轮询、不动计费）。
+async function pollLoop({ intervalMs = 3000, timeoutMs = 90 * 60 * 1000, pollFn, adaptive = false, startedAt = 0, isCancelled = null } = {}) {
   const deadline = Date.now() + timeoutMs;
+  const base = startedAt || Date.now();   // 持久化 startedAt（崩溃恢复接入时传入）→ 重启任务不重置密度；否则用本进程起点
+  const wasCancelled = () => typeof isCancelled === 'function' && isCancelled();
   while (Date.now() < deadline) {
-    await sleep(intervalMs);
+    // 取消信号①：sleep 前（最高频命中，用户取消后下一轮立即退出，避免白等一个 interval）
+    if (wasCancelled()) return { videoUrl: '', status: 'canceled', error: '用户已取消' };
+    // 自适应轮询密度（主流做法：前期密、后期疏，减少 provider 配额消耗与出网带宽）。
+    // 仅作用于后端→provider 层；前端层不随此变疏（前端只查 PG 主键，无 provider 压力）。
+    let iv = intervalMs;
+    if (adaptive) {
+      const elapsed = Date.now() - base;
+      if (elapsed < 60_000) iv = intervalMs;                              // 前 1 分钟：基线（5~10s）
+      else if (elapsed < 5 * 60_000) iv = Math.max(intervalMs, 15_000);   // 1~5 分钟：≥15s
+      else if (elapsed < 15 * 60_000) iv = Math.max(intervalMs, 30_000);  // 5~15 分钟：≥30s
+      else iv = Math.max(intervalMs, 60_000);                             // >15 分钟：60s 封顶
+    }
+    await sleep(iv);
+    // 取消信号②：sleep 后立即检查（避免刚睡完还去打 provider）
+    if (wasCancelled()) return { videoUrl: '', status: 'canceled', error: '用户已取消' };
     let r;
     try {
       r = await pollFn();
     } catch (e) {
       return { videoUrl: '', status: 'error', error: `轮询异常：${(e && e.message) || String(e)}`.slice(0, 160) };
     }
-    if (r && (r.status === 'success' || r.status === 'error')) return r;
+    // 取消信号③：拿到 provider 回复后再确认一次（防止取消瞬间恰好发出请求）
+    if (wasCancelled()) return { videoUrl: '', status: 'canceled', error: '用户已取消' };
+    // 成功 / 明确的生成端失败 / 瞬时异常 都立即返回（不让 pollLoop 继续空等）。
+    // 注意：'failed' 是 provider 任务 definitive 终态（failed/error/canceled），必须作为终态返回，
+    // 与瞬时 'error'（网络抖动/提交失败）区分——上层据此立即终态化、绝不切下一个账号空转。
+    if (r && (r.status === 'success' || r.status === 'error' || r.status === 'failed')) return r;
+    // r.status === 'pending' 或 'timeout' 都继续等生成端回复（不做时间判失败）
   }
-  return { videoUrl: '', status: 'error', error: '视频生成超时（5分钟）' };
+  // 超过安全线仍未拿到生成端终态：返回 timeout（**非** error），绝不判失败、不影响计费，上层保留任务待复核。
+  return { videoUrl: '', status: 'timeout', error: '等待生成端回复超过安全线（90分钟），任务保留待复核' };
 }
 
 module.exports = {

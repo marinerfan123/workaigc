@@ -199,8 +199,13 @@ export function useOssConfig() {
             error: `PUT HTTP ${putRes.status}${putRes.statusText ? ' ' + putRes.statusText : ''}${snippet ? `: ${snippet}` : ''}`,
           };
         }
-        // ③ 返回 7 天 GET 签名作为可访问 URL
-        return { success: true, url: sign.getUrl || '', objectKey: sign.objectKey || '', providerType: sign.providerType };
+        // ③ 返回永久公共地址（canonical）；若未配 customDomain/endpoint 则回退到 7 天预签 GET
+        const objKey = sign.objectKey || '';
+        const key = objKey.startsWith('/') ? objKey.slice(1) : objKey;
+        const domain = active?.customDomain || active?.endpointExternal;
+        const prefix = active?.pathPrefix || '';
+        const canonical = domain ? `https://${domain}/${prefix}${key}` : (sign.getUrl || '');
+        return { success: true, url: canonical, getUrl: sign.getUrl || '', objectKey: objKey, providerType: sign.providerType };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.error('[OSS] 直传异常:', e);

@@ -17,7 +17,8 @@ import { ICharacter } from '@/data/characters';
 import { useModelHub, getModelDisplayNameByDisplayName, getModelCreditCostByDisplayName } from '@/hooks/useModelHub';
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
-import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, apiProxyFetch, ensureApi, stripBlobItems, apiGetReferenceStyles } from '@/services/api';
+import { useLayoutOutlet } from '@/components/Layout';
+import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, apiProxyFetch, ensureApi, stripBlobItems, apiGetReferenceStyles, apiCancelGeneration } from '@/services/api';
 import type { Ratio, Quality, VideoMode } from '@/data/settings';
 import type { ReferenceStyle } from '@/services/api';
 
@@ -104,6 +105,7 @@ export default function WorkspacePage() {
   const [viewerIndex, setViewerIndex] = useState(0);
   const { getDefaultModel, models } = useModelHub();
   const { config: ossConfig, uploadFile: uploadToOss } = useOssConfig();
+  const { refreshMediaCounts } = useLayoutOutlet();
 
   // 强制推行的参考样式（工作台示例墙：仅 is_promoted 的样式出现在这里）
   const [promotedStyles, setPromotedStyles] = useState<ReferenceStyle[]>([]);
@@ -219,8 +221,18 @@ export default function WorkspacePage() {
 
   // 切换模型时校验分辨率：新模型若不支持当前 resolution，自动选第一个支持的
   const handleSettingsChange = (next: IGenerationSettings) => {
+    // 切换内容类型时，若当前模型不匹配新类型，自动切到该类型的默认模型（避免 video + gpt-image-2 的错位）
+    if (next.contentType !== settings.contentType) {
+      const stillValid = models.some(
+        (m) => (m.modelId === next.model || m.displayName === next.model) && m.type === next.contentType,
+      );
+      if (!stillValid) {
+        const defaultModel = getDefaultModel(next.contentType);
+        if (defaultModel) next = { ...next, model: defaultModel };
+      }
+    }
     if (next.model !== settings.model) {
-      const newModel = models.find((m) => m.displayName === next.model);
+      const newModel = models.find((m) => m.modelId === next.model || m.displayName === next.model);
       const supported = newModel?.supportedResolutions || [];
       if (next.contentType !== 'image' || supported.length === 0) {
         // 视频/文本/空支持列表 → 保留默认 1k 但前端按钮组不显示
@@ -321,6 +333,12 @@ export default function WorkspacePage() {
     setSelectedId(items[0]?.id ?? null);
   };
 
+  // 提交拿到后端 taskId 后，把 taskId 回写到对应 pending 占位（用于取消 / 对账）
+  const handlePendingAttachTaskId = (pendingIds: string[], taskId: string) => {
+    const idSet = new Set(pendingIds);
+    setMediaList((prev) => prev.map((m) => (idSet.has(m.id) ? { ...m, taskId } : m)));
+  };
+
   // 后端真正返图后：找到对应 pending id 替换为真图（pending → success/failed）
   // 关键容错（修复"钱扣了图丢了"）：若占位因超时/刷新未恢复而缺失，直接插入，绝不静默丢弃——
   // 因为后端 done 时已 commit 积分，丢图等于白扣钱。
@@ -361,6 +379,43 @@ export default function WorkspacePage() {
     setMediaList((prev) => prev.filter((m) => m.id !== id));
     apiDeleteMedia(id).catch((e) => console.warn('delete media failed:', e));
     if (selectedId === id) setSelectedId(null);
+    // 删除后立刻刷新侧边栏分类计数（避免数字滞后）
+    refreshMediaCounts();
+  };
+
+  // 取消在途生成任务：调后端释放 held 积分 + 移除 pending 卡片 + 清本地恢复记录
+  const handleCancel = async (item: IMediaItem) => {
+    if (!item.taskId) {
+      // 拿不到 taskId（异常）：仅本地移除，不调后端
+      setMediaList((prev) => prev.filter((m) => m.id !== item.id));
+      return;
+    }
+    // 乐观移除卡片（用户立即看到反馈），后端释放积分 + 推送 SSE canceled
+    setMediaList((prev) => prev.filter((m) => m.id !== item.id));
+    if (selectedId === item.id) setSelectedId(null);
+    // 清本地持久化恢复记录，避免刷新后幽灵 pending（GenerationBar 内部存储）
+    generationBarRef.current?.cancelPersistedTask(item.taskId);
+    try {
+      const r = await apiCancelGeneration(item.taskId);
+      if (!r.ok) {
+        toast.error(`取消失败：${r.error || '未知错误'}`);
+        console.warn('[cancel] 取消失败:', r);
+      }
+    } catch (e) {
+      console.warn('[cancel] 取消请求异常:', e);
+    }
+  };
+
+  // 远端取消（跨标签页 / 后端 SSE 推送 cancelled）：兜底移除仍在的 pending 卡片。
+  // 不重复调后端——取消方已释放 held 积分；此处只负责清掉本标签页残留的幽灵卡片。
+  const handleRemoteCancel = (pendingIds: string[]): boolean => {
+    const idSet = new Set(pendingIds);
+    const removed = mediaList.some((m) => idSet.has(m.id));
+    if (removed) {
+      setMediaList((prev) => prev.filter((m) => !idSet.has(m.id)));
+      if (selectedId && idSet.has(selectedId)) setSelectedId(null);
+    }
+    return removed;
   };
 
   const handleAddReference = (url: string) => {
@@ -579,6 +634,7 @@ export default function WorkspacePage() {
                     onOpenViewer={() => handleOpenViewer(index)}
                     onToggleFavorite={handleToggleFavorite}
                     onDelete={handleDelete}
+                    onCancel={handleCancel}
                     onAddAsReference={handleAddReference}
                     onUseRecipe={handleUseRecipe}
                     onRemix={handleRemix}
@@ -607,7 +663,9 @@ export default function WorkspacePage() {
               settings={settings}
               onSettingsChange={handleSettingsChange}
               onPendingCreate={handlePendingCreate}
+              onPendingAttachTaskId={handlePendingAttachTaskId}
               onGenerate={handleGenerate}
+              onRemoteCancel={handleRemoteCancel}
               referenceImages={referenceImages}
               onRemoveReference={handleRemoveReference}
               onAddReference={() => setPickerOpen(true)}

@@ -36,6 +36,7 @@ import { ReferenceStyleSelector } from '@/components/ReferenceStyleSelector';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig } from '@/hooks/useOssConfig';
+import { waitForTask } from '@/hooks/useGenerationStream';
 import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiTranslatePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus, type ReferenceStyle } from '@/services/api';
 import { refreshUser, setAuthModalOpen, useAuth } from '@/services/authStore';
 import { ALL_RESOLUTIONS, type Resolution, type IAiModel, type IModelParamTemplate, getEffectiveModelName } from '@/data/models';
@@ -213,8 +214,12 @@ interface GenerationBarProps {
   onSettingsChange: (s: IGenerationSettings) => void;
   /** 提交瞬间立刻回调：父级应立即在 mediaList 插入这些 pending 占位 */
   onPendingCreate: (items: IMediaItem[]) => void;
+  /** 提交拿到后端 taskId 后回调：把 taskId 回写到对应 pending 占位（用于取消 / 对账） */
+  onPendingAttachTaskId?: (pendingIds: string[], taskId: string) => void;
   /** 后端真正返图后回调：用真图替换对应 pending（按 id 匹配） */
   onGenerate: (item: IMediaItem) => void;
+  /** 任务进入 cancelled 终态且卡片仍残留时回调（跨标签页 / SSE 远端取消兜底移除）；返回是否确有卡片被移除 */
+  onRemoteCancel?: (pendingIds: string[]) => boolean;
   referenceImages: string[];
   onRemoveReference: (url: string) => void;
   onAddReference: () => void;
@@ -258,13 +263,17 @@ export interface GenerationBarHandle {
   focusInput: () => void;
   /** 配方预填 + 可选变体参考图（T1 配方复用 / T2 变体 Remix） */
   generate: (payload: GenerationPayload) => void;
+  /** 取消后在父级已移除卡片时，清掉本地的持久化恢复记录（避免刷新后幽灵 pending） */
+  cancelPersistedTask: (taskId: string) => void;
 }
 
 function GenerationBar({
   settings,
   onSettingsChange,
   onPendingCreate,
+  onPendingAttachTaskId,
   onGenerate,
+  onRemoteCancel,
   referenceImages,
   onRemoveReference,
   onAddReference,
@@ -320,9 +329,14 @@ function GenerationBar({
   const [agentPos, setAgentPos] = useState<{ top: number; left: number } | null>(null);
 
   // 滚动/缩放时自动关闭抽屉，避免触发按钮位置变了，portal 的固定坐标还在原处
+  // 注意：弹窗内部滚动（.generationbar-portal 内）不应关闭弹窗，否则下拉列表一滚就消失。
   useEffect(() => {
     if (!settingsOpen && !modelMenuOpen && !agentOpen) return;
-    const onScrollOrResize = () => { setSettingsOpen(false); setModelMenuOpen(false); setAgentOpen(false); };
+    const onScrollOrResize = (e: Event) => {
+      const target = e.target;
+      if (target instanceof Element && target.closest('.generationbar-portal')) return;
+      setSettingsOpen(false); setModelMenuOpen(false); setAgentOpen(false);
+    };
     window.addEventListener('scroll', onScrollOrResize, true);
     window.addEventListener('resize', onScrollOrResize);
     return () => {
@@ -499,77 +513,98 @@ function GenerationBar({
     if (pendingItemsToRestore && pendingItemsToRestore.length > 0) {
       onPendingCreate(pendingItemsToRestore);
     }
-    const MAX_POLLS = 90; // 90 * 2s = 3 分钟
-    for (let i = 0; i < MAX_POLLS; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
-      const st = await apiGetGenerationStatus(taskId);
-      if (st.status === 'done' && st.result) {
-        const imgs = (st.result.images || []).filter(Boolean);
-        if (imgs.length > 0) {
-          await processResultImages(imgs, pendingIds, ctx);
-          toast.success(`生成完成 · ${imgs.length} 张`, { duration: 2500 });
-        } else if (ctx.contentType === 'video' && (st.result as { videoUrl?: string }).videoUrl) {
-          // 视频：直接以服务商 URL 落库（视频不重传 OSS，按存储铁律只存地址索引）—— 与图片流程对等
-          const videoUrl = (st.result as { videoUrl?: string }).videoUrl as string;
-          const finalItem: IMediaItem = {
-            id: pendingIds[0],
-            title: ctx.prompt.slice(0, 20) || '视频生成',
-            type: 'video',
-            thumbnail: videoUrl,
-            fullUrl: videoUrl,
-            prompt: ctx.prompt,
-            model: ctx.model,
-            ratio: ctx.ratio,
-            createdAt: new Date().toISOString(),
-            isFavorite: false,
-            isDeleted: false,
-            source: 'user',
-            ossUploaded: false,
-            progress: 100,
-            characterId: characterIdRef.current,
-            referenceStyleId: ctx.referenceStyleId || undefined,
-            creditCost: typeof ctx.creditCost === 'number' ? ctx.creditCost : undefined,
-          };
-          onGenerate(finalItem);
-          toast.success('视频生成完成', { duration: 2500 });
-        } else {
-          // 任务完成但无结果：按失败处理
-          markPendingAsFailed(pendingIds, st.error || '生成结果为空');
-        }
-        removePersistedTask(taskId);
-        return;
+    // 图片一般几十秒出；视频成败以服务商回复为准（实测 7~15 分钟甚至更久）。
+    // 主流做法：SSE 实时通道（/api/generate/stream）近实时推送终态，替代固定 2s 轮询；
+    // 内置 3s 轮询兜底，SSE 异常也不影响完成判定（生成完成是关键路径，不可赌）。
+    // 视频保留 ~95min 安全线（含后端 90min 安全线余量），图片 ~3.5min；超时仍非终态则保留 pending，绝不误判失败。
+    const isVideo = ctx.contentType === 'video';
+    const timeoutMs = isVideo ? 95 * 60 * 1000 : 3.5 * 60 * 1000;
+    const final = await waitForTask(taskId, { timeoutMs });
+    if (final.status === 'done' && final.result) {
+      const imgs = (final.result.images || []).filter(Boolean);
+      if (imgs.length > 0) {
+        await processResultImages(imgs, pendingIds, ctx);
+        toast.success(`生成完成 · ${imgs.length} 张`, { duration: 2500 });
+      } else if (ctx.contentType === 'video' && (final.result as { videoUrl?: string }).videoUrl) {
+        // 视频：直接以服务商 URL 落库（视频不重传 OSS，按存储铁律只存地址索引）—— 与图片流程对等
+        const videoUrl = (final.result as { videoUrl?: string }).videoUrl as string;
+        const finalItem: IMediaItem = {
+          id: pendingIds[0],
+          title: ctx.prompt.slice(0, 20) || '视频生成',
+          type: 'video',
+          thumbnail: videoUrl,
+          fullUrl: videoUrl,
+          prompt: ctx.prompt,
+          model: ctx.model,
+          ratio: ctx.ratio,
+          createdAt: new Date().toISOString(),
+          isFavorite: false,
+          isDeleted: false,
+          source: 'user',
+          ossUploaded: false,
+          progress: 100,
+          characterId: characterIdRef.current,
+          referenceStyleId: ctx.referenceStyleId || undefined,
+          creditCost: typeof ctx.creditCost === 'number' ? ctx.creditCost : undefined,
+        };
+        onGenerate(finalItem);
+        toast.success('视频生成完成', { duration: 2500 });
+      } else {
+        // 任务完成但无结果：按失败处理
+        markPendingAsFailed(pendingIds, final.error || '生成结果为空', ctx);
       }
-      if (st.status === 'failed') {
-        markPendingAsFailed(pendingIds, st.error || '生成失败');
-        removePersistedTask(taskId);
-        return;
-      }
-      if (st.status === 'not_found') {
-        // 后端清掉了（重启/超期），按失败处理
-        markPendingAsFailed(pendingIds, '任务已被服务端清理');
-        removePersistedTask(taskId);
-        return;
-      }
-      // running/unknown：继续轮询
+      removePersistedTask(taskId);
+      return;
     }
-    // 轮询超时（3 分钟还没完成）
-    markPendingAsFailed(pendingIds, '轮询超时（3 分钟未完成），请到「模型 Hub」查看服务商状态');
-    removePersistedTask(taskId);
+    if (final.status === 'failed') {
+      markPendingAsFailed(pendingIds, final.error || '生成失败', ctx);
+      removePersistedTask(taskId);
+      return;
+    }
+    if (final.status === 'not_found') {
+      // 后端清掉了（重启/超期），按失败处理
+      markPendingAsFailed(pendingIds, '任务已被服务端清理', ctx);
+      removePersistedTask(taskId);
+      return;
+    }
+    if (final.status === 'cancelled') {
+      // 用户主动取消：后端已释放 held 积分并标记 canceled。
+      // 本标签页点取消按钮时卡片已被 WorkspacePage.handleCancel 即时移除；
+      // 若取消来自其它标签页 / 后端 SSE 远端取消，此处兜底移除仍在的卡片，避免幽灵 pending 残留。
+      removePersistedTask(taskId);
+      const removed = onRemoteCancel?.(pendingIds) ?? false;
+      if (removed) toast.info('生成任务已取消');
+      return;
+    }
+    // 到达安全线仍未拿到终态（running/waiting/unknown）：保留 pending 显示「生成中·等待服务商回复」，绝不误判失败。
+    // 成败只听服务端/生成端回复；视频服务商慢（7~15 分钟甚至更久）属正常，不 removePersistedTask 以便后端结果到达后落地。
+    // 不调用 markPendingAsFailed：避免把仍在生成的任务误标失败、让用户误以为生成失败。
   };
 
   // 把一组 pendingIds 标为 failed 状态（不删，让用户能看到失败占位以便重试）
-  const markPendingAsFailed = (pendingIds: string[], errorMessage: string) => {
+  // 标为失败：默认用「当前输入状态」(首次提交即失败时本就正确)；
+  // 恢复路径(刷新/跨标签页)传入 meta，避免把失败卡片标成当前输入框的 prompt/model/ratio。
+  const markPendingAsFailed = (
+    pendingIds: string[],
+    errorMessage: string,
+    meta?: { prompt?: string; model?: string; ratio?: string; contentType?: 'image' | 'video' | 'audio' },
+  ) => {
     const friendly = friendlyGenerateError(errorMessage, currentRateLimit);
+    const title = (meta?.prompt ?? promptText).slice(0, 20) || '生成失败';
+    const prompt = meta?.prompt ?? promptText;
+    const model = meta?.model ?? settings.model;
+    const ratio = meta?.ratio ?? settings.ratio;
+    const type = meta?.contentType ?? settings.contentType;
     for (const pid of pendingIds) {
       onGenerate({
         id: pid,
-        title: promptText.slice(0, 20) || '生成失败',
-        type: settings.contentType,
+        title,
+        type,
         thumbnail: '',
         fullUrl: '',
-        prompt: promptText,
-        model: settings.model,
-        ratio: settings.ratio,
+        prompt,
+        model,
+        ratio,
         createdAt: new Date().toISOString(),
         isFavorite: false,
         isDeleted: false,
@@ -616,15 +651,23 @@ function GenerationBar({
         });
       }, 120);
     },
+    cancelPersistedTask: (taskId: string) => {
+      // 父级已移除 pending 卡片后，清掉本地恢复记录（与轮询 cancel 分支一致）
+      removePersistedTask(taskId);
+    },
   }), []);
 
-  // 当前选中模型（按 dispatch 存储键 displayName 匹配）
-  const currentModel = models.find((m) => m.displayName === settings.model);
+  // 当前选中模型（Phase 1：优先按 modelId 匹配，兼容旧 localStorage 残留的 displayName）
+  const currentModel = models.find(
+    (m) => m.modelId === settings.model || m.displayName === settings.model,
+  );
 
   // 类型切换 + 模型列表变化时，自动校准默认模型
   useEffect(() => {
     const exists = models.some(
-      (m) => m.displayName === settings.model && m.type === settings.contentType,
+      (m) =>
+        (m.modelId === settings.model || m.displayName === settings.model) &&
+        m.type === settings.contentType,
     );
     if (exists) return;
     // 当前模型不可用（被删除/禁用/类型不匹配）→ 切到第一个可用的后台模型
@@ -1053,8 +1096,11 @@ function GenerationBar({
         idempotencyKey = 'idem-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
       }
       try {
+        // Phase 1：优先传 modelId（canonical 机器标识），同时保留 model（展示名）兼容旧后端
+        const displayName = currentModel?.displayName || settings.model;
         const r = await apiGenerate({
-          model: settings.model,
+          modelId: settings.model,
+          model: displayName,
           prompt: promptText,
           ratio: settings.ratio,
           resolution: settings.resolution || '1k',
@@ -1085,8 +1131,7 @@ function GenerationBar({
             setLimitDialog({ open: true, title: info.title, message: info.message, reason: (r.code === 'NEED_RECHARGE' ? 'NEED_RECHARGE' : 'INSUFFICIENT') });
             return;
           }
-          toast.error(friendlyGenerateError(err, currentRateLimit));
-          fillMockItems(pendingIds);
+          markPendingAsFailed(pendingIds, friendlyGenerateError(err, currentRateLimit));
           return;
         }
 
@@ -1094,6 +1139,8 @@ function GenerationBar({
         if ('taskId' in r && r.taskId && r.status === 'pending') {
           // 扣费已发生，刷新顶部积分显示
           void refreshUser().catch(() => {});
+          // 把 taskId 回写到 mediaList 上的 pending 占位（用于取消 / 对账）
+          onPendingAttachTaskId?.(pendingIds, r.taskId as string);
           // 写 localStorage 持久化，刷新后由下方 useEffect 续上
           appendPersistedTask({
             taskId: r.taskId,
@@ -1232,6 +1279,7 @@ function GenerationBar({
             isDeleted: false,
             source: 'user',
             status: 'pending',
+            taskId: t.taskId,
           }));
           if (pendingItems.length === 0) continue;
           const pendingIds = pendingItems.map((p) => p.id);
@@ -1517,7 +1565,7 @@ function GenerationBar({
                     onClick={() => setSettingsOpen(false)}
                   />
                   <div
-                    className="fixed z-[9999] w-80 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl shadow-black/60"
+                    className="generationbar-portal fixed z-[9999] w-80 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl shadow-black/60"
                     style={{
                       bottom: `${window.innerHeight - settingsPos.top + 8}px`,
                       left: settingsPos.left,
@@ -1549,7 +1597,8 @@ function GenerationBar({
                             return (
                               <button
                                 key={q}
-                                onClick={() => { onSettingsChange({ ...settings, quality: q }); closeSettingsAndFocus(); }}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, quality: q }); closeSettingsAndFocus(); }}
                                 className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                   settings.quality === q
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1575,7 +1624,8 @@ function GenerationBar({
                             {availableResolutions.map((res) => (
                               <button
                                 key={res}
-                                onClick={() => { onSettingsChange({ ...settings, resolution: res }); closeSettingsAndFocus(); }}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, resolution: res }); closeSettingsAndFocus(); }}
                                 className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                   (settings.resolution || '1k') === res
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1602,7 +1652,8 @@ function GenerationBar({
                             {template.videoModes.map((m) => (
                               <button
                                 key={m}
-                                onClick={() => { changeVideoMode(m); closeSettingsAndFocus(); }}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={(e) => { e.stopPropagation(); changeVideoMode(m); closeSettingsAndFocus(); }}
                                 className={`rounded-xl px-2 py-2 text-[11px] font-medium transition-all duration-200 ${
                                   effectiveVideoMode === m
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1638,7 +1689,8 @@ function GenerationBar({
                           {(template.ratios || []).map((r) => (
                           <button
                             key={r}
-                            onClick={() => { onSettingsChange({ ...settings, ratio: r as Ratio }); closeSettingsAndFocus(); }}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, ratio: r as Ratio }); closeSettingsAndFocus(); }}
                               className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                 settings.ratio === r
                                   ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1665,7 +1717,8 @@ function GenerationBar({
                               return (
                               <button
                                 key={res}
-                                onClick={() => { onSettingsChange({ ...settings, resolution: res }); closeSettingsAndFocus(); }}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, resolution: res }); closeSettingsAndFocus(); }}
                                   className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                     activeRes === res
                                       ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1695,7 +1748,8 @@ function GenerationBar({
                             {template.durations.map((d) => (
                               <button
                                 key={d}
-                                onClick={() => { onSettingsChange({ ...settings, duration: d }); closeSettingsAndFocus(); }}
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, duration: d }); closeSettingsAndFocus(); }}
                                 className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                   (settings.duration ?? 6) === d
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1709,6 +1763,15 @@ function GenerationBar({
                         </div>
                       </>
                     )}
+                    {/* 完成按钮：选项点击后弹窗保持打开，用户点这里或遮罩关闭 */}
+                    <div className="border-t border-zinc-800 p-3">
+                      <button
+                        onClick={() => closeSettingsAndFocus()}
+                        className="w-full rounded-xl bg-emerald-500/15 py-2 text-xs font-medium text-emerald-400 ring-1 ring-emerald-500/30 hover:bg-emerald-500/25 transition-colors"
+                      >
+                        完成
+                      </button>
+                    </div>
                   </div>
                 </>,
                 document.body,
@@ -1730,8 +1793,8 @@ function GenerationBar({
                 <span className="max-w-[140px] truncate font-medium">
                   {currentModelLabel}
                 </span>
-                {/* 赠送价徽章：支持赠送余额的模型额外显示（emerald），直观告知"可用赠送积分" */}
-                {currentModel && modelSupportsReward(currentModel) && (
+                {/* 双池价格徽章：根据模型支持情况显示「赠送 / 充值 / 免费」 */}
+                {currentModel && modelSupportsReward(currentModel) && modelRewardPrice(currentModel) > 0 && (
                   <span
                     className="shrink-0 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold"
                     title={`支持赠送余额：单次生成需 ${modelRewardPrice(currentModel)} 赠送积分（全局优先扣赠送）`}
@@ -1739,12 +1802,12 @@ function GenerationBar({
                     赠 {modelRewardPrice(currentModel)}
                   </span>
                 )}
-                {/* 充值价徽章：始终显示，0 时显示「免费」灰色徽章, >0 时显示 amber 徽章 */}
-                {currentModel && typeof currentModel.creditCost === 'number' && currentModel.creditCost > 0 ? (
+                {currentModel && (currentModel.creditCost || 0) > 0 && (
                   <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold" title="充值价（真钱充值余额抵扣）">
                     {currentModel.creditCost} 积分
                   </span>
-                ) : (
+                )}
+                {currentModel && (currentModel.creditCost || 0) === 0 && (!modelSupportsReward(currentModel) || modelRewardPrice(currentModel) === 0) && (
                   <span className="shrink-0 rounded-full bg-zinc-700/40 text-zinc-500 border border-zinc-700/50 px-1.5 py-0.5 text-[9px] font-medium">
                     免费
                   </span>
@@ -1808,7 +1871,7 @@ function GenerationBar({
                     onClick={() => { setModelMenuOpen(false); setModelSearch(''); }}
                   />
                   <div
-                    className="fixed z-[9999] w-72 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl"
+                    className="generationbar-portal fixed z-[9999] w-72 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl"
                     style={{
                       bottom: `${window.innerHeight - modelPos.top + 8}px`,
                       left: modelPos.left,
@@ -1831,38 +1894,40 @@ function GenerationBar({
                     </div>
 
                     {/* 模型列表 */}
-                    <div className="max-h-72 overflow-y-auto p-1.5">
+                    <div className="max-h-72 overflow-y-auto p-1.5 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
                       {groupedModels.length === 0 ? (
                         <div className="py-6 text-center text-xs text-zinc-600">
                           暂无可用模型
                         </div>
                       ) : (
                         groupedModels.map((g) => {
-                          const active = settings.model === g.displayName;
+                          const active = settings.model === g.modelId || settings.model === g.displayName;
                           return (
-                            <button
-                              key={g.modelId}
-                              onClick={() => {
-                                onSettingsChange({ ...settings, model: g.displayName });
-                                closeModelMenuAndFocus();
-                              }}
-                              className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-200 ${
+                          <button
+                            key={g.modelId}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              // Phase 1：存储键改为 canonical modelId（展示仍走 getEffectiveModelName）
+                              onSettingsChange({ ...settings, model: g.modelId });
+                              closeModelMenuAndFocus();
+                            }}
+                            className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-xs transition-all duration-200 ${
                                 active
                                   ? 'bg-emerald-500/10 text-emerald-400 font-medium'
                                   : 'text-zinc-300 hover:bg-zinc-800/50'
                               }`}
                             >
                               <span className="flex-1 truncate">{getEffectiveModelName(g) || g.displayName}</span>
-                              {/* 赠送价徽章：支持赠送余额的模型显示（emerald） */}
-                              {modelSupportsReward(g) && (
+                              {/* 双池价格徽章：根据模型支持情况显示「赠送 / 充值 / 免费」 */}
+                              {modelSupportsReward(g) && modelRewardPrice(g) > 0 && (
                                 <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
                                   active ? 'bg-emerald-400/15 text-emerald-300' : 'bg-emerald-500/10 text-emerald-400'
                                 }`} title={`支持赠送余额：需 ${modelRewardPrice(g)} 赠送积分`}>
                                   赠 {modelRewardPrice(g)}
                                 </span>
                               )}
-                              {/* 充值价徽章：始终显示（0 → 免费灰色, >0 → amber） */}
-                              {typeof g.creditCost === 'number' && g.creditCost > 0 ? (
+                              {(g.creditCost || 0) > 0 && (
                                 <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
                                   active
                                     ? 'bg-amber-400/15 text-amber-300'
@@ -1870,7 +1935,8 @@ function GenerationBar({
                                 }`}>
                                   {g.creditCost} 积分
                                 </span>
-                              ) : (
+                              )}
+                              {(g.creditCost || 0) === 0 && (!modelSupportsReward(g) || modelRewardPrice(g) === 0) && (
                                 <span className="shrink-0 rounded-full bg-zinc-800 text-zinc-500 px-1.5 py-0.5 text-[9px] font-medium">
                                   免费
                                 </span>
@@ -2069,7 +2135,7 @@ function GenerationBar({
                   onClick={() => setAgentOpen(false)}
                 />
                 <div
-                  className="fixed z-[9999] w-72 overflow-hidden rounded-[1.5rem] bg-zinc-950 border border-zinc-800 p-2 shadow-2xl shadow-black/60"
+                  className="generationbar-portal fixed z-[9999] w-72 overflow-hidden rounded-[1.5rem] bg-zinc-950 border border-zinc-800 p-2 shadow-2xl shadow-black/60"
                   style={{
                     bottom: `${window.innerHeight - agentPos.top + 8}px`,
                     left: agentPos.left,

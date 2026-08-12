@@ -101,8 +101,15 @@ export async function apiGetMediaCounts(): Promise<MediaCounts | null> {
 export async function apiGetProviders(): Promise<any[]> {
   try { return await apiFetch('/api/providers'); } catch { return []; }
 }
-export async function apiSaveProviders(items: any[]) {
-  try { await apiFetch('/api/providers', { method: 'POST', body: JSON.stringify(items) }); } catch {}
+/** 单条创建服务商（RESTful POST /api/providers）。已存在 → 后端 409，返回 {ok:false} */
+export async function apiAddProvider(p: any): Promise<{ ok?: boolean; id?: string; revision?: number; error?: string }> {
+  try { return await apiFetch('/api/providers', { method: 'POST', body: JSON.stringify(p) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) }; }
+}
+/** 单条局部更新服务商 + 乐观锁（PATCH /api/providers/:id，需带 revision）。冲突 → 后端 409 */
+export async function apiPatchProvider(id: string, patch: Record<string, any>): Promise<{ ok?: boolean; provider?: any; revision?: number; error?: string }> {
+  try { return await apiFetch(`/api/providers/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) }; }
 }
 export async function apiDeleteProvider(id: string): Promise<void> {
   await apiFetch(`/api/providers/${id}`, { method: 'DELETE' });
@@ -120,15 +127,17 @@ export async function apiSetProviderCooldown(id: string, state: string | null, c
 export async function apiGetModels(): Promise<any[]> {
   try { return await apiFetch('/api/models'); } catch { return []; }
 }
-export async function apiSaveModels(items: any[]) {
-  try { await apiFetch('/api/models', { method: 'POST', body: JSON.stringify(items) }); } catch {}
+/** 单条创建模型（RESTful POST /api/models）。已存在 → 后端 409，返回 {ok:false} */
+export async function apiAddModel(m: any): Promise<{ ok?: boolean; id?: string; revision?: number; error?: string }> {
+  try { return await apiFetch('/api/models', { method: 'POST', body: JSON.stringify(m) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) }; }
 }
 export async function apiDeleteModel(id: string) {
   try { await apiFetch(`/api/models/${id}`, { method: 'DELETE' }); } catch {}
 }
-/** 单模型局部更新（管理员）：传任意可编辑字段子集，后端 PATCH 仅更新传入列 */
+/** 单模型局部更新（管理员）：传任意可编辑字段子集，后端 PATCH 仅更新传入列 + 乐观锁 */
 export async function apiPatchModel(id: string, patch: Record<string, any>) {
-  try { return await apiFetch(`/api/models/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }); } catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) }; }
+  try { return await apiFetch(`/api/models/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }); } catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) }; }
 }
 
 export interface ModelPriceHistory {
@@ -172,6 +181,52 @@ export async function apiGetSettings(): Promise<any> {
 }
 export async function apiSaveSettings(settings: Record<string, any>) {
   try { await apiFetch('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }); } catch {}
+}
+
+// ─── 智能路由（ModelHub V3）：决策解释 / kill-switch / 权重 ──────────────────
+export interface RoutingCandidate {
+  bindingId: string;
+  modelId: string;
+  providerId: string;
+  score: number;
+  components: Record<string, number>;
+  raw: Record<string, any>;
+  gate: Record<string, any>;
+  reasons: string[];
+}
+export interface RoutingRejected {
+  bindingId: string;
+  modelId: string;
+  providerId: string;
+  rejectedAt: string;
+  rejectReason: string;
+  gate: Record<string, any>;
+}
+export interface RoutingDecision {
+  model: string;
+  resolvedIds: string[];
+  pairs: number;
+  weights: Record<string, number>;
+  gateOrder: string[];
+  chosen: RoutingCandidate | null;
+  ranking: RoutingCandidate[];
+  rejected: RoutingRejected[];
+  metricsBindings: number;
+  seed: number;
+  note?: string;
+}
+
+/** 后台「决策解释」面板：给定 model + 内容类型 + 种子，返回确定性路由的完整可解释决策 */
+export async function apiAdminRoutingDecide(params: { model: string; contentType?: string; seed?: number }): Promise<RoutingDecision | null> {
+  try {
+    const q = new URLSearchParams();
+    q.set('model', params.model);
+    if (params.contentType) q.set('contentType', params.contentType);
+    if (typeof params.seed === 'number' && Number.isFinite(params.seed)) q.set('seed', String(params.seed));
+    return await apiFetch<RoutingDecision>(`/api/admin/routing/decide?${q.toString()}`);
+  } catch {
+    return null;
+  }
 }
 
 // ─── OSS（多槽位 + 总开关） ────────────────────────────────────────
@@ -440,7 +495,8 @@ export type GenerateResponse =
   | { status: 'success' | 'failed'; taskId?: string; images?: string[]; error?: string; source?: string; usedProviders?: string[]; code?: string };
 
 export async function apiGenerate(payload: {
-  model: string;
+  model: string;          // 展示名 / 遗留 identity（兼容旧客户端）；新客户端应与 modelId 一并传递
+  modelId?: string;       // ModelHub V3 Phase 1：canonical 机器运行标识（优先）；缺省时后端回退 model
   prompt: string;
   ratio?: string;
   resolution?: string;
@@ -487,6 +543,26 @@ export async function apiGetGenerationStatus(taskId: string): Promise<{
     return await apiFetch(`/api/generate/status/${encodeURIComponent(taskId)}`);
   } catch (e) {
     return { taskId, status: 'unknown', error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// 取消在途生成任务（释放 held 积分 + 标记 canceled + 推送 SSE canceled）。
+// 成功返回 { ok:true }；已结束/不存在/越权由后端以非 2xx 返回 { ok:false, error, code }。
+export async function apiCancelGeneration(taskId: string): Promise<{ ok: boolean; error?: string; code?: number }> {
+  try {
+    const r = await apiFetch<{ ok: boolean; error?: string; code?: number }>(`/api/generate/cancel/${encodeURIComponent(taskId)}`, { method: 'POST' });
+    return { ok: !!(r && r.ok), error: r?.error, code: r?.code };
+  } catch (e) {
+    // apiFetch 非 2xx 时 throw，message 形如 "API 409: {...json...}"
+    const msg = (e instanceof Error ? e.message : String(e)) || '';
+    const idx = msg.indexOf('{');
+    if (idx >= 0) {
+      try {
+        const parsed = JSON.parse(msg.slice(idx));
+        return { ok: false, error: parsed.error, code: parsed.code };
+      } catch { /* 解析失败退回原文 */ }
+    }
+    return { ok: false, error: msg.slice(0, 200) };
   }
 }
 
@@ -608,6 +684,21 @@ export async function apiTranslatePrompt(
 export async function apiSyncProviderModels(id: string): Promise<{ success: boolean; models?: Array<{ id: string; name: string }>; message?: string }> {
   try {
     return await apiFetch(`/api/providers/${id}/sync`, { method: 'POST' });
+  } catch (e) {
+    return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
+  }
+}
+
+// ─── 预览/列模型（未保存的服务商配置）：后端代理，避免前端持有真实 Key 直连服务商 ───
+// 用于「添加服务商」向导：表单里的 baseUrl+apiKey 发给本站后端，由后端代为请求服务商 /models。
+export async function apiPreviewProviderModels(cfg: {
+  baseUrl: string;
+  apiKey: string;
+  protocol?: 'openai-compatible' | 'custom';
+  listModels?: Record<string, unknown>;
+}): Promise<{ success: boolean; models?: Array<{ id: string; name: string }>; message?: string }> {
+  try {
+    return await apiFetch('/api/providers/preview-models', { method: 'POST', body: JSON.stringify(cfg) });
   } catch (e) {
     return { success: false, message: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
   }
@@ -982,6 +1073,21 @@ export async function apiAdminFinanceReconcile(): Promise<{ checkedAt: number; c
 }
 export async function apiAdminFinanceLedger(userId: string): Promise<any | null> {
   try { return await apiFetch(`/api/admin/finance/users/${encodeURIComponent(userId)}/ledger`); } catch { return null; }
+}
+// 双边盈亏看板：后台成本 vs 客户收费 = 平台盈亏（consumption_ledger 聚合）
+export async function apiAdminLedgerSummary(): Promise<{
+  ok: boolean;
+  total: { backendCostCents: number; customerChargeCents: number; marginCents: number };
+  byScopePurpose: Array<{
+    scope: string;
+    purpose: string;
+    calls: number;
+    sum_backend: number;
+    sum_customer: number;
+    sum_margin: number;
+  }>;
+} | null> {
+  try { return await apiFetch('/api/admin/ledger/summary'); } catch { return null; }
 }
 export async function apiAdminFinancePackages(): Promise<{ items: TopupPackage[] }> {
   try { return await apiFetch('/api/admin/finance/topup-packages'); } catch { return { items: [] }; }

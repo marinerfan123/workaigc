@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { apiGetModels, apiGenerate, apiGetGenerationStatus } from '../../services/api';
+import { apiGetModels, apiGenerate, apiGetGenerationStatus, apiSaveMedia } from '../../services/api';
 import { getEffectiveModelName, type IAiModel, type IModelParamTemplate } from '../../data/models';
+import { useOssConfig } from '@/hooks/useOssConfig';
 
 type ModelRow = IAiModel & {
   paramTemplate?: IModelParamTemplate & {
@@ -129,6 +130,71 @@ export default function ModelConsole() {
   const isVideo = selected?.type === 'video';
   const isText = selected?.type === 'text';
 
+  // OSS 直传（与 GenerationBar 同套）：开启后生成结果上传 OSS，链接变成永久 https 地址
+  const { config: ossConfig, uploadFile } = useOssConfig();
+
+  // 生成结果落库：开启 OSS 则先上传拿永久地址，再写 media；关闭则保留原始链接（data URI / 服务商临时 URL）
+  const persistResults = useCallback(
+    async (imgs: string[], prompt: string, modelName: string): Promise<string[]> => {
+      const saved: any[] = [];
+      const out: string[] = [];
+      for (let i = 0; i < imgs.length; i++) {
+        const src = imgs[i];
+        let persistentUrl = src;
+        let ossUrl = '';
+        let ossObjectKey = '';
+        let ossUploaded = false;
+        try {
+          if (ossConfig.enabled && (src.startsWith('data:') || src.startsWith('http'))) {
+            let file: File;
+            if (src.startsWith('data:')) {
+              const [meta, b64] = src.split(',');
+              const mimeMatch = meta.match(/data:([^;]*);base64/);
+              const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+              const byteChars = atob(b64);
+              const arr = new Uint8Array(byteChars.length);
+              for (let k = 0; k < byteChars.length; k++) arr[k] = byteChars.charCodeAt(k);
+              file = new File([arr], `mc-${Date.now()}-${i}.jpg`, { type: mime });
+            } else {
+              const r = await fetch(src);
+              file = new File([await r.blob()], `mc-${Date.now()}-${i}.jpg`, { type: 'image/jpeg' });
+            }
+            const up = await uploadFile(file, `mc-${Date.now()}-${i}.jpg`);
+            if (up.success && up.url) {
+              persistentUrl = up.url;
+              ossUrl = up.url;
+              ossObjectKey = up.objectKey;
+              ossUploaded = true;
+            }
+          }
+        } catch {
+          /* 上传失败保留原始链接 */
+        }
+        out.push(persistentUrl);
+        saved.push({
+          id: `mc-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+          title: prompt.slice(0, 20) || '控制台生成',
+          type: isVideo ? 'video' : 'image',
+          thumbnail: persistentUrl,
+          fullUrl: persistentUrl,
+          prompt,
+          model: modelName,
+          ratio: form?.ratio || '1:1',
+          source: 'user',
+          ossUrl,
+          ossObjectKey,
+          ossUploaded,
+          createdAt: new Date().toISOString(),
+        });
+      }
+      if (saved.length) {
+        try { await apiSaveMedia(saved); } catch { /* 落库失败不阻塞前端展示 */ }
+      }
+      return out;
+    },
+    [ossConfig, uploadFile, isVideo, form],
+  );
+
   const update = (patch: Partial<FormState>) => setForm((f) => (f ? { ...f, ...patch } : f));
 
   const refArray = useMemo(
@@ -184,7 +250,8 @@ export default function ModelConsole() {
       // 老同步通道
       const imgs = (resp as { images?: string[] }).images || [];
       if (imgs.length) {
-        setResult({ images: imgs });
+        const urls = await persistResults(imgs, form.prompt.trim(), getEffectiveModelName(selected));
+        setResult({ images: urls });
         setPollStatus('完成');
       } else {
         setRunError((resp as { error?: string }).error || '生成失败：服务商返回异常');
@@ -196,7 +263,7 @@ export default function ModelConsole() {
       setPollStatus('');
       setBusy(false);
     }
-  }, [selected, form, isVideo, isText, refArray]);
+  }, [selected, form, isVideo, isText, refArray, persistResults]);
 
   const poll = useCallback(
     async (tid: string) => {
@@ -206,7 +273,8 @@ export default function ModelConsole() {
         const st = await apiGetGenerationStatus(tid);
         if (st.status === 'done') {
           const imgs = st.result?.images || [];
-          setResult({ images: imgs });
+          const urls = await persistResults(imgs, form.prompt.trim(), getEffectiveModelName(selected));
+          setResult({ images: urls });
           setPollStatus('完成');
           setBusy(false);
           return;
@@ -222,7 +290,7 @@ export default function ModelConsole() {
       setRunError('轮询超时，请稍后在任务列表查看');
       setBusy(false);
     },
-    [],
+    [persistResults, form, selected],
   );
 
   return (
@@ -548,6 +616,7 @@ function Select({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
+      style={{ colorScheme: 'dark' }}
       className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none focus:border-indigo-400/50"
     >
       {options.map((o) => (

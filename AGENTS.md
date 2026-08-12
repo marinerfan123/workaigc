@@ -275,3 +275,519 @@ interface IGenerationSettings {
 - **Invisible interaction**: hover 做了 focus-visible 丢了；深色环境下 focus 环用 2px 白色描边 + 轻微外发光
 - **Mono-hue tyranny**: 白色同时用于主按钮、tab 激活、icon、边框、链接；primary 只给 CTA 与关键状态，其余用 accent 中灰
 - **Rounded inconsistency**: 按钮 rounded-full 而卡片 rounded-md；全站统一大圆角语言，圆角半径差不超过 1 级
+
+---
+
+# 墨灵AI工程开发总规则
+
+> 本文件为项目最高优先级工程纪律，已收口此前零散的「AI 协作铁律 / Phase 门禁」规则，**全文以本文件为准**。任何 AI 助手与开发 Agent 在修改本系统时必须严格遵守。
+
+## 1. 项目性质
+
+这是一个已经长期开发、存在真实用户业务逻辑、准备测试/部署/持续迭代的生产项目。
+
+本项目不是 Demo。
+
+所有修改必须满足：
+
+- 可实际编码
+- 可实际运行
+- 可实际测试
+- 可实际部署
+- 可备份
+- 可恢复
+- 可回滚
+- 可验证
+- 可维护
+
+禁止只实现"概念架构"。
+
+---
+
+## 2. 老项目重构最高原则
+
+任何 AI 在修改现有系统前必须遵循：
+
+1. 先读取。
+2. 再搜索依赖。
+3. 再确认真实行为。
+4. 再建立修改范围。
+5. 再修改。
+6. 再测试。
+7. 再总结。
+8. 再提交。
+
+禁止：
+
+先看到一个文件就直接重构。
+
+禁止假设：
+
+"这个函数应该没人在用了。"
+
+必须通过全项目搜索证明。
+
+---
+
+## 3. 禁止推倒重写
+
+除非用户明确授权，否则禁止：
+
+- 重写整个后端
+- 重写 ModelHub
+- 更换数据库
+- 更换前端框架
+- 更换状态管理框架
+- 引入微服务
+- 引入 Kubernetes
+- 引入 Kafka
+- 为追求架构美观移动大量文件
+- 一次修改几十个无关模块
+- 删除当前兼容逻辑
+- 删除看起来"旧"的接口
+- 删除数据库旧字段
+- 删除现有生成能力
+
+优先采用：
+
+Incremental Migration
+
+而不是：
+
+Big Bang Rewrite
+
+---
+
+## 4. 修改前事实审计
+
+涉及一个模块时必须先检查：
+
+- 入口
+- 调用者
+- 被调用者
+- API
+- DB
+- 类型定义
+- UI
+- 后台任务
+- billing
+- dispatcher
+- recovery
+- tests
+
+特别是下列关键词必须全项目搜索：
+
+model_id
+display_name
+mapping_name
+provider_id
+credit_cost
+provider_task_id
+billing
+generate
+dispatcher
+models
+providers
+
+只有确认调用链之后才能修改。
+
+---
+
+## 5. 一次只改变一个核心维度
+
+严禁一次同时大改：
+
+数据库结构
++
+API语义
++
+计费语义
++
+路由算法
++
+UI交互
+
+任何 Phase 最多只允许改变一个主要架构维度。
+
+允许增加兼容层。
+
+不允许为了减少工作量跳过兼容层。
+
+---
+
+## 6. 数据库重构规则
+
+数据库必须采用：
+
+旧结构
+→ 增加新结构
+→ 数据回填
+→ 兼容读取
+→ 新路径切换
+→ 验证
+→ 稳定运行
+→ 最后删除旧结构
+
+禁止第一阶段：
+
+DROP COLUMN
+DROP TABLE
+RENAME COLUMN 导致旧代码立即失效
+
+Migration 必须：
+
+- 幂等
+- 支持已有生产数据
+- 支持空数据库
+- 支持重复执行
+- 提供验证 SQL
+- 提供恢复方案
+
+---
+
+## 7. ModelHub 核心身份规则
+
+从 ModelHub V3 开始：
+
+modelId
+= 永久稳定机器身份
+
+displayName
+= 用户界面展示名称
+
+mappingName / upstreamModelName
+= 服务商真实模型名称
+
+任何新代码禁止重新把 displayName 作为永久运行主键。
+
+允许为了兼容旧接口临时解析：
+
+displayName
+→ resolver
+→ modelId
+
+但是兼容逻辑必须集中，不允许散落在 dispatcher / billing / UI 中。
+
+---
+
+## 8. Model 与 Provider 实例规则
+
+必须区分：
+
+Logical Model
+
+和：
+
+Provider Model Binding
+
+例如：
+
+Logical Model:
+Kling 3.0
+
+Provider Bindings:
+Kling 3.0 @ Provider A
+Kling 3.0 @ Provider B
+Kling 3.0 @ Provider C
+
+逻辑模型描述：
+
+- 名称
+- 类型
+- 分类
+- 通用能力
+- 用户售价
+
+Provider Binding 描述：
+
+- provider
+- upstream model name
+- endpoint
+- provider capabilities
+- provider cost
+- concurrency
+- rate limit
+- health
+- routing weight
+
+禁止长期把这两种概念混为一张业务实体。
+
+---
+
+## 9. 价格规则
+
+必须区分：
+
+用户售价
+
+和：
+
+Provider 成本
+
+禁止使用同一个字段同时表示两者。
+
+目标语义：
+
+userCreditPrice
+= 用户生成一次需要多少积分
+
+providerCost
+= 调用供应商一次真实成本
+
+未来利润：
+
+revenue - providerCost
+
+必须能够被准确计算。
+
+---
+
+## 10. 路由规则
+
+第一阶段路由算法必须：
+
+可解释
+可重复测试
+可配置
+可关闭
+可回退
+
+禁止使用不可解释的"AI 自动决定线路"。
+
+目标流程：
+
+candidate bindings
+→ enabled
+→ capability
+→ health
+→ cooldown
+→ circuit breaker
+→ rate limit
+→ concurrency
+→ score
+→ weighted selection
+→ execution
+
+所有失败和选择结果最终都应留下数据。
+
+---
+
+## 11. Generation Job 规则
+
+一个用户生成任务：
+
+GenerationJob
+
+允许拥有多个：
+
+GenerationAttempt
+
+例如：
+
+Job 001
+
+Attempt 1
+Provider A
+Timeout
+
+Attempt 2
+Provider B
+429
+
+Attempt 3
+Provider C
+Success
+
+禁止因为发生重试而创建多个用户任务。
+
+---
+
+## 12. 计费安全规则
+
+涉及：
+
+扣费
+奖励积分
+充值余额
+退款
+预扣
+结算
+
+必须优先保持现有业务行为。
+
+未经事实核实不得改变：
+
+扣费时机
+扣费数量
+退款条件
+奖励余额优先级
+失败任务处理
+
+任何计费架构调整必须有：
+
+测试
+兼容性说明
+恢复方法
+
+---
+
+## 13. Git 规则
+
+开始修改前：
+
+git status
+
+必须记录当前状态。
+
+如果工作区本身存在未提交修改：
+
+禁止自动覆盖。
+禁止 reset --hard。
+禁止 checkout 覆盖用户文件。
+禁止 clean -fd。
+
+每个 ModelHub Phase 独立提交。
+
+推荐：
+
+modelhub-v3/phase-1-model-identity
+modelhub-v3/phase-2-bindings
+modelhub-v3/phase-3-pricing
+modelhub-v3/phase-4-concurrency
+modelhub-v3/phase-5-generation-attempts
+modelhub-v3/phase-6-routing
+modelhub-v3/phase-7-runtime
+
+每阶段完成前必须报告：
+
+- changed files
+- added files
+- DB migrations
+- API changes
+- compatibility
+- tests
+- risks
+- rollback
+
+---
+
+## 14. 测试最低要求
+
+每个 Phase 至少执行项目已有的：
+
+lint
+typecheck
+unit tests
+integration tests
+build
+
+涉及数据库时增加：
+
+migration test
+backfill validation
+
+涉及生成链时增加 smoke test：
+
+UI/model selection
+→ API
+→ billing
+→ dispatcher
+→ provider selection
+→ submission
+→ task persistence
+
+涉及失败处理时：
+
+timeout
+429
+5xx
+invalid response
+
+不得只测试 happy path。
+
+---
+
+## 15. AI 工作方式
+
+每次收到大型任务：
+
+第一步：
+
+输出 FACTS FOUND。
+
+第二步：
+
+输出 RISKS。
+
+第三步：
+
+输出 PLAN。
+
+第四步：
+
+才允许 CODE CHANGE。
+
+发现与任务无关的问题：
+
+记录到：
+
+Deferred Issues
+
+不要顺手修改。
+
+---
+
+## 16. 停止条件
+
+出现以下情况立即停止扩展修改：
+
+- 不确定现有业务语义
+- DB 数据无法安全迁移
+- billing 行为无法确认
+- 测试基线本身失败
+- 工作区出现未知修改
+- migration 验证失败
+- 核心 smoke test 失败
+
+此时允许继续诊断。
+
+禁止继续进入下一 Phase。
+
+---
+
+## 17. 完成定义
+
+"代码写完"不代表完成。
+
+必须同时满足：
+
+代码完成
++
+migration 完成
++
+测试完成
++
+兼容验证完成
++
+风险记录完成
++
+rollback 明确
+
+才能声明 Phase 完成。
+
+---
+
+## 18. 最终原则
+
+墨灵AI的目标不是拥有最复杂的架构。
+
+目标是：
+
+稳定
+准确
+快速
+可恢复
+可扩展
+可持续开发
+
+任何架构升级必须服务于真实生产问题。

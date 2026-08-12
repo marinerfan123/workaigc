@@ -118,6 +118,14 @@ export const Image = React.forwardRef<HTMLImageElement, ImageProps>(
       [],
     );
 
+    // 关键：src 变化时重置 errored。否则某张图 onError 一次后，即便随后换成有效 URL（如 OSS
+    // 永久链接回填、详情面板切换、列表复用同一组件实例），errored 仍卡在 true → 永远返回 null
+    // 卡空白。这正是「过一会又裂 / 刷新后裂 / 点裂图详情也裂」在 UI 层的残留态根因。
+    // 换成新 src 视为一次新的加载机会。
+    React.useEffect(() => {
+      setErrored(false);
+    }, [src]);
+
     const handleError = React.useCallback(
       (e: React.SyntheticEvent<HTMLImageElement>) => {
       setErrored(true);
@@ -135,13 +143,20 @@ export const Image = React.forwardRef<HTMLImageElement, ImageProps>(
       return null;
     }
 
-    // 当 src 不在白名单时，直接渲染原生 img，保留所有原生属性
-    if (!isTargetSrc(src) || errored) {
+    // 加载失败：绝不渲染破图 <img src={undefined}>（浏览器会显示裂图图标 + alt 文字）。
+    // 直接返回 null，把"占位/兜底"交给调用方（MediaCard 的 isFailed 红卡、生成中 spinner 等），
+    // 彻底消灭"带破图图标的灰图"。这正是 #576 / 第九章 G 条规定的真正修复点。
+    if (errored) {
+      return null;
+    }
+
+    // 当 src 不在白名单时，直接渲染原生 img（跳过 srcSet 优化），保留所有原生属性
+    if (!isTargetSrc(src)) {
       return (
         <img
           {...rest}
           ref={ref}
-          src={errored ? undefined : src}
+          src={src}
           width={width}
           height={height}
           sizes={sizes}

@@ -35,6 +35,20 @@ import {
 const PAGE_OPTIONS = [50, 100, 500, 1000];
 const DEFAULT_PAGE = 50;
 
+// 历史数据兼容：早期 dispatcher 直接把 provider 返回的 b64_json 裸 base64 存进 URL 字段，
+// admin 表格需要能正常预览和复制。新数据已统一为 data URI，此兜底仅影响旧行。
+function normalizeAssetUrl(url?: string | null): string {
+  if (!url) return '';
+  const u = url.trim();
+  if (u.startsWith('data:') || u.startsWith('http://') || u.startsWith('https://') || u.startsWith('/')) return u;
+  if (/^[A-Za-z0-9+/=]{50,}$/.test(u)) return `data:image/png;base64,${u}`;
+  return u;
+}
+
+function isDataUri(url?: string | null): boolean {
+  return !!url && url.trim().startsWith('data:');
+}
+
 function LimitSelector({ value, onChange }: { value: number; onChange: (n: number) => void }) {
   return (
     <select
@@ -325,11 +339,13 @@ export function AssetsTab() {
               </tr>
             </thead>
             <tbody>
-              {items.map((it) => (
+              {items.map((it) => {
+                const displayUrl = normalizeAssetUrl(it.url);
+                return (
                 <tr key={it.id} className="border-t border-zinc-800/60 align-middle hover:bg-zinc-900/40">
                   <td className="px-3 py-2">
-                    {it.url ? (
-                      <img src={it.url.startsWith('data:') ? it.url : it.url} alt="" className="size-10 rounded-lg object-cover bg-zinc-800" loading="lazy" />
+                    {displayUrl ? (
+                      <img src={displayUrl} alt="" className="size-10 rounded-lg object-cover bg-zinc-800" loading="lazy" />
                     ) : (
                       <div className="size-10 rounded-lg bg-zinc-800 grid place-items-center text-zinc-600">∅</div>
                     )}
@@ -339,17 +355,19 @@ export function AssetsTab() {
                   <td className="px-3 py-2 text-zinc-300">{it.user || <span className="text-zinc-600">匿名</span>}</td>
                   <td className="px-3 py-2">{it.isDeleted ? <span className="text-rose-300">已删</span> : <span className="text-emerald-300">正常</span>}</td>
                   <td className="max-w-[260px] px-3 py-2">
-                    {it.url ? (
+                    {displayUrl ? (
                       <div className="flex items-center gap-1">
-                        <a href={it.url} target="_blank" rel="noreferrer" className="line-clamp-1 break-all text-sky-300 hover:text-sky-200">{it.url}</a>
-                        <button onClick={() => copyText(it.url!)} title="复制" className="shrink-0 text-zinc-500 hover:text-zinc-300"><Copy className="size-3" /></button>
-                        <a href={it.url} target="_blank" rel="noreferrer" className="shrink-0 text-zinc-500 hover:text-zinc-300"><ExternalLink className="size-3" /></a>
+                        <a href={displayUrl} target="_blank" rel="noreferrer" title={displayUrl} className="line-clamp-1 break-all text-sky-300 hover:text-sky-200">
+                          {isDataUri(displayUrl) ? '[Base64 内联图片]' : displayUrl}
+                        </a>
+                        <button onClick={() => copyText(displayUrl)} title="复制" className="shrink-0 text-zinc-500 hover:text-zinc-300"><Copy className="size-3" /></button>
+                        <a href={displayUrl} target="_blank" rel="noreferrer" className="shrink-0 text-zinc-500 hover:text-zinc-300"><ExternalLink className="size-3" /></a>
                       </div>
                     ) : <span className="text-rose-400">死链(无 URL)</span>}
                   </td>
                   <td className="whitespace-nowrap px-3 py-2 text-zinc-500 tabular-nums">{fmtDateTime(it.createdAt)}</td>
                 </tr>
-              ))}
+              )})}
             </tbody>
           </table>
           {items.length === 0 && <div className="px-3 py-10 text-center text-zinc-600">{loading ? '加载中…' : '暂无资产'}</div>}

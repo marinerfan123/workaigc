@@ -13,6 +13,7 @@ import {
   Check,
   X,
   ChevronDown,
+  ChevronRight,
   Server,
   Zap,
   Puzzle,
@@ -33,8 +34,8 @@ import {
   type ModelType,
   type ProviderType,
   type Resolution,
-  type IModelProvider,
   type IModelParamTemplate,
+  type IModelProvider,
   ALL_RESOLUTIONS,
   getEffectiveModelName,
   defaultEstimatedSeconds,
@@ -45,9 +46,8 @@ import { ModelParamTemplateEditor } from '@/components/ModelParamTemplateEditor'
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
-import { modelListClient } from '@/services/genericClient';
 import { MOCK_MEDIA_LIST } from '@/data/media';
-import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, apiDeleteModel, stripBlobItems } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, apiPreviewProviderModels, apiDeleteModel, stripBlobItems } from '@/services/api';
 import EndpointsTab from './EndpointsTab';
 import PairingTab from './PairingTab';
 import AsyncAddDialog from './AsyncAddDialog';
@@ -110,6 +110,9 @@ export default function ModelHubPage() {
   // 「管理模型」抽屉
   const [manageProviderId, setManageProviderId] = useState<string | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
+
+  // 同 vendor/baseUrl 的 provider 密钥池展开态
+  const [expandedProviderPools, setExpandedProviderPools] = useState<Set<string>>(new Set());
 
   // 已保存模型卡的内联编辑（displayName + mappingName + creditCost）
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
@@ -328,6 +331,63 @@ export default function ModelHubPage() {
     }
   };
 
+  // ── 密钥池聚合展示辅助函数 ────────────────────────────────
+  const providerGroupKey = (p: IModelProvider) =>
+    [p.baseUrl, p.protocol || 'openai-compatible', p.type, [...p.supportedTypes].sort().join(',')].join('|');
+
+  const providerGroups = useMemo(() => {
+    const map = new Map<string, IModelProvider[]>();
+    providers.forEach((p) => {
+      const k = providerGroupKey(p);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k)!.push(p);
+    });
+    return Array.from(map.entries()).map(([key, items]) => {
+      if (items.length === 1) return { kind: 'single' as const, key, provider: items[0] };
+      const poolName = (() => {
+        const common = items
+          .reduce((acc, p) => {
+            let i = 0;
+            while (i < acc.length && i < p.name.length && acc[i] === p.name[i]) i++;
+            return acc.slice(0, i);
+          }, items[0].name)
+          .replace(/\s*\d+.*$/, '')
+          .trim();
+        if (common) return common;
+        try {
+          const host = new URL(items[0].baseUrl).hostname.replace(/^www\./, '');
+          return host || items[0].baseUrl;
+        } catch {
+          return items[0].baseUrl;
+        }
+      })();
+      return { kind: 'group' as const, key, items, poolName };
+    });
+  }, [providers]);
+
+  const toggleProviderPool = (key: string) => {
+    setExpandedProviderPools((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const handleToggleGroup = (items: IModelProvider[], target?: boolean) => {
+    const nextEnabled = target ?? !items.every((p) => p.enabled);
+    setProviders((prev) =>
+      prev.map((p) => (items.some((i) => i.id === p.id) ? { ...p, enabled: nextEnabled } : p)),
+    );
+  };
+
+  const handleDeleteGroup = async (items: IModelProvider[]) => {
+    if (!confirm(`确定删除 ${items.length} 个密钥？此操作不可恢复。`)) return;
+    for (const p of items) {
+      await handleDeleteProvider(p.id);
+    }
+  };
+
   const handleAddTemplate = (template: typeof PROVIDER_TEMPLATES[number]) => {
     const exists = providers.some((p) => p.name === template.name);
     if (exists) {
@@ -397,42 +457,24 @@ export default function ModelHubPage() {
 
     setFetchingModels(true);
     try {
-      const tempProvider: IModelProvider = {
-        id: '__temp__',
-        name: formName.trim() || '临时',
-        type: formType,
+      // 收编 generic：走后端代理列模型。浏览器只把 key 发给本站后端（HTTPS），绝不直连服务商
+      // —— 杜绝 Key 直连暴露 + 规避浏览器 CORS（服务端到服务端无跨域限制）。
+      const result = await apiPreviewProviderModels({
         baseUrl: baseUrl.trim(),
         apiKey: apiKey.trim(),
-        supportedTypes: formTypes,
-        enabled: true,
         protocol,
-        defaultEndpoint: protocol === 'custom' && customListModelsPath
-          ? {
-              protocol: 'custom',
-              listModels: {
-                path: customListModelsPath,
-                method: 'GET',
-                listFieldPath: 'data',
-                listIdFieldPath: 'id',
-                listNameFieldPath: 'id',
-              },
-            }
+        listModels: protocol === 'custom' && customListModelsPath
+          ? { path: customListModelsPath, method: 'GET', listFieldPath: 'data', listIdFieldPath: 'id', listNameFieldPath: 'id' }
           : undefined,
-        createdAt: new Date().toISOString(),
-      };
-
-      const result = await modelListClient.list({ provider: tempProvider });
-      if (result.status !== 'success') {
-        if (result.error?.includes('401')) toast.error('认证失败：API Key 无效');
-        else if (result.error?.includes('404')) toast.error('接口不存在：该服务商可能不支持 /models 接口，可在「自定义协议」Tab 配置端点');
-        else if (result.error?.includes('Failed to fetch') || result.error?.includes('CORS') || result.error?.includes('NetworkError')) {
-          toast.error('网络错误：跨域限制，请确保服务商 API 支持 CORS 或使用代理');
-        } else {
-          toast.error(result.error || '获取失败');
-        }
+      });
+      if (!result.success) {
+        const msg = result.message || '获取失败';
+        if (msg.includes('401')) toast.error('认证失败：API Key 无效');
+        else if (msg.includes('404')) toast.error('接口不存在：该服务商可能不支持 /models 接口，可在「自定义协议」Tab 配置端点');
+        else toast.error(msg);
         return false;
       }
-      if (result.models.length === 0) {
+      if (!result.models || result.models.length === 0) {
         toast.warning('该服务商返回了空模型列表');
         return false;
       }
@@ -623,26 +665,20 @@ export default function ModelHubPage() {
     setFetchedModels([]);
   }, [fetchedModels, editingProvider, formName, formBaseUrl, formType, formApiKey, formTypes, formEnabled, formRemark, models, setProviders, setModels]);
 
-  // 服务商卡片上的同步模型按钮
-  const handleSyncModels = useCallback(async (providerId: string) => {
+  // 内部同步逻辑（单条/批量复用）。silent=true 时不弹 toast，由调用方汇总。
+  const syncProviderModelsInternal = async (providerId: string, silent = false): Promise<{ ok: boolean; added: number; removed: number; message?: string; providerName?: string }> => {
     const provider = providers.find((p) => p.id === providerId);
-    if (!provider) return;
+    if (!provider) return { ok: false, added: 0, removed: 0, message: '未找到服务商' };
 
     setSyncingProviderId(providerId);
     try {
-      const trimmedBase = provider.baseUrl.trim().replace(/\/+$/, '');
-      const url = `${trimmedBase}/models`;
-
       const syncData = await apiSyncProviderModels(providerId);
       if (!syncData.success) {
-        toast.error(`同步失败：${syncData.message || '未知错误'}`);
-        return;
+        return { ok: false, added: 0, removed: 0, message: syncData.message || '未知错误', providerName: provider.name };
       }
       const modelList = syncData.models || [];
-
       if (!Array.isArray(modelList) || modelList.length === 0) {
-        toast.error('未获取到模型列表');
-        return;
+        return { ok: false, added: 0, removed: 0, message: '未获取到模型列表', providerName: provider.name };
       }
 
       // 服务端当前模型 ID 集合（来源真实，作为存在性基准）
@@ -659,12 +695,13 @@ export default function ModelHubPage() {
       // 1) 新增：服务端有、本地无 —— 新模型默认显示（enabled:true），不动任何旧模型
       let added = 0;
       const newModels: typeof models = [];
+      const now = Date.now();
       modelList.forEach((m, idx) => {
         const mid = m.id || m.model || m.name || '';
         if (!mid || localModelIds.has(mid)) return;
         const name = m.name || m.display_name || m.displayName || mid;
         newModels.push({
-          id: `model-${Date.now()}-${idx}`,
+          id: `model-${providerId}-${now}-${idx}`,
           modelId: mid,
           displayName: name,
           type: detectModelType(mid),
@@ -690,19 +727,71 @@ export default function ModelHubPage() {
       // 4) 后端真删（走单条 DELETE 接口，避免下次 sync 又回弹）
       toDelete.forEach((d) => apiDeleteModel(d.id));
 
-      const addedMsg = added > 0 ? `新增 ${added} 个` : '';
-      const delMsg = toDelete.length > 0 ? `移除 ${toDelete.length} 个` : '';
-      const parts = [addedMsg, delMsg].filter(Boolean);
-      if (parts.length === 0) {
-        toast.info('已是最新，无变化');
-      } else {
-        toast.success(`同步完成：${parts.join('，')}（已有模型的显隐设置保持不变）`);
-      }
+      return { ok: true, added, removed: toDelete.length, providerName: provider.name };
     } catch (e) {
       logger.error('sync models failed:', String(e));
-      toast.error('同步失败：网络错误或接口不可用');
+      return { ok: false, added: 0, removed: 0, message: '网络错误或接口不可用', providerName: provider.name };
     } finally {
       setSyncingProviderId(null);
+    }
+  };
+
+  // 服务商卡片上的同步模型按钮（单条）
+  const handleSyncModels = useCallback(async (providerId: string) => {
+    const r = await syncProviderModelsInternal(providerId);
+    if (!r.ok) {
+      toast.error(`${r.providerName} 同步失败：${r.message}`);
+      return;
+    }
+    const addedMsg = r.added > 0 ? `新增 ${r.added} 个` : '';
+    const delMsg = r.removed > 0 ? `移除 ${r.removed} 个` : '';
+    const parts = [addedMsg, delMsg].filter(Boolean);
+    if (parts.length === 0) {
+      toast.info(`${r.providerName} 已是最新，无变化`);
+    } else {
+      toast.success(`${r.providerName} 同步完成：${parts.join('，')}（已有模型的显隐设置保持不变）`);
+    }
+  }, [providers, models, detectModelType, setModels]);
+
+  // 密钥池卡片上的同步模型按钮（批量同步池内所有启用且有 key 的 provider）
+  const handleSyncGroupModels = useCallback(async (items: IModelProvider[]) => {
+    const targets = items.filter((p) => p.enabled && p.apiKey);
+    if (targets.length === 0) {
+      toast.info('没有启用的密钥可同步');
+      return;
+    }
+    toast.info(`开始同步 ${targets.length} 个密钥...`);
+    let totalAdded = 0;
+    let totalRemoved = 0;
+    let successCount = 0;
+    let failCount = 0;
+    const failedNames: string[] = [];
+    for (const p of targets) {
+      const r = await syncProviderModelsInternal(p.id, true);
+      if (r.ok) {
+        successCount++;
+        totalAdded += r.added;
+        totalRemoved += r.removed;
+      } else {
+        failCount++;
+        if (r.providerName) failedNames.push(r.providerName);
+      }
+    }
+    const failDetail = failedNames.length
+      ? `（${failedNames.slice(0, 3).join('、')}${failedNames.length > 3 ? '等' : ''}）`
+      : '';
+    const parts = [
+      totalAdded > 0 ? `新增 ${totalAdded} 个模型` : '',
+      totalRemoved > 0 ? `移除 ${totalRemoved} 个模型` : '',
+      successCount > 0 ? `成功 ${successCount} 个密钥` : '',
+      failCount > 0 ? `失败 ${failCount} 个密钥${failDetail}` : '',
+    ].filter(Boolean);
+    if (parts.length === 0) {
+      toast.info('密钥池已是最新，无变化');
+    } else if (failCount === 0) {
+      toast.success(`密钥池同步完成：${parts.join('，')}`);
+    } else {
+      toast.error(`密钥池同步结束：${parts.join('，')}`);
     }
   }, [providers, models, detectModelType, setModels]);
 
@@ -1047,59 +1136,191 @@ export default function ModelHubPage() {
             </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {providers.map((provider) => {
-              const TypeIcon = PROVIDER_TYPE_ICONS[provider.type];
-              const modelCount = models.filter((m) => m.providerId === provider.id && m.enabled).length;
+            {providerGroups.map((group) => {
+              if (group.kind === 'single') {
+                const provider = group.provider;
+                const TypeIcon = PROVIDER_TYPE_ICONS[provider.type];
+                const modelCount = models.filter((m) => m.providerId === provider.id && m.enabled).length;
+                return (
+                  <div
+                    key={provider.id}
+                    className={`group rounded-[1.5rem] border transition-all duration-300 overflow-hidden ${
+                      provider.enabled
+                        ? 'bg-zinc-900/50 border-zinc-800 hover:border-emerald-500/30'
+                        : 'bg-zinc-900/30 border-zinc-800/50 opacity-70'
+                    }`}
+                  >
+                    <div className='flex items-start justify-between p-5'>
+                      <div className='flex items-start gap-3'>
+                        <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${
+                          provider.enabled ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-800 text-zinc-500'
+                        }`}>
+                          <TypeIcon className='size-5' />
+                        </div>
+                        <div className='min-w-0'>
+                          <div className='flex items-center gap-2'>
+                            <h3 className='text-sm font-bold text-white truncate'>{provider.name}</h3>
+                            <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                              provider.enabled
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                : 'bg-zinc-800 text-zinc-500 border-zinc-700'
+                            }`}>
+                              {PROVIDER_TYPE_LABELS[provider.type]}
+                            </span>
+                          </div>
+                          <p className='mt-1 truncate text-xs text-zinc-500'>{provider.baseUrl}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleToggleProvider(provider.id)}
+                        className={`relative h-5 w-9 shrink-0 rounded-full transition-all duration-300 ${
+                          provider.enabled ? 'bg-emerald-500' : 'bg-zinc-700'
+                        }`}
+                      >
+                        <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all duration-300 ${
+                          provider.enabled ? 'left-[18px]' : 'left-0.5'
+                        }`} />
+                      </button>
+                    </div>
+
+                    <div className='px-5 pb-3'>
+                      <div className='flex items-center gap-1.5 flex-wrap'>
+                        {provider.supportedTypes.map((t) => (
+                          <span
+                            key={t}
+                            className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${TYPE_COLORS[t]}`}
+                          >
+                            {TYPE_LABELS[t]}
+                          </span>
+                        ))}
+                        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
+                          (provider.protocol || 'openai-compatible') === 'custom'
+                            ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                            : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                        }`}>
+                          {(provider.protocol || 'openai-compatible') === 'custom' ? '自定义协议' : 'OpenAI 兼容'}
+                        </span>
+                        <span className='ml-auto text-[10px] text-zinc-600'>
+                          {modelCount} 个模型
+                        </span>
+                      </div>
+                    </div>
+
+                    {provider.remark && (
+                      <div className='px-5 pb-3'>
+                        <p className='truncate text-xs text-zinc-500'>{provider.remark}</p>
+                      </div>
+                    )}
+
+                    <div className='flex items-center gap-1 border-t border-zinc-800/50 px-3 py-2'>
+                      <button
+                        onClick={() => handleTestConnection(provider.id)}
+                        disabled={testingId === provider.id || !provider.enabled}
+                        className='flex flex-1 items-center justify-center gap-1.5 rounded-xl py-1.5 text-xs text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors disabled:opacity-50'
+                      >
+                        {testingId === provider.id ? (
+                          <Loader2 className='size-3.5 animate-spin' />
+                        ) : (
+                          <Zap className='size-3.5' />
+                        )}
+                        <span>测试连接</span>
+                      </button>
+                      <button
+                        onClick={() => handleSyncModels(provider.id)}
+                        disabled={syncingProviderId === provider.id || !provider.enabled || !provider.apiKey}
+                        className='flex flex-1 items-center justify-center gap-1.5 rounded-xl py-1.5 text-xs text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors disabled:opacity-50'
+                        title='从服务商同步最新模型列表'
+                      >
+                        {syncingProviderId === provider.id ? (
+                          <Loader2 className='size-3.5 animate-spin' />
+                        ) : (
+                          <RefreshCw className='size-3.5' />
+                        )}
+                        <span>同步模型</span>
+                      </button>
+                      <button
+                        onClick={() => { setManageProviderId(provider.id); setManageOpen(true); }}
+                        title='管理模型'
+                        className='flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-indigo-500/10 hover:text-indigo-300 transition-colors'
+                      >
+                        <Boxes className='size-3.5' />
+                      </button>
+                      <button
+                        onClick={() => openEditDialog(provider)}
+                        className='flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors'
+                      >
+                        <Edit3 className='size-3.5' />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteProvider(provider.id)}
+                        className='flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-red-500/10 hover:text-red-400 transition-colors'
+                      >
+                        <Trash2 className='size-3.5' />
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
+              const { items, poolName, key } = group;
+              const TypeIcon = PROVIDER_TYPE_ICONS[items[0].type];
+              const enabledCount = items.filter((p) => p.enabled).length;
+              const allEnabled = enabledCount === items.length;
+              const anyEnabled = enabledCount > 0;
+              const modelCount = items.reduce((sum, p) => sum + models.filter((m) => m.providerId === p.id && m.enabled).length, 0);
+              const isExpanded = expandedProviderPools.has(key);
+              const rep = items[0];
               return (
                 <div
-                  key={provider.id}
+                  key={key}
                   className={`group rounded-[1.5rem] border transition-all duration-300 overflow-hidden ${
-                    provider.enabled
+                    anyEnabled
                       ? 'bg-zinc-900/50 border-zinc-800 hover:border-emerald-500/30'
                       : 'bg-zinc-900/30 border-zinc-800/50 opacity-70'
                   }`}
                 >
-                  {/* 卡片头部 */}
-                  <div className="flex items-start justify-between p-5">
-                    <div className="flex items-start gap-3">
+                  <div className='flex items-start justify-between p-5'>
+                    <div className='flex items-start gap-3 min-w-0'>
                       <div className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${
-                        provider.enabled ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-800 text-zinc-500'
+                        anyEnabled ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-800 text-zinc-500'
                       }`}>
-                        <TypeIcon className="size-5" />
+                        <TypeIcon className='size-5' />
                       </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className="text-sm font-bold text-white truncate">{provider.name}</h3>
+                      <div className='min-w-0 flex-1'>
+                        <div className='flex items-center gap-2 flex-wrap'>
+                          <h3 className='text-sm font-bold text-white truncate'>{poolName} 密钥池</h3>
+                          <span className='shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border-emerald-500/20'>
+                            {items.length} 个密钥
+                          </span>
                           <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
-                            provider.enabled
+                            anyEnabled
                               ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                               : 'bg-zinc-800 text-zinc-500 border-zinc-700'
                           }`}>
-                            {PROVIDER_TYPE_LABELS[provider.type]}
+                            {PROVIDER_TYPE_LABELS[items[0].type]}
                           </span>
                         </div>
-                        <p className="mt-1 truncate text-xs text-zinc-500">{provider.baseUrl}</p>
+                        <p className='mt-1 truncate text-xs text-zinc-500'>{rep.baseUrl}</p>
+                        <p className='mt-1 text-[10px] text-zinc-600'>
+                          {enabledCount}/{items.length} 已启用 · {modelCount} 个模型
+                        </p>
                       </div>
                     </div>
-                    {/* 开关 */}
                     <button
-                      onClick={() => handleToggleProvider(provider.id)}
+                      onClick={() => handleToggleGroup(items)}
                       className={`relative h-5 w-9 shrink-0 rounded-full transition-all duration-300 ${
-                        provider.enabled ? 'bg-emerald-500' : 'bg-zinc-700'
+                        allEnabled ? 'bg-emerald-500' : anyEnabled ? 'bg-emerald-500/60' : 'bg-zinc-700'
                       }`}
                     >
-                      <div
-className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all duration-300 ${
-                        provider.enabled ? 'left-[18px]' : 'left-0.5'
-                      }`}
-                      />
+                      <div className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all duration-300 ${
+                        allEnabled ? 'left-[18px]' : 'left-0.5'
+                      }`} />
                     </button>
                   </div>
 
-                  {/* 支持的模型类型 */}
-                  <div className="px-5 pb-3">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {provider.supportedTypes.map((t) => (
+                  <div className='px-5 pb-3'>
+                    <div className='flex items-center gap-1.5 flex-wrap'>
+                      {rep.supportedTypes.map((t) => (
                         <span
                           key={t}
                           className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${TYPE_COLORS[t]}`}
@@ -1108,72 +1329,112 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                         </span>
                       ))}
                       <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${
-                        (provider.protocol || 'openai-compatible') === 'custom'
+                        (rep.protocol || 'openai-compatible') === 'custom'
                           ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                           : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
                       }`}>
-                        {(provider.protocol || 'openai-compatible') === 'custom' ? '自定义协议' : 'OpenAI 兼容'}
-                      </span>
-                      <span className="ml-auto text-[10px] text-zinc-600">
-                        {modelCount} 个模型
+                        {(rep.protocol || 'openai-compatible') === 'custom' ? '自定义协议' : 'OpenAI 兼容'}
                       </span>
                     </div>
                   </div>
 
-                  {/* 备注 */}
-                  {provider.remark && (
-                    <div className="px-5 pb-3">
-                      <p className="truncate text-xs text-zinc-500">{provider.remark}</p>
-                    </div>
-                  )}
-
-                  {/* 底部操作 */}
-                  <div className="flex items-center gap-1 border-t border-zinc-800/50 px-3 py-2">
+                  <div className='flex items-center gap-1 border-t border-zinc-800/50 px-3 py-2'>
                     <button
-                      onClick={() => handleTestConnection(provider.id)}
-                      disabled={testingId === provider.id || !provider.enabled}
-                      className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-1.5 text-xs text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors disabled:opacity-50"
+                      onClick={() => handleTestConnection(rep.id)}
+                      disabled={testingId === rep.id || !rep.enabled}
+                      className='flex flex-1 items-center justify-center gap-1.5 rounded-xl py-1.5 text-xs text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors disabled:opacity-50'
                     >
-                      {testingId === provider.id ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <Zap className="size-3.5" />
-                      )}
+                      {testingId === rep.id ? <Loader2 className='size-3.5 animate-spin' /> : <Zap className='size-3.5' />}
                       <span>测试连接</span>
                     </button>
                     <button
-                      onClick={() => handleSyncModels(provider.id)}
-                      disabled={syncingProviderId === provider.id || !provider.enabled || !provider.apiKey}
-                      className="flex flex-1 items-center justify-center gap-1.5 rounded-xl py-1.5 text-xs text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors disabled:opacity-50"
-                      title="从服务商同步最新模型列表"
+                      onClick={() => handleSyncGroupModels(items)}
+                      disabled={items.some((p) => syncingProviderId === p.id) || !anyEnabled}
+                      className='flex flex-1 items-center justify-center gap-1.5 rounded-xl py-1.5 text-xs text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors disabled:opacity-50'
+                      title='同步该密钥池下所有启用密钥的模型列表'
                     >
-                      {syncingProviderId === provider.id ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <RefreshCw className="size-3.5" />
-                      )}
+                      {items.some((p) => syncingProviderId === p.id) ? <Loader2 className='size-3.5 animate-spin' /> : <RefreshCw className='size-3.5' />}
                       <span>同步模型</span>
                     </button>
                     <button
-                      onClick={() => { setManageProviderId(provider.id); setManageOpen(true); }}
-                      title="管理模型（显隐 / 价格 / 并发 / 耗时 / 分类 / 商用）"
-                      className="flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-indigo-500/10 hover:text-indigo-300 transition-colors"
+                      onClick={() => handleDeleteGroup(items)}
+                      title='删除整个密钥池'
+                      className='flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-red-500/10 hover:text-red-400 transition-colors'
                     >
-                      <Boxes className="size-3.5" />
+                      <Trash2 className='size-3.5' />
                     </button>
                     <button
-                      onClick={() => openEditDialog(provider)}
-                      className="flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
+                      onClick={() => toggleProviderPool(key)}
+                      className='ml-auto flex items-center gap-1 rounded-xl px-2 py-1.5 text-xs text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors'
                     >
-                      <Edit3 className="size-3.5" />
-                    </button>
-                    <button
-                      onClick={() => handleDeleteProvider(provider.id)}
-                      className="flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-red-500/10 hover:text-red-400 transition-colors"
-                    >
-                      <Trash2 className="size-3.5" />
+                      <ChevronDown className={`size-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                      <span>{isExpanded ? '收起' : '展开'}</span>
                     </button>
                   </div>
+
+                  {isExpanded && (
+                    <div className='border-t border-zinc-800/50 bg-zinc-950/30'>
+                      {items.map((p) => {
+                        const pModelCount = models.filter((m) => m.providerId === p.id && m.enabled).length;
+                        return (
+                          <div
+                            key={p.id}
+                            className='flex items-center gap-2 px-4 py-2 border-b border-zinc-800/30 last:border-b-0'
+                          >
+                            <button
+                              onClick={() => handleToggleProvider(p.id)}
+                              className={`relative h-4 w-7 shrink-0 rounded-full transition-all duration-300 ${
+                                p.enabled ? 'bg-emerald-500' : 'bg-zinc-700'
+                              }`}
+                            >
+                              <div className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all duration-300 ${
+                                p.enabled ? 'left-[14px]' : 'left-0.5'
+                              }`} />
+                            </button>
+                            <span className='flex-1 truncate text-xs text-zinc-300'>{p.name}</span>
+                            <span className='text-[10px] text-zinc-600'>{pModelCount} 模型</span>
+                            <button
+                              onClick={() => handleTestConnection(p.id)}
+                              disabled={testingId === p.id || !p.enabled}
+                              className='flex h-6 w-6 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors disabled:opacity-50'
+                              title='测试连接'
+                            >
+                              {testingId === p.id ? <Loader2 className='size-3 animate-spin' /> : <Zap className='size-3' />}
+                            </button>
+                            <button
+                              onClick={() => handleSyncModels(p.id)}
+                              disabled={syncingProviderId === p.id || !p.enabled || !p.apiKey}
+                              className='flex h-6 w-6 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors disabled:opacity-50'
+                              title='同步模型'
+                            >
+                              {syncingProviderId === p.id ? <Loader2 className='size-3 animate-spin' /> : <RefreshCw className='size-3' />}
+                            </button>
+                            <button
+                              onClick={() => { setManageProviderId(p.id); setManageOpen(true); }}
+                              title='管理模型'
+                              className='flex h-6 w-6 items-center justify-center rounded-lg text-zinc-400 hover:bg-indigo-500/10 hover:text-indigo-300 transition-colors'
+                            >
+                              <Boxes className='size-3' />
+                            </button>
+                            <button
+                              onClick={() => openEditDialog(p)}
+                              className='flex h-6 w-6 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors'
+                              title='编辑'
+                            >
+                              <Edit3 className='size-3' />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteProvider(p.id)}
+                              className='flex h-6 w-6 items-center justify-center rounded-lg text-zinc-400 hover:bg-red-500/10 hover:text-red-400 transition-colors'
+                              title='删除'
+                            >
+                              <Trash2 className='size-3' />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -1282,20 +1543,28 @@ className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all durati
                                       已映射
                                     </span>
                                   )}
-                                  {group.supportsRewardBalance !== false && (
+                                  {group.supportsRewardBalance !== false && (group.rewardCreditsRequired || 0) > 0 && (
                                     <span
-                                      title={`支持赠送余额：单次需 ${typeof group.rewardCreditsRequired === 'number' && group.rewardCreditsRequired > 0 ? group.rewardCreditsRequired : (group.creditCost || 0)} 赠送积分（全局优先扣）`}
+                                      title={`支持赠送余额：单次需 ${group.rewardCreditsRequired} 赠送积分（全局优先扣）`}
                                       className="ml-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle"
                                     >
-                                      奖 {typeof group.rewardCreditsRequired === 'number' && group.rewardCreditsRequired > 0 ? group.rewardCreditsRequired : (group.creditCost || 0)}
+                                      赠 {group.rewardCreditsRequired}
                                     </span>
                                   )}
-                                  {group.creditCost > 0 && (
+                                  {(group.creditCost || 0) > 0 && (
                                     <span
                                       title={`单次生成消耗 ${group.creditCost} 积分（充值价）`}
                                       className="ml-1.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold align-middle"
                                     >
                                       {group.creditCost} 积分
+                                    </span>
+                                  )}
+                                  {(group.creditCost || 0) === 0 && (group.supportsRewardBalance === false || (group.rewardCreditsRequired || 0) === 0) && (
+                                    <span
+                                      title="单次生成免费"
+                                      className="ml-1.5 rounded-full bg-zinc-700/50 text-zinc-400 border border-zinc-600 px-1.5 py-0.5 text-[9px] font-semibold align-middle"
+                                    >
+                                      免费
                                     </span>
                                   )}
                                 </div>

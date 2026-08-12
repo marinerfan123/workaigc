@@ -59,7 +59,7 @@ function buildAgnesVars(opts, model) {
   numFrames = Math.floor((numFrames - 1) / 8) * 8 + 1;
   const { width, height } = agnesVideoSize(ratio, resolution);
   const vars = {
-    model: model.model_id,
+    model: model.upstreamModelName || model.model_id, // Phase 2：上游 wire name 取自 binding（兜底 model_id）
     prompt,
     height,
     width,
@@ -81,12 +81,12 @@ function buildAgnesVars(opts, model) {
   return vars;
 }
 
-async function submitAndPoll(provider, model, opts) {
+async function submit(provider, model, opts) {
   const apiKey = provider.api_key;
   if (!apiKey) return { videoUrl: '', status: 'error', error: '服务商未配置 API Key' };
 
   const vars = buildAgnesVars(opts, model);
-  const { submitEp, pollEp, taskIdPath } = resolveAgnesEndpoint(provider, model);
+  const { submitEp, taskIdPath } = resolveAgnesEndpoint(provider, model);
 
   // 提交任务（create）
   let submitRes;
@@ -100,12 +100,18 @@ async function submitAndPoll(provider, model, opts) {
 
   const taskId = String(getByPath(body, taskIdPath) ?? '').trim();
   if (!taskId) return { videoUrl: '', status: 'error', error: '未返回任务 ID（taskIdPath 配置？）' };
+  // 提交成功：立即回传 provider 任务 ID，供上层持久化（崩溃恢复续轮询依赖它）。
+  return { status: 'submitted', taskId, providerTaskId: taskId, videoUrl: '' };
+}
 
-  // 轮询任务结果
+// 续轮询：仅用 provider/model + providerTaskId 重建 pollEp（不依赖内存态），供崩溃恢复重启后复用。
+// isCancelled：可选取消信号（dispatcher 注入 cancelledTasks 检查），命中即停止轮询。
+async function poll(provider, model, taskId, startedAt = 0, isCancelled = null) {
+  const apiKey = provider.api_key;
+  const { pollEp } = resolveAgnesEndpoint(provider, model);
   const pollQueryParam = pollEp.taskQueryParam || 'video_id';
   return pollLoop({
-    intervalMs: pollEp.taskPollIntervalMs || 8000,
-    timeoutMs: 5 * 60 * 1000,
+    intervalMs: pollEp.taskPollIntervalMs || 8000, adaptive: true, startedAt, isCancelled,
     pollFn: async () => {
       const r = await callEndpoint(provider.base_url, pollEp, apiKey, { [pollQueryParam]: taskId });
       const st = String(getByPath(r.body, pollEp.taskStatusPath || 'status') ?? '').toLowerCase();
@@ -120,11 +126,20 @@ async function submitAndPoll(provider, model, opts) {
           : { videoUrl: '', status: 'error', error: '任务成功但未返回视频 URL（taskResultPath？）' };
       }
       if (st === 'failed' || st === 'error' || st === 'canceled' || st === 'cancelled') {
-        return { videoUrl: '', status: 'error', error: `视频生成失败：${JSON.stringify(r.body).slice(0, 160)}` };
+        // 生成端明确终态失败：用 terminal 'failed'（区别于瞬时 'error'）—— 上层据此立即终态化，
+        // 绝不切下一个账号空转（每个 key 会新建真实 provider 任务并轮询到完成，多 key 下会卡 running 数小时）。
+        return { videoUrl: '', status: 'failed', error: `视频生成失败：${JSON.stringify(r.body).slice(0, 160)}` };
       }
       return { videoUrl: '', status: 'pending' };
     },
   });
 }
 
-module.exports = { submitAndPoll, resolveAgnesEndpoint, agnesRootBase };
+// 兼容包装：保持既有 videoGenerate 调用契约不变（提交后立刻轮询）。
+async function submitAndPoll(provider, model, opts) {
+  const s = await submit(provider, model, opts);
+  if (s.status !== 'submitted') return s; // 提交阶段即错，直接透传 error
+  return poll(provider, model, s.taskId);
+}
+
+module.exports = { submit, poll, submitAndPoll, resolveAgnesEndpoint, agnesRootBase };

@@ -29,4 +29,22 @@ async function submitAndPoll(provider, model, opts) {
   return ad.submitAndPoll(provider, model, opts);
 }
 
-module.exports = { adapters, resolveKey, submitAndPoll };
+// 仅提交：返回 { status:'submitted', taskId, providerTaskId } 或 { status:'error', error }。
+// 供 dispatcher 在提交后立即持久化 provider task id（崩溃恢复地基）。
+async function submit(provider, model, opts) {
+  const key = resolveKey(provider, model);
+  const ad = adapters[key];
+  if (!ad || !ad.submit) return { videoUrl: '', status: 'error', error: `未找到视频适配器或缺少 submit：${key}` };
+  return ad.submit(provider, model, opts);
+}
+
+// 续轮询：用已持久化的 provider task id 重建轮询（不依赖内存态），供崩溃恢复重启后复用。
+// isCancelled：可选取消信号，透传给适配器（命中即停止轮询，返回 canceled）。
+async function poll(provider, model, taskId, startedAt = 0, isCancelled = null) {
+  const key = resolveKey(provider, model);
+  const ad = adapters[key];
+  if (!ad || !ad.poll) return { videoUrl: '', status: 'error', error: `未找到视频适配器或缺少 poll：${key}` };
+  return ad.poll(provider, model, taskId, startedAt, isCancelled);
+}
+
+module.exports = { adapters, resolveKey, submit, poll, submitAndPoll };

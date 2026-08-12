@@ -19,7 +19,7 @@ function toMiniMaxResolution(res) {
   return map[String(res || '1k').toLowerCase()] || '768P';
 }
 
-async function submitAndPoll(provider, model, opts) {
+async function submit(provider, model, opts) {
   const apiKey = provider.api_key;
   if (!apiKey) return { videoUrl: '', status: 'error', error: '服务商未配置 API Key' };
 
@@ -39,7 +39,7 @@ async function submitAndPoll(provider, model, opts) {
   const resolution = toMiniMaxResolution(opts.resolution);
 
   const body = {
-    model: model.model_id,
+    model: model.upstreamModelName || model.model_id, // Phase 2：上游 wire name 取自 binding（兜底 model_id）
     content,
     resolution,
     duration,
@@ -61,11 +61,18 @@ async function submitAndPoll(provider, model, opts) {
   }
   const taskId = String(b.task_id || '').trim();
   if (!taskId) return { videoUrl: '', status: 'error', error: `未返回任务 ID：${JSON.stringify(b).slice(0, 160)}` };
+  // 提交成功：立即回传 provider 任务 ID，供上层持久化（崩溃恢复续轮询依赖它）。
+  return { status: 'submitted', taskId, providerTaskId: taskId, videoUrl: '' };
+}
 
+// 续轮询：仅用 base + providerTaskId 重建轮询端点（不依赖内存态），供崩溃恢复重启后复用。
+// isCancelled：可选取消信号（dispatcher 注入 cancelledTasks 检查），命中即停止轮询。
+async function poll(provider, model, taskId, startedAt = 0, isCancelled = null) {
+  const apiKey = provider.api_key;
+  const base = (provider.base_url || 'https://api.minimaxi.com/v2').replace(/\/+$/, '');
   const pollUrl = `${base}/query/video_generation/${taskId}`;
   return pollLoop({
-    intervalMs: 10000,
-    timeoutMs: 5 * 60 * 1000,
+    intervalMs: 10000, adaptive: true, startedAt, isCancelled,
     pollFn: async () => {
       const r = await fetchJson(pollUrl, { method: 'GET', headers: { Authorization: `Bearer ${apiKey}` } });
       const b2 = r.body || {};
@@ -81,4 +88,11 @@ async function submitAndPoll(provider, model, opts) {
   });
 }
 
-module.exports = { submitAndPoll };
+// 兼容包装：保持既有 videoGenerate 调用契约不变（提交后立刻轮询）。
+async function submitAndPoll(provider, model, opts) {
+  const s = await submit(provider, model, opts);
+  if (s.status !== 'submitted') return s; // 提交阶段即错，直接透传 error
+  return poll(provider, model, s.taskId);
+}
+
+module.exports = { submit, poll, submitAndPoll };

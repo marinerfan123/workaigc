@@ -161,6 +161,12 @@ export interface IModelProvider {
   bucketMax?: number | null;
   /** 整账号冷却时长（毫秒）；默认 60000 */
   cooldownMs?: number;
+  /** 乐观锁版本号（后端维护，PATCH 时必须回传当前值） */
+  revision?: number;
+  /** 最后更新时间（后端维护） */
+  updatedAt?: string;
+  /** 最后更新人（后端维护） */
+  updatedBy?: string;
 }
 
 export interface IAiModel {
@@ -200,6 +206,12 @@ export interface IAiModel {
   commercialUse?: boolean;
   /** 模型级参数模板（后台可简单自定义；前台按类型渲染 UI；缺省按 type 派生） */
   paramTemplate?: IModelParamTemplate;
+  /** 乐观锁版本号（后端维护，PATCH 时必须回传当前值） */
+  revision?: number;
+  /** 最后更新时间（后端维护） */
+  updatedAt?: string;
+  /** 最后更新人（后端维护） */
+  updatedBy?: string;
 }
 
 /**
