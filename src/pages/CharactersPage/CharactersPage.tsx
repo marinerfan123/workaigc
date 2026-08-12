@@ -28,7 +28,7 @@ import { useOssConfig } from '@/hooks/useOssConfig';
 
 export default function CharactersPage() {
   const navigate = useNavigate();
-  const { enabled: ossEnabled, uploadFile } = useOssConfig();
+  const { enabled: ossEnabled, ingestFile } = useOssConfig();
 
   const [characters, setCharacters] = useState<ICharacter[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -125,7 +125,7 @@ export default function CharactersPage() {
     setUploading(true);
     try {
       const fileName = `ref-${Date.now()}-${file.name.replace(/\s+/g, '_')}`;
-      const res = await uploadFile(file, fileName);
+      const res = await ingestFile(file, fileName);
       if (!res.success || !res.url) {
         toast.error(res.error || '上传失败');
         return null;

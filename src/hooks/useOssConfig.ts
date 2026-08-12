@@ -7,7 +7,7 @@ import {
 import {
   apiGetOss, apiSetOssEnabled, apiCreateOssSlot, apiUpdateOssSlot,
   apiDeleteOssSlot, apiActivateOssSlot, apiTestOssSlot, apiTestOss,
-  apiSignOssUpload, ensureApi,
+  apiIngestOss, ensureApi,
 } from '@/services/api';
 
 // ─── 多槽位 OSS 共享状态（仅内存，持久化全部走后端 API） ────────────
@@ -154,10 +154,32 @@ export function useOssConfig() {
   }, [active]);
 
   /**
-   * 上传文件到 active OSS —— 浏览器直连 OSS 预签名 PUT（业务服务器零字节）。
-   * 流程：① 向业务服务器申请 PUT 预签名（仅鉴权 + 签 URL）② 浏览器直接 fetch PUT blob 到 OSS ③ 返回 7 天 GET 签名。
+   * 后端接管上传 —— 浏览器把【外部 URL】交给后端，后端拉字节 + PUT 到 OSS。
+   * 业务服务器零直传（浏览器不再持有预签名 / 不再 PUT 字节到 OSS）。
    */
-  const uploadFile = useCallback(
+  const ingestFromUrl = useCallback(
+    async (
+      sourceUrl: string,
+      fileName?: string,
+      contentType?: string,
+    ): Promise<{ success: boolean; url: string; objectKey: string; providerType?: string; error?: string }> => {
+      if (!s.enabled || !active) {
+        return { success: false, url: '', objectKey: '', error: 'OSS 未启用或无 active 槽位' };
+      }
+      const r = await apiIngestOss({ sourceUrl, fileName, contentType });
+      if (!r.ok || !r.ossUrl) {
+        return { success: false, url: '', objectKey: r.ossObjectKey || '', providerType: r.providerType, error: r.message || 'ingest 失败' };
+      }
+      return { success: true, url: r.ossUrl, objectKey: r.ossObjectKey || '', providerType: r.providerType };
+    },
+    [s.enabled, active],
+  );
+
+  /**
+   * 后端接管上传 —— 浏览器上传【本地文件】，base64 透传后端，后端 PUT 到 OSS。
+   * 避免新增 multipart 解析；图片场景足够（超大视频建议走 sourceUrl）。
+   */
+  const ingestFile = useCallback(
     async (
       file: File | Blob,
       fileName: string,
@@ -165,58 +187,20 @@ export function useOssConfig() {
       if (!s.enabled || !active) {
         return { success: false, url: '', objectKey: '', error: 'OSS 未启用或无 active 槽位' };
       }
-      if (!active.accessKeyId || !active.accessKeySecret) {
-        return { success: false, url: '', objectKey: '', error: 'active 槽位缺少 AK/SK' };
-      }
-      const contentType = file.type || 'image/jpeg';
-      // ① 向业务服务器要 PUT 预签名（零字节，后端只鉴权 + 锁 userId 前缀 + 签名）
-      const sign = await apiSignOssUpload(fileName, contentType);
-      if (!sign.success || !sign.putUrl) {
-        return {
-          success: false,
-          url: '',
-          objectKey: sign.objectKey || '',
-          providerType: sign.providerType,
-          error: sign.message || 'sign-upload 失败（无 putUrl）',
+      const dataBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('读取文件失败'));
+        reader.onload = () => {
+          const result = reader.result as string;
+          resolve(result.includes(',') ? result.split(',')[1] : result);
         };
+        reader.readAsDataURL(file as Blob);
+      });
+      const r = await apiIngestOss({ fileName, contentType: (file as File).type || 'image/jpeg', dataBase64 });
+      if (!r.ok || !r.ossUrl) {
+        return { success: false, url: '', objectKey: r.ossObjectKey || '', providerType: r.providerType, error: r.message || 'ingest 失败' };
       }
-      // ② 浏览器直接 PUT 字节到 OSS（直连，业务服务器不经过字节流）
-      try {
-        const putRes = await fetch(sign.putUrl, {
-          method: 'PUT',
-          headers: { 'Content-Type': contentType },
-          body: file,
-        });
-        if (!putRes.ok) {
-          const txt = await putRes.text().catch(() => '');
-          const snippet = txt.slice(0, 120);
-          console.error(`[OSS] 直传失败 HTTP ${putRes.status}:`, snippet);
-          return {
-            success: false,
-            url: '',
-            objectKey: sign.objectKey,
-            providerType: sign.providerType,
-            error: `PUT HTTP ${putRes.status}${putRes.statusText ? ' ' + putRes.statusText : ''}${snippet ? `: ${snippet}` : ''}`,
-          };
-        }
-        // ③ 返回永久公共地址（canonical）；若未配 customDomain/endpoint 则回退到 7 天预签 GET
-        const objKey = sign.objectKey || '';
-        const key = objKey.startsWith('/') ? objKey.slice(1) : objKey;
-        const domain = active?.customDomain || active?.endpointExternal;
-        const prefix = active?.pathPrefix || '';
-        const canonical = domain ? `https://${domain}/${prefix}${key}` : (sign.getUrl || '');
-        return { success: true, url: canonical, getUrl: sign.getUrl || '', objectKey: objKey, providerType: sign.providerType };
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.error('[OSS] 直传异常:', e);
-        return {
-          success: false,
-          url: '',
-          objectKey: sign.objectKey,
-          providerType: sign.providerType,
-          error: `直传异常: ${msg}`,
-        };
-      }
+      return { success: true, url: r.ossUrl, objectKey: r.ossObjectKey || '', providerType: r.providerType };
     },
     [s.enabled, active],
   );
@@ -245,6 +229,7 @@ export function useOssConfig() {
     testSlot,
     testConfig,
     buildOssUrl,
-    uploadFile,
+    ingestFromUrl,
+    ingestFile,
   };
 }

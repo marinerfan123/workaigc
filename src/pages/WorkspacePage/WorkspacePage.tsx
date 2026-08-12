@@ -18,7 +18,7 @@ import { useModelHub, getModelDisplayNameByDisplayName, getModelCreditCostByDisp
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
 import { useLayoutOutlet } from '@/components/Layout';
-import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, apiProxyFetch, ensureApi, stripBlobItems, apiGetReferenceStyles, apiCancelGeneration } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, ensureApi, stripBlobItems, apiGetReferenceStyles, apiCancelGeneration } from '@/services/api';
 import type { Ratio, Quality, VideoMode } from '@/data/settings';
 import type { ReferenceStyle } from '@/services/api';
 
@@ -104,7 +104,7 @@ export default function WorkspacePage() {
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
   const { getDefaultModel, models } = useModelHub();
-  const { config: ossConfig, uploadFile: uploadToOss } = useOssConfig();
+  const { config: ossConfig, ingestFromUrl, ingestFile } = useOssConfig();
   const { refreshMediaCounts } = useLayoutOutlet();
 
   // 强制推行的参考样式（工作台示例墙：仅 is_promoted 的样式出现在这里）
@@ -275,21 +275,9 @@ export default function WorkspacePage() {
       for (const item of needsUpload) {
         if (cancelled) break;
         try {
-          let file: File;
-          if (item.fullUrl!.startsWith('data:')) {
-            // data: 图已在本页，直接 base64 转 File（不依赖后端代理）
-            file = dataUrlToFile(item.fullUrl!, `${item.id}.jpg`);
-          } else {
-            // 后端代理下载（绕开浏览器 CORS）
-            const proxied = await apiProxyFetch(item.fullUrl!);
-            if (!proxied.success || !proxied.base64) throw new Error(proxied.message || 'proxy failed');
-            const byteChars = atob(proxied.base64);
-            const byteArr = new Uint8Array(byteChars.length);
-            for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
-            const blob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
-            file = new File([blob], `${item.id}.jpg`, { type: 'image/jpeg' });
-          }
-          const result = await uploadToOss(file, `${item.id}.jpg`);
+          const result = item.fullUrl!.startsWith('data:')
+            ? await ingestFile(dataUrlToFile(item.fullUrl!, `${item.id}.jpg`), `${item.id}.jpg`)
+            : await ingestFromUrl(item.fullUrl!, `${item.id}.jpg`);
           if (result.success) {
             const updated = { ...item, ossUrl: result.url, ossObjectKey: result.objectKey, ossUploaded: true, fullUrl: result.url, thumbnail: result.url } as IMediaItem;
             setMediaList((prev) => prev.map((m) => (m.id === item.id ? updated : m)));

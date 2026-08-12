@@ -300,30 +300,29 @@ export async function apiTestOss(config: Record<string, any>): Promise<{
 }
 
 /**
- * 向业务服务器申请 OSS 直传预签名（后端零字节：只鉴权 + 锁 userId 前缀 + 签发 PUT/GET 预签名）。
- * 返回的 putUrl 由浏览器直接 fetch PUT 到 OSS；getUrl 为 7 天有效访问签名。
+ * 后端接管 OSS 上传：浏览器把来源（外部 URL 或本地文件 base64）交给后端，
+ * 后端拉字节 + PUT 到 OSS，返回 7 天 GET 签名 ossUrl。业务服务器零直传。
  */
-export async function apiSignOssUpload(
-  fileName: string,
-  contentType: string,
-): Promise<{
-  success: boolean;
-  objectKey?: string;
-  putUrl?: string;
-  getUrl?: string;
-  putExpires?: number;
-  expires?: number;
+export async function apiIngestOss(body: {
+  sourceUrl?: string;
+  fileName?: string;
+  contentType?: string;
+  dataBase64?: string;
+}): Promise<{
+  ok: boolean;
+  ossUrl?: string;
+  ossObjectKey?: string;
   providerType?: string;
   message?: string;
 }> {
   try {
-    return await apiFetch('/api/oss/sign-upload', {
+    return await apiFetch('/api/oss/ingest', {
       method: 'POST',
-      body: JSON.stringify({ fileName, contentType }),
+      body: JSON.stringify(body),
     });
   } catch (e) {
     return {
-      success: false,
+      ok: false,
       message: (e instanceof Error ? e.message : String(e)).slice(0, 100),
     };
   }

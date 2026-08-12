@@ -51,7 +51,7 @@ export default function LibraryPage() {
   const [viewerOpen, setViewerOpen] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
 
-  const { enabled: ossEnabled, uploadFile: uploadToOss } = useOssConfig();
+  const { enabled: ossEnabled, ingestFile } = useOssConfig();
   const { refreshMediaCounts } = useLayoutOutlet();
 
   const handleRetry = (item: IMediaItem) => {
@@ -368,7 +368,7 @@ export default function LibraryPage() {
             : meta.file.name.includes('.')
               ? meta.file.name.split('.').pop()!.toLowerCase()
               : 'jpg';
-          const result = await uploadToOss(meta.file, `${meta.id}.${ext}`);
+          const result = await ingestFile(meta.file, `${meta.id}.${ext}`);
           if (result.success) {
             setMediaList((prev) =>
               prev.map((m) =>

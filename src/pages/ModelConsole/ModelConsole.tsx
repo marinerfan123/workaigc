@@ -131,8 +131,8 @@ export default function ModelConsole() {
   const isVideo = selected?.type === 'video';
   const isText = selected?.type === 'text';
 
-  // OSS 直传（与 GenerationBar 同套）：开启后生成结果上传 OSS，链接变成永久 https 地址
-  const { config: ossConfig, uploadFile } = useOssConfig();
+  // OSS 后端接管上传：开启后浏览器把来源交给后端，后端拉字节 + PUT 到 OSS，链接变成永久 https 地址
+  const { config: ossConfig, ingestFile } = useOssConfig();
 
   // 生成结果落库：开启 OSS 则先上传拿永久地址，再写 media；关闭则保留原始链接（data URI / 服务商临时 URL）
   const persistResults = useCallback(
@@ -160,7 +160,7 @@ export default function ModelConsole() {
               const r = await fetch(src);
               file = new File([await r.blob()], `mc-${Date.now()}-${i}.jpg`, { type: 'image/jpeg' });
             }
-            const up = await uploadFile(file, `mc-${Date.now()}-${i}.jpg`);
+            const up = await ingestFile(file, `mc-${Date.now()}-${i}.jpg`);
             if (up.success && up.url) {
               persistentUrl = up.url;
               ossUrl = up.url;
@@ -193,7 +193,7 @@ export default function ModelConsole() {
       }
       return out;
     },
-    [ossConfig, uploadFile, isVideo, form],
+    [ossConfig, ingestFile, isVideo, form],
   );
 
   const update = (patch: Partial<FormState>) => setForm((f) => (f ? { ...f, ...patch } : f));

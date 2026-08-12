@@ -48,7 +48,7 @@ import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { MOCK_MEDIA_LIST } from '@/data/media';
-import { apiGetMedia, apiSaveMedia, apiProxyFetch, apiGetSettings, apiSaveSettings, apiSyncProviderModels, apiPreviewProviderModels, apiDeleteModel, stripBlobItems } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiGetSettings, apiSaveSettings, apiSyncProviderModels, apiPreviewProviderModels, apiDeleteModel, stripBlobItems } from '@/services/api';
 import EndpointsTab from './EndpointsTab';
 import PairingTab from './PairingTab';
 import AsyncAddDialog from './AsyncAddDialog';
@@ -84,7 +84,7 @@ const PROVIDER_TYPE_ICONS: Record<ProviderType, typeof Server> = {
 export default function ModelHubPage() {
   const { providers, models, setProviders, setModels, patchModel, deleteProvider, deleteModel, cleanupOrphanModels, getProviderName } = useModelHub();
   const navigate = useNavigate();
-  const { enabled: ossEnabled, uploadFile: uploadToOss } = useOssConfig();
+  const { enabled: ossEnabled, ingestFromUrl, ingestFile } = useOssConfig();
   const [activeTab, setActiveTab] = useState<'providers' | 'models' | 'endpoints' | 'pairing' | 'storage'>('models');
   const [asyncAddOpen, setAsyncAddOpen] = useState(false);
   const [addModelOpen, setAddModelOpen] = useState(false);
@@ -822,22 +822,9 @@ export default function ModelHubPage() {
         setBulkUploadProgress({ current: i + 1, total: items.length });
         const item = items[i] as any;
         try {
-          let file: File;
-          if (item.fullUrl.startsWith('data:')) {
-            // data: 图已在本页，直接 base64 转 File（不依赖后端代理）
-            file = dataUrlToFile(item.fullUrl, `${item.id || 'img'}.jpg`);
-          } else {
-            // 后端代理下载（绕开浏览器 CORS）
-            const proxied = await apiProxyFetch(item.fullUrl);
-            if (!proxied.success || !proxied.base64) throw new Error(proxied.message || 'proxy failed');
-            const byteChars = atob(proxied.base64);
-            const byteArr = new Uint8Array(byteChars.length);
-            for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
-            const blob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
-            file = new File([blob], `${item.id || 'img'}.jpg`, { type: 'image/jpeg' });
-          }
-          // 上传到 OSS
-          const uploadResult = await uploadToOss(file, `${item.id || `img-${Date.now()}`}.jpg`);
+          const uploadResult = item.fullUrl.startsWith('data:')
+            ? await ingestFile(dataUrlToFile(item.fullUrl, `${item.id || 'img'}.jpg`), `${item.id || 'img'}.jpg`)
+            : await ingestFromUrl(item.fullUrl, `${item.id || 'img'}.jpg`);
           if (uploadResult.success) {
             // 更新 media 记录的 ossUrl 字段
             const updated = { ...item, ossUrl: uploadResult.url, ossObjectKey: uploadResult.objectKey, ossUploaded: true, fullUrl: uploadResult.url, thumbnail: uploadResult.url };

@@ -35,9 +35,9 @@ import { IMediaItem } from '@/data/media';
 import { ReferenceStyleSelector } from '@/components/ReferenceStyleSelector';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
-import { useOssConfig } from '@/hooks/useOssConfig';
+import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { waitForTask } from '@/hooks/useGenerationStream';
-import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiTranslatePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus, type ReferenceStyle } from '@/services/api';
+import { apiGenerate, apiOptimizePrompt, apiTranslatePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus, type ReferenceStyle } from '@/services/api';
 import { refreshUser, setAuthModalOpen, useAuth } from '@/services/authStore';
 import { ALL_RESOLUTIONS, type Resolution, type IAiModel, type IModelParamTemplate, getEffectiveModelName } from '@/data/models';
 import { formatCredits } from '@/utils/format';
@@ -347,7 +347,7 @@ function GenerationBar({
   }, [settingsOpen, modelMenuOpen, agentOpen]);
 
   const { providers, models, getProviderName, getDefaultModel } = useModelHub();
-  const { config: ossConfig, uploadFile: uploadToOss, buildOssUrl } = useOssConfig();
+  const { config: ossConfig, ingestFromUrl, ingestFile } = useOssConfig();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // 关闭设置浮层并把焦点还给提示词输入框（点击任一选项后应立即可输入）
   const closeSettingsAndFocus = () => {
@@ -425,30 +425,14 @@ function GenerationBar({
       let ossUrl = '';
       let ossObjectKey = '';
       let ossUploaded = false;
-      let imgBlob: Blob | null = null;
-      try {
-        if (resultImages[i].startsWith('data:')) {
-          imgBlob = await (await fetch(resultImages[i])).blob();
-        } else {
-          const proxied = await apiProxyFetch(resultImages[i]);
-          if (proxied.success && proxied.base64) {
-            const byteChars = atob(proxied.base64);
-            const byteArr = new Uint8Array(byteChars.length);
-            for (let k = 0; k < byteChars.length; k++) byteArr[k] = byteChars.charCodeAt(k);
-            imgBlob = new Blob([byteArr], { type: proxied.contentType || 'image/jpeg' });
-          } else {
-            logger.warn(`代理下载失败：${proxied.message}`);
-          }
-        }
-      } catch (e) {
-        logger.warn(`图片下载失败：${e instanceof Error ? e.message : String(e)}`);
-      }
-      if (ossConfig.enabled && imgBlob) {
-        const file = new File([imgBlob], `gen-${ctx.createdAt}-${i}.jpg`, { type: 'image/jpeg' });
-        const MAX_ATTEMPTS = 3;
+      const fileName = `gen-${ctx.createdAt}-${i}.jpg`;
+      const MAX_ATTEMPTS = 3;
+      if (ossConfig.enabled) {
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
           try {
-            const uploadResult = await uploadToOss(file, `gen-${ctx.createdAt}-${i}.jpg`);
+            const uploadResult = resultImages[i].startsWith('data:')
+              ? await ingestFile(dataUrlToFile(resultImages[i], fileName), fileName)
+              : await ingestFromUrl(resultImages[i], fileName);
             if (uploadResult.success && uploadResult.url) {
               ossUrl = uploadResult.url;
               ossObjectKey = uploadResult.objectKey;
@@ -465,7 +449,7 @@ function GenerationBar({
           logger.warn(`OSS 上传经 ${MAX_ATTEMPTS} 次重试仍失败，回退到模型原始 URL：${resultImages[i].slice(0, 80)}`);
           toast.warning(`图片 ${i + 1} 上传 OSS 失败，已回退使用服务商原始链接（链接可能随时过期）`, { duration: 4000 });
         }
-      } else if (!ossConfig.enabled) {
+      } else {
         toast.error('OSS 未开启，请到「模型 Hub → 存储配置」开启', { duration: 5000 });
       }
       const persistentUrl = ossUploaded ? ossUrl : resultImages[i];

@@ -3882,6 +3882,102 @@ async function handleAPI(req, res) {
     }
   }
 
+  // ── OSS 后端接管上传（业务服务器拉字节 + PUT 到 OSS，浏览器零直传） ──
+  // 入参（JSON 二选一）：
+  //   • { sourceUrl, fileName?, contentType? }  —— 后端按 URL 拉取字节（生成结果 / 外部 URL 入库）
+  //   • { fileName, contentType, dataBase64 }    —— 浏览器上传本地文件（base64 透传，免新增 multipart 解析）
+  // 返回 { ok, ossUrl(GET 7d), ossObjectKey, providerType } 或 { ok:false, message }
+  if (url === '/api/oss/ingest' && method === 'POST') {
+    const t0 = Date.now();
+    const userId = req.user?.id;
+    if (!userId) return sendJSON(res, 401, { ok: false, message: '请先登录后再上传' });
+    const body = await parseBody(req) || {};
+    const { enabled, activeId, list } = await loadOssConfigs(pgPool);
+    if (!enabled) {
+      ossLog('warn', 'ingest', '接管上传失败：OSS 总开关未启用', { userId });
+      return sendJSON(res, 200, { ok: false, message: 'OSS 总开关未启用' });
+    }
+    const activeCfg = list.find(c => c.id === activeId);
+    if (!activeCfg) return sendJSON(res, 200, { ok: false, message: '未配置 active OSS 槽位' });
+    if (!activeCfg.enabled) return sendJSON(res, 200, { ok: false, message: 'active OSS 槽位已停用' });
+    if (!activeCfg.accessKeyId || !activeCfg.accessKeySecret || !activeCfg.bucket) {
+      return sendJSON(res, 200, { ok: false, message: 'active 配置不完整（缺 AccessKey 或 Bucket）' });
+    }
+
+    // ── 取得字节 + contentType ──
+    let buffer = null;
+    let contentType = body?.contentType || 'image/jpeg';
+    let srcLabel = '';
+    const MAX = 50 * 1024 * 1024;
+    try {
+      if (body?.sourceUrl && typeof body.sourceUrl === 'string') {
+        let u;
+        try { u = new URL(String(body.sourceUrl)); } catch { return sendJSON(res, 200, { ok: false, message: 'sourceUrl 非法' }); }
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return sendJSON(res, 200, { ok: false, message: 'sourceUrl 协议不支持' });
+        const host = u.hostname.toLowerCase();
+        if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '[::1]' ||
+            host.startsWith('10.') || host.startsWith('192.168.') || host.endsWith('.internal') ||
+            /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
+          return sendJSON(res, 200, { ok: false, message: 'sourceUrl 指向内网地址，已拒绝' });
+        }
+        srcLabel = String(body.sourceUrl).slice(0, 80);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 30000);
+        let r;
+        try { r = await fetch(String(body.sourceUrl), { signal: controller.signal, redirect: 'follow' }); }
+        finally { clearTimeout(timer); }
+        if (!r.ok) return sendJSON(res, 200, { ok: false, message: `拉取源图失败 HTTP ${r.status}` });
+        const cl = r.headers.get('content-length');
+        if (cl && parseInt(cl, 10) > MAX) return sendJSON(res, 200, { ok: false, message: '源图超过 50MB 上限' });
+        buffer = Buffer.from(await r.arrayBuffer());
+        if (buffer.length === 0) return sendJSON(res, 200, { ok: false, message: '空文件' });
+        if (buffer.length > MAX) return sendJSON(res, 200, { ok: false, message: '源图超过 50MB 上限' });
+        const ct = r.headers.get('content-type');
+        if (ct) contentType = ct.split(';')[0].trim();
+      } else if (body?.dataBase64 && typeof body.dataBase64 === 'string') {
+        buffer = Buffer.from(body.dataBase64, 'base64');
+        srcLabel = 'local-base64';
+        if (buffer.length === 0) return sendJSON(res, 200, { ok: false, message: '空文件' });
+        if (buffer.length > MAX) return sendJSON(res, 200, { ok: false, message: '文件超过 50MB 上限' });
+      } else {
+        return sendJSON(res, 200, { ok: false, message: '缺少 sourceUrl 或 dataBase64' });
+      }
+    } catch (e) {
+      return sendJSON(res, 200, { ok: false, message: `取字节失败：${(e instanceof Error ? e.message : String(e)).slice(0, 100)}` });
+    }
+
+    // ── 构造 objectKey（锁 userId 前缀，防越权写他人目录） ──
+    const p = (activeCfg.pathPrefix || 'images/').replace(/^\/+|\/+$/g, '');
+    const rawName = (body?.fileName && String(body.fileName).includes('/')) ? String(body.fileName).split('/').pop() : (body?.fileName || `${Date.now()}.jpg`);
+    const safeName = String(rawName || 'file').replace(/[^A-Za-z0-9._-]/g, '_');
+    const objectKey = `${p}/${userId}/${Date.now()}_${safeName}`;
+    const providerTag = activeCfg.providerType === 'tencent-cos' ? 'COS' : 'OSS';
+
+    try {
+      let signed;
+      if (activeCfg.providerType === 'tencent-cos') {
+        const cfg = { ...activeCfg };
+        cfg._hostName = `${cfg.bucket}${cfg.appId ? '-' + cfg.appId : ''}.cos.${cfg.region || 'ap-shanghai'}.myqcloud.com`;
+        signed = tencentCosPutSignUrl(cfg, objectKey, contentType);
+      } else {
+        signed = aliyunPutSignUrl(activeCfg, objectKey, contentType);
+      }
+      const putRes = await fetch(signed.putUrl, { method: 'PUT', body: buffer, headers: { 'Content-Type': contentType } });
+      if (!putRes.ok) {
+        const msg = diagnoseOssError(activeCfg.providerType, putRes.status, await putRes.text().catch(() => ''));
+        ossLog('error', 'ingest', `上传失败：${activeCfg.providerType} ${activeCfg.bucket} → ${msg}`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, srcLabel });
+        return sendJSON(res, 200, { ok: false, message: msg });
+      }
+      const getUrl = signed.getUrl || '';
+      ossLog('success', 'ingest', `[${providerTag}] ✅ 后端接管上传 ${objectKey} → GET 7d（${Date.now() - t0}ms）`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, srcLabel, durationMs: Date.now() - t0 });
+      return sendJSON(res, 200, { ok: true, ossUrl: getUrl, ossObjectKey: objectKey, providerType: activeCfg.providerType });
+    } catch (e) {
+      const msg = `上传异常：${(e instanceof Error ? e.message : String(e)).slice(0, 100)}`;
+      ossLog('error', 'ingest', `上传异常：${activeCfg.providerType} ${activeCfg.bucket}`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, srcLabel, error: msg });
+      return sendJSON(res, 200, { ok: false, message: msg });
+    }
+  }
+
   // ── OSS 实时日志：拉历史 + SSE 订阅（仅 admin） ──
   if (url === '/api/oss/logs/recent' && method === 'GET') {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
