@@ -31,7 +31,7 @@ import {
 import { toast } from 'sonner';
 import { capabilityClient, logger } from '@/services/client-capabilities';
 import Image from '@/components/ui/image';
-import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
+import { IMediaItem } from '@/data/media';
 import { ReferenceStyleSelector } from '@/components/ReferenceStyleSelector';
 import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
@@ -40,6 +40,7 @@ import { waitForTask } from '@/hooks/useGenerationStream';
 import { apiProxyFetch, apiGenerate, apiOptimizePrompt, apiTranslatePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus, type ReferenceStyle } from '@/services/api';
 import { refreshUser, setAuthModalOpen, useAuth } from '@/services/authStore';
 import { ALL_RESOLUTIONS, type Resolution, type IAiModel, type IModelParamTemplate, getEffectiveModelName } from '@/data/models';
+import { formatCredits } from '@/utils/format';
 import type { Ratio, Quality, VideoMode } from '@/data/settings';
 // 注意：原 probeImageLoad(persistentUrl) 在 OSS 失败分支探测 provider URL，因 CORS 不可靠
 // 会把生成成功的图误判为 failed，已在本文件 processResultImages 中移除该探测（信任 server 200）。
@@ -830,19 +831,6 @@ function GenerationBar({
     return typeof v === 'number' ? v : undefined;
   })() : undefined;
 
-  // 本地 dev 降级用占位图：避免 MOCK_MEDIA_LIST 的平台专有路径 404
-  const LOCAL_PLACEHOLDER_SVG = `data:image/svg+xml,${encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">
-      <defs>
-        <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#1a1a2e"/><stop offset="100%" stop-color="#16213e"/>
-        </linearGradient>
-      </defs>
-      <rect width="400" height="300" fill="url(#bg)" rx="12"/>
-      <text x="200" y="135" text-anchor="middle" fill="#334155" font-size="16" font-family="sans-serif">本地占位</text>
-      <text x="200" y="165" text-anchor="middle" fill="#1e293b" font-size="12" font-family="sans-serif">AI 生成示例 · 本地预览</text>
-    </svg>`
-  )}`;
 
   // 后台调度实时反馈：轮询 /api/providers/states 拿各账号冷热/限额/并发。
   // 只在用户已选模型时才挂轮询（无意义的早期请求不浪费），离开页面自动停。
@@ -906,33 +894,6 @@ function GenerationBar({
     return () => { alive = false; clearInterval(t); };
   }, []);
 
-  // 降级：用本地 mock 数据填充生成结果（平台能力不可用时）
-  // 注意：mock items 用传入的 pendingIds —— 这样父级 onGenerate 按 id 替换能命中 pending
-  const fillMockItems = (pendingIds: string[]) => {
-    const pool = MOCK_MEDIA_LIST.length > 0 ? MOCK_MEDIA_LIST : [];
-    const now = Date.now();
-    pendingIds.forEach((id, i) => {
-      const base = pool.length > 0 ? pool[(now + i) % pool.length] : null;
-      const thumbnail = import.meta.env.DEV ? LOCAL_PLACEHOLDER_SVG : (base?.thumbnail || '');
-      const fullUrl = import.meta.env.DEV ? LOCAL_PLACEHOLDER_SVG : (base?.fullUrl || '');
-      const item: IMediaItem = {
-        id,
-        title: promptText.slice(0, 20) || '本地降级示例',
-        type: 'image',
-        thumbnail,
-        fullUrl,
-        prompt: promptText,
-        model: settings.model,
-        ratio: settings.ratio,
-        createdAt: new Date().toISOString(),
-        isFavorite: false,
-        isDeleted: false,
-        source: 'mock',
-      };
-      // 错峰 100ms，避免一次性触发大重渲染
-      setTimeout(() => onGenerate(item), i * 100);
-    });
-  };
 
   /**
    * 双池余额前置校验（纯前端预判，后端 402 为安全网）：
@@ -1163,25 +1124,10 @@ function GenerationBar({
           );
           return;
         }
-        // 老同步通道：直接拿 images 走原流程（兼容 sync=1）
-        const resultImages = (r as { images?: string[] }).images || [];
-        if (resultImages.length > 0) {
-          void refreshUser().catch(() => {});
-          await processResultImages(resultImages, pendingIds, {
-            prompt: promptText,
-            model: settings.model,
-            ratio: settings.ratio,
-            contentType: settings.contentType,
-            createdAt: now,
-            referenceStyleId: attributedStyleId,
-            creditCost: chargeCredits,
-          });
-          toast.success(`生成完成 · ${resultImages.length} 张`, { duration: 2500 });
-        } else {
-          const firstError = (r as { error?: string }).error || '生成失败：服务商返回异常';
-          toast.error(friendlyGenerateError(firstError, currentRateLimit), { duration: 5000 });
-          fillMockItems(pendingIds);
-        }
+        // 未返回 taskId 的异常响应（旧 sync 同步通道已移除）：标记失败，绝不 mock 兜底
+        const firstError = (r as { error?: string }).error || '生成服务返回异常';
+        toast.error(friendlyGenerateError(firstError, currentRateLimit), { duration: 5000 });
+        markPendingAsFailed(pendingIds, friendlyGenerateError(firstError, currentRateLimit));
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         // 网络层 401/402 也能识别（apiFetch 抛 "API 401/402"）
@@ -1200,7 +1146,7 @@ function GenerationBar({
         }
         toast.error(friendlyGenerateError(errMsg, currentRateLimit), { duration: 5000 });
         logger.error('图片生成异常:', errMsg);
-        fillMockItems(pendingIds);
+        markPendingAsFailed(pendingIds, friendlyGenerateError(errMsg, currentRateLimit));
       }
     })();
   };
@@ -1797,14 +1743,14 @@ function GenerationBar({
                 {currentModel && modelSupportsReward(currentModel) && modelRewardPrice(currentModel) > 0 && (
                   <span
                     className="shrink-0 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold"
-                    title={`支持赠送余额：单次生成需 ${modelRewardPrice(currentModel)} 赠送积分（全局优先扣赠送）`}
+                    title={`支持赠送余额：单次生成需 ${formatCredits(modelRewardPrice(currentModel))} 赠送积分（全局优先扣赠送）`}
                   >
-                    赠 {modelRewardPrice(currentModel)}
+                    赠 {formatCredits(modelRewardPrice(currentModel))}
                   </span>
                 )}
                 {currentModel && (currentModel.creditCost || 0) > 0 && (
                   <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold" title="充值价（真钱充值余额抵扣）">
-                    {currentModel.creditCost} 积分
+                    {formatCredits(currentModel.creditCost)} 积分
                   </span>
                 )}
                 {currentModel && (currentModel.creditCost || 0) === 0 && (!modelSupportsReward(currentModel) || modelRewardPrice(currentModel) === 0) && (
@@ -1923,8 +1869,8 @@ function GenerationBar({
                               {modelSupportsReward(g) && modelRewardPrice(g) > 0 && (
                                 <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
                                   active ? 'bg-emerald-400/15 text-emerald-300' : 'bg-emerald-500/10 text-emerald-400'
-                                }`} title={`支持赠送余额：需 ${modelRewardPrice(g)} 赠送积分`}>
-                                  赠 {modelRewardPrice(g)}
+                                }`} title={`支持赠送余额：需 ${formatCredits(modelRewardPrice(g))} 赠送积分`}>
+                                  赠 {formatCredits(modelRewardPrice(g))}
                                 </span>
                               )}
                               {(g.creditCost || 0) > 0 && (
@@ -1933,7 +1879,7 @@ function GenerationBar({
                                     ? 'bg-amber-400/15 text-amber-300'
                                     : 'bg-amber-500/10 text-amber-400'
                                 }`}>
-                                  {g.creditCost} 积分
+                                  {formatCredits(g.creditCost)} 积分
                                 </span>
                               )}
                               {(g.creditCost || 0) === 0 && (!modelSupportsReward(g) || modelRewardPrice(g) === 0) && (

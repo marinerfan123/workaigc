@@ -488,7 +488,6 @@ export function stripBlobItems<T extends { thumbnail?: string }>(items: T[]): T[
 // ─── 服务端生成分发 ─────────────────────────────
 /**
  * 调用后端 /api/generate（默认异步）：立即返回 taskId，前端再用 taskId 轮询状态。
- * 旧调用方式（同步返回完整结果）仍兼容：传 `sync: true` 时后端会一次性返回 images。
  */
 export type GenerateResponse =
   | { status: 'pending'; taskId: string; error?: string; code?: string }
@@ -509,7 +508,6 @@ export async function apiGenerate(payload: {
   duration?: number;     // 视频时长（秒），仅 contentType='video' 时生效
   videoMode?: 't2v' | 'i2v_first' | 'i2v_first_last' | 'reference_image'; // 视频模式，仅 contentType='video' 时生效
   idempotencyKey?: string; // 幂等键：每次生成请求一个 UUID，防网络抖动双扣（后端必需）
-  sync?: boolean;         // 兼容旧测试：传 true 后端一次性返回结果
 }): Promise<GenerateResponse> {
   try {
     return await apiFetch('/api/generate', { method: 'POST', body: JSON.stringify(payload) }) as GenerateResponse;
@@ -1062,6 +1060,11 @@ export interface FinanceOverview {
 }
 export async function apiAdminFinanceOverview(): Promise<FinanceOverview | null> {
   try { return await apiFetch('/api/admin/finance/overview'); } catch { return null; }
+}
+export async function apiAdminFinanceKpiDetail(metric: string, _limit?: number): Promise<any> {
+  const qs = new URLSearchParams({ metric });
+  if (_limit) qs.set('_limit', String(_limit));
+  return apiFetch(`/api/admin/finance/kpi-detail?${qs}`);
 }
 export async function apiAdminFinanceRecharges(params: { limit?: number; offset?: number; status?: string; channel?: string } = {}): Promise<{ items: any[]; total: number }> {
   const qs = new URLSearchParams();
