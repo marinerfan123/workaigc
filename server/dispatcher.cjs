@@ -1399,6 +1399,11 @@ const WAITING_AREA = new Map();            // taskId -> { enqueueAt, lastAttempt
 let WAITING_THRESHOLD = 10;                // 可调：所有资源不可用时，等待区积压超过该值 → 触发前台提示
 // 防僵尸安全线（默认 90 分钟）：等待区内任务超过此线仍无可用资源 → 标记 waiting 保留、绝不判失败、绝不释放积分。成败只听生成端。
 const WAITING_MAX_WAIT_MS = 90 * 60 * 1000;
+// 全局重试上限（默认 10 次）：等待区重试达到该次数仍无可用资源 → 直接判失败并释放积分（关闭任务），不再无限保活。
+// 可由 settings.app.waitingAreaMaxRetry 实时覆盖（见 refreshWaitingThreshold）。
+let WAITING_MAX_RETRY = 10;
+function setWaitingMaxRetry(n) { if (typeof n === 'number' && n > 0) WAITING_MAX_RETRY = Math.floor(n); }
+function getWaitingMaxRetry() { return WAITING_MAX_RETRY; }
 let waitingPumpRunning = false;
 
 function setWaitingThreshold(n) {
@@ -1415,6 +1420,9 @@ async function refreshWaitingThreshold(pgPool) {
     const v = r.rows[0] && r.rows[0].value;
     if (v && typeof v.waitingAreaThreshold === 'number' && v.waitingAreaThreshold > 0) {
       WAITING_THRESHOLD = Math.floor(v.waitingAreaThreshold);
+    }
+    if (v && typeof v.waitingAreaMaxRetry === 'number' && v.waitingAreaMaxRetry > 0) {
+      WAITING_MAX_RETRY = Math.floor(v.waitingAreaMaxRetry);
     }
   } catch {}
 }
@@ -1556,6 +1564,9 @@ async function runWaitingPump(pgPool) {
       for (const [taskId, item] of WAITING_AREA) {
         if (now - item.enqueueAt > WAITING_MAX_WAIT_MS) {
           due.push({ taskId, item, reason: 'timeout' });
+        } else if (item.attempts >= WAITING_MAX_RETRY) {
+          // 重试已达上限仍无可用资源 → 直接关闭（判失败 + 释放积分），不再无限保活
+          due.push({ taskId, item, reason: 'maxretry' });
         } else if (now - item.lastAttempt >= waitingBackoff(item.attempts)) {
           due.push({ taskId, item, reason: 'retry' });
         }
@@ -1570,6 +1581,16 @@ async function runWaitingPump(pgPool) {
         if (reason === 'timeout') {
           // 超时只标 waiting 保留待复核：绝不判失败、绝不释放积分（成败只能听生成端回复）。
           await updateTaskStatus(pgPool, taskId, 'waiting', null, '等待区超过安全线仍无可用资源，任务保留待复核（资源恢复后可重试）', opts.user_id);
+          WAITING_AREA.delete(taskId);
+          continue;
+        }
+        if (reason === 'maxretry') {
+          // 全局重试上限：重试达到上限仍无可用资源 → 直接关闭（判失败 + 释放积分），避免无限保活。
+          await billing.releaseCredits(pgPool, opts.user_id, opts.cost, opts.idempotencyKey, opts.costPool).catch(() => {});
+          const msg = `等待区重试 ${WAITING_MAX_RETRY} 次仍无可用资源，任务已自动关闭`;
+          await updateTaskStatus(pgPool, taskId, 'failed', null, msg, opts.user_id);
+          realtime.emitTaskUpdate(opts.user_id, { taskId, status: 'failed', error: msg });
+          console.log(`[waiting] 任务 ${taskId} 重试超 ${WAITING_MAX_RETRY} 次无果，已自动关闭并释放积分 userId=${opts.user_id || ''}`);
           WAITING_AREA.delete(taskId);
           continue;
         }
