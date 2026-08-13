@@ -54,6 +54,7 @@ import paymentsMod from './payments.cjs'; // 充值订单 + 真实支付通道�
 import { createOrderExpiryWorker } from './payments/order-expiry.cjs'; // 订单超时调度器(Node 内存 worker)
 import monitorMod from './monitor.cjs'; // 后台「实时监控 · API 活动流」(全路径环形缓冲 + SSE 广播)
 import ossLoggerMod from './oss-logger.cjs'; // OssConfigPanel 专用实时日志（仅 /api/oss/*，含脱敏）
+import ossMod from './oss.cjs';             // OSS 签名/loadOssConfigs/diagnoseOssError/logger 统一模块（被 server.js + dispatcher.cjs/assetFinalize.cjs 共用；Phase 1 主流化抽出）
 import logbusMod from './logbus.cjs';   // 后台「实时日志 · 数据库/Redis/控制台」(统一日志总线 + SSE 广播)
 import syslogMod from './syslog.cjs';    // 核心错误持久化 + 进程级异常兜底(system_error_logs)
 import financeMod from './finance.cjs';  // Phase 4 后台账务系统（底层：总览/对账/账本/套餐）
@@ -112,7 +113,7 @@ async function initDB() {
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS providers (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT DEFAULT 'official', base_url TEXT DEFAULT '', api_key TEXT DEFAULT '', supported_types TEXT[] DEFAULT '{}', enabled BOOLEAN DEFAULT TRUE, protocol TEXT DEFAULT 'openai-compatible', remark TEXT DEFAULT '', default_endpoint JSONB DEFAULT '{}', capacity_model TEXT DEFAULT 'limited', bucket_max INT, cooldown_ms INT DEFAULT 60000, created_at TIMESTAMPTZ DEFAULT NOW());
       CREATE TABLE IF NOT EXISTS models (id TEXT PRIMARY KEY, model_id TEXT NOT NULL, display_name TEXT NOT NULL, mapping_name TEXT DEFAULT '', type TEXT DEFAULT 'image', provider_id TEXT REFERENCES providers(id) ON DELETE CASCADE, enabled BOOLEAN DEFAULT TRUE, supported_resolutions TEXT[] DEFAULT '{}', capabilities JSONB DEFAULT '{}', endpoint JSONB DEFAULT '{}', param_template JSONB DEFAULT '{}'::jsonb, credit_cost NUMERIC(18,4) DEFAULT 0, supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE, reward_credits_required NUMERIC(18,4) NOT NULL DEFAULT 0, max_concurrent INT, created_at TIMESTAMPTZ DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, title TEXT DEFAULT '', type TEXT DEFAULT 'image', thumbnail TEXT DEFAULT '', full_url TEXT DEFAULT '', prompt TEXT DEFAULT '', model TEXT DEFAULT '', ratio TEXT DEFAULT '1:1', source TEXT DEFAULT 'user', is_favorite BOOLEAN DEFAULT FALSE, is_deleted BOOLEAN DEFAULT FALSE, oss_url TEXT DEFAULT '', oss_object_key TEXT DEFAULT '', oss_uploaded BOOLEAN DEFAULT FALSE, category TEXT DEFAULT 'generated', status TEXT DEFAULT 'success', error_message TEXT DEFAULT '', failed_at TIMESTAMPTZ, file_size BIGINT, created_at TIMESTAMPTZ DEFAULT NOW());
+      CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, title TEXT DEFAULT '', type TEXT DEFAULT 'image', thumbnail TEXT DEFAULT '', full_url TEXT DEFAULT '', prompt TEXT DEFAULT '', model TEXT DEFAULT '', ratio TEXT DEFAULT '1:1', source TEXT DEFAULT 'user', is_favorite BOOLEAN DEFAULT FALSE, is_deleted BOOLEAN DEFAULT FALSE, oss_url TEXT DEFAULT '', oss_object_key TEXT DEFAULT '', oss_uploaded BOOLEAN DEFAULT FALSE, category TEXT DEFAULT 'generated', status TEXT DEFAULT 'success', error_message TEXT DEFAULT '', failed_at TIMESTAMPTZ, file_size BIGINT, task_id TEXT DEFAULT '', provider_url TEXT DEFAULT '', created_at TIMESTAMPTZ DEFAULT NOW());
       -- 兼容旧库：缺失列自动补齐
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='status') THEN ALTER TABLE media ADD COLUMN status TEXT DEFAULT 'success'; END IF;
@@ -120,6 +121,9 @@ async function initDB() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='failed_at') THEN ALTER TABLE media ADD COLUMN failed_at TIMESTAMPTZ; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='file_size') THEN ALTER TABLE media ADD COLUMN file_size BIGINT; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='character_id') THEN ALTER TABLE media ADD COLUMN character_id TEXT DEFAULT NULL; END IF;
+        -- ── Phase 1 主流化：服务端最终化 + reaper 兜底，新字段 task_id（关联 generation_tasks.task_id）、provider_url（重传兜底）──
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='task_id') THEN ALTER TABLE media ADD COLUMN task_id TEXT DEFAULT ''; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='media' AND column_name='provider_url') THEN ALTER TABLE media ADD COLUMN provider_url TEXT DEFAULT ''; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='mapping_name') THEN ALTER TABLE models ADD COLUMN mapping_name TEXT DEFAULT ''; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='credit_cost') THEN ALTER TABLE models ADD COLUMN credit_cost NUMERIC(18,4) DEFAULT 0; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='estimated_seconds') THEN ALTER TABLE models ADD COLUMN estimated_seconds INT; END IF;
@@ -129,6 +133,8 @@ async function initDB() {
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='max_concurrent') THEN ALTER TABLE models ADD COLUMN max_concurrent INT; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='supports_reward_balance') THEN ALTER TABLE models ADD COLUMN supports_reward_balance BOOLEAN NOT NULL DEFAULT TRUE; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='reward_credits_required') THEN ALTER TABLE models ADD COLUMN reward_credits_required NUMERIC(18,4) NOT NULL DEFAULT 0; END IF;
+        -- ── 手动权重排序：sort_order 越小越靠前；同值按 created_at 升序兜底 ──
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='sort_order') THEN ALTER TABLE models ADD COLUMN sort_order INT NOT NULL DEFAULT 0; END IF;
         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='param_template') THEN ALTER TABLE models ADD COLUMN param_template JSONB DEFAULT '{}'::jsonb; END IF;
         -- 价格/积分字段从 INT 扩为 NUMERIC(18,4)，支持小数；幂等，旧整数数据无损
         IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='models' AND column_name='credit_cost' AND data_type='integer') THEN ALTER TABLE models ALTER COLUMN credit_cost TYPE NUMERIC(18,4); END IF;
@@ -468,6 +474,8 @@ async function initDB() {
       -- 媒体表归属参考样式（用于生成时给设计者分成 + 客户端展示来源）
       ALTER TABLE media ADD COLUMN IF NOT EXISTS reference_style_id TEXT REFERENCES reference_styles(id) ON DELETE SET NULL;
       CREATE INDEX IF NOT EXISTS ix_media_style ON media(reference_style_id) WHERE reference_style_id IS NOT NULL;
+      -- Phase 1 主流化：按 generation_task 找媒体（reaper 重传/前端恢复都用得上）
+      CREATE INDEX IF NOT EXISTS ix_media_task ON media(task_id) WHERE task_id <> '';
       -- 设计者分成记账表
       CREATE TABLE IF NOT EXISTS style_earnings (
         id                 TEXT PRIMARY KEY DEFAULT 'se-' || gen_random_uuid()::text,
@@ -958,7 +966,7 @@ const SNAKE_MAP = {
   avatar_url:'avatar', reference_images:'referenceImages', base_model:'baseModel',
   is_favorite:'isFavorite', is_deleted:'isDeleted', created_at:'createdAt', base_url:'baseUrl',
   api_key:'apiKey', supported_types:'supportedTypes', default_endpoint:'defaultEndpoint',
-  display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent', rate_limits:'rateLimits', mapping_name:'mappingName', credit_cost:'creditCost', supports_reward_balance:'supportsRewardBalance', reward_credits_required:'rewardCreditsRequired', estimated_seconds:'estimatedSeconds', commercial_use:'commercialUse', capacity_model:'capacityModel', bucket_max:'bucketMax', cooldown_ms:'cooldownMs',
+  display_name:'displayName', model_id:'modelId', provider_id:'providerId', max_concurrent:'maxConcurrent', rate_limits:'rateLimits', mapping_name:'mappingName', credit_cost:'creditCost', supports_reward_balance:'supportsRewardBalance', reward_credits_required:'rewardCreditsRequired', estimated_seconds:'estimatedSeconds', commercial_use:'commercialUse', capacity_model:'capacityModel', bucket_max:'bucketMax', cooldown_ms:'cooldownMs', sort_order:'sortOrder',
   supported_resolutions:'supportedResolutions', access_point_name:'accessPointName',
   param_template:'paramTemplate',
   endpoint_external:'endpointExternal', endpoint_internal:'endpointInternal',
@@ -988,6 +996,8 @@ const SNAKE_MAP = {
   job_id:'jobId', finished_at:'finishedAt', attempt_count:'attemptCount',
   attempt_id:'attemptId', attempt_no:'attemptNo', started_at:'startedAt', latency_ms:'latencyMs',
   http_status:'httpStatus', provider_error_code:'providerErrorCode', retry_reason:'retryReason',
+  // ── Phase 1 主流化：服务端最终化新增字段（media.task_id / media.provider_url）──
+  task_id:'taskId', provider_url:'providerUrl',
 };
 function fromSnake(obj) {
   if (!obj) return obj;
@@ -1083,6 +1093,14 @@ const DEFAULT_ASSET_SEED = [
 
 async function seedDefaultAssets() {
   if (!pgPool) return;
+  // 默认不自动种示例数据：尊重后台「清空示例库」操作，避免重启后 SEED 自动复活（曾因
+  // 「表有行才跳过」守卫在清空后被再次种入而反复）。如需初始化/恢复示例，在 .env 设置
+  // ENABLE_ASSET_SEED=1 后重启，或管理员在后台示例库页面手动新增（保留系统入口）。
+  const allowSeed = process.env.ENABLE_ASSET_SEED === '1' || process.env.ENABLE_ASSET_SEED === 'true';
+  if (!allowSeed) {
+    console.log('[Seed] ENABLE_ASSET_SEED 未开启，跳过 default_assets 自动写入（示例库清空后不会自动复活）');
+    return;
+  }
   for (const a of DEFAULT_ASSET_SEED) {
       await pgPool.query(
         `INSERT INTO default_assets (id,key,title,type,thumbnail,full_url,prompt,model,ratio,source,category,status,sort,tags)
@@ -1344,7 +1362,7 @@ const traffic = {
 const monitor = monitorMod.createMonitor();   // 后台实时监控：所有 HTTP 请求(API + 静态资产)的环形缓冲 + SSE 流
 monitor.startMetricsTimer();                   // 1s 广播一次 60s 滚动指标
 
-const ossLogger = ossLoggerMod.createOssLogger();  // OSS 实时日志：仅 /api/oss/* 端点埋点 + SSE 流（前端 OssConfigPanel 订阅）
+const ossLogger = ossMod.getLogger();  // OSS 实时日志（单例由 oss.cjs 管理）；/api/oss/logs/* 路由与 OssConfigPanel SSE 仍走它
 
 const admin = adminMod.createAdmin({
   getPg: () => pgPool,
@@ -1429,19 +1447,32 @@ function appGateway(req) {
 // 注册赠送积分：可通过环境变量 SIGNUP_BONUS_CREDITS 覆盖（默认 50），
 // 集中管理，避免 credits 列默认 / INSERT / 流水 / 返回值 四处硬编码不一致
 const SIGNUP_BONUS_CREDITS = Number(process.env.SIGNUP_BONUS_CREDITS ?? 50);
+const SIGNUP_BONUS_RECHARGE_CREDITS = Number(process.env.SIGNUP_BONUS_RECHARGE_CREDITS ?? 0);
 
-// 解析注册赠送积分：优先级 环境变量 SIGNUP_BONUS_CREDITS > settings.app.signupBonusCredits > 默认 50
-async function resolveSignupBonus() {
-  const env = Number(process.env.SIGNUP_BONUS_CREDITS);
-  if (env > 0) return Math.floor(env);
+// 解析注册赠送积分：优先级 环境变量 > settings.app > 默认
+// reward（赠送余额）默认 50；recharge（充值余额赠送）默认 0
+async function resolveSignupBonusCredits() {
+  let reward = SIGNUP_BONUS_CREDITS;
+  let recharge = SIGNUP_BONUS_RECHARGE_CREDITS;
+  const envReward = Number(process.env.SIGNUP_BONUS_CREDITS);
+  const envRecharge = Number(process.env.SIGNUP_BONUS_RECHARGE_CREDITS);
+  if (Number.isFinite(envReward) && envReward > 0) reward = Math.floor(envReward);
+  if (Number.isFinite(envRecharge) && envRecharge > 0) recharge = Math.floor(envRecharge);
   if (pgPool) {
     try {
       const r = await pgPool.query("SELECT value FROM settings WHERE key='app'");
       const v = (r.rows[0] && r.rows[0].value) || {};
-      if (v && Number(v.signupBonusCredits) > 0) return Math.floor(Number(v.signupBonusCredits));
+      // 环境变量未设置时才允许后台设置覆盖
+      if (v && !Number.isFinite(envReward) && Number(v.signupBonusCredits) > 0) {
+        reward = Math.floor(Number(v.signupBonusCredits));
+      }
+      // 环境变量未设置时才允许后台设置覆盖
+      if (v && (!Number.isFinite(envRecharge) || envRecharge <= 0) && Number(v.signupBonusRechargeCredits) > 0) {
+        recharge = Math.floor(Number(v.signupBonusRechargeCredits));
+      }
     } catch {}
   }
-  return SIGNUP_BONUS_CREDITS;
+  return { reward, recharge };
 }
 
 // 解析参考样式设计者分成比例（%）：settings.app.styleCommissionRate，默认 30。
@@ -1510,21 +1541,30 @@ async function handleRegister(req, res) {
   const ex = await pgPool.query('SELECT id FROM users WHERE email=$1', [email]);
   if (ex.rows.length) return sendJSON(res, 409, { error: '该邮箱已注册' });
   const id = 'u-' + crypto.randomUUID();
-  const bonus = await resolveSignupBonus();
+  const { reward, recharge } = await resolveSignupBonusCredits();
   await pgPool.query(
-    `INSERT INTO users (id, email, display_name, password_hash, reward_credits, role)
-     VALUES ($1, $2, $3, $4, ${bonus}, 'user')`,
+    `INSERT INTO users (id, email, display_name, password_hash, reward_credits, recharge_credits, role)
+     VALUES ($1, $2, $3, $4, ${reward}, ${recharge}, 'user')`,
     [id, email, displayName, session.hashPassword(pw)],
   );
-  await pgPool.query( // 注册赠送进奖励池（审计留痕）
-    `INSERT INTO credit_transactions (user_id, kind, amount, ref, pool) VALUES ($1, 'grant', ${bonus}, 'signup-bonus', 'reward')`,
-    [id],
-  );
+  if (reward > 0) {
+    await pgPool.query(
+      `INSERT INTO credit_transactions (user_id, kind, amount, ref, pool) VALUES ($1, 'grant', ${reward}, 'signup-bonus', 'reward')`,
+      [id],
+    );
+  }
+  if (recharge > 0) {
+    await pgPool.query(
+      `INSERT INTO credit_transactions (user_id, kind, amount, ref, pool) VALUES ($1, 'grant', ${recharge}, 'signup-bonus-recharge', 'recharge')`,
+      [id],
+    );
+  }
   // 注册即拷贝公共默认资产到个人素材库（幂等）
   await ensureUserDefaults(id);
   const token = session.signSession({ id, role: 'user' });
   session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
-  return sendJSON(res, 200, { ok: true, user: { id, email, displayName, rewardCredits: bonus, rechargeCredits: 0, credits: bonus, role: 'user' } });
+  const totalCredits = reward + recharge;
+  return sendJSON(res, 200, { ok: true, user: { id, email, displayName, rewardCredits: reward, rechargeCredits: recharge, credits: totalCredits, role: 'user' } });
 }
 
 async function handleLogin(req, res) {
@@ -2155,7 +2195,7 @@ async function handleAPI(req, res) {
       // 存量 oss_url 是上传时签发的 7 天预签名链，过期即 403 → 破图；此处每次读取重签
       // （纯 HMAC、无网络、不碰二进制，守"业务服务器零二进制"铁律），OSS 链接永久可用。
       try {
-        const oss = await loadOssConfigs(pgPool);
+        const oss = await ossMod.loadOssConfigs(pgPool);
         const ac = oss.list.find((c) => c.id === oss.activeId);
         if (oss.enabled && ac) {
           const OSS_HOST = /aliyuncs\.com|myqcloud\.com/;
@@ -2168,7 +2208,7 @@ async function handleAPI(req, res) {
             const exp = cur[1] ? +cur[1] : 0;
             if (exp && exp > nowSec + 24 * 3600) continue; // 还有 >1 天有效期，不动
             try {
-              const fresh = buildOssGetUrl(ac, m.ossObjectKey).getUrl;
+              const fresh = ossMod.buildOssGetUrl(ac, m.ossObjectKey).getUrl;
               m.ossUrl = fresh;
               // thumbnail/fullUrl 若也是该 OSS 签名链，一并刷新（详情面板/查看器/下载用的是 fullUrl）
               if (m.thumbnail && OSS_HOST.test(m.thumbnail)) m.thumbnail = fresh;
@@ -2234,7 +2274,7 @@ async function handleAPI(req, res) {
     const arr = Array.isArray(items) ? items : [items];
     if (pgPool) {
       // OSS 命名空间隔离：加载 active 配置，用于校验 objectKey 归属 + 服务端重签下载 URL
-      const oss = await loadOssConfigs(pgPool);
+      const oss = await ossMod.loadOssConfigs(pgPool);
       const activeCfg = oss.list.find(c => c.id === oss.activeId);
       for (const it of arr) {
         const s = toSnake(it);
@@ -2244,18 +2284,23 @@ async function handleAPI(req, res) {
           if (!realUser || !activeCfg || !oss.enabled) {
             return sendJSON(res, 403, { error: 'OSS 资产登记需登录且 OSS 已启用并配置' });
           }
-          const ns = userOssNamespace(activeCfg, realUser.id);
+          const ns = ossMod.userOssNamespace(activeCfg, realUser.id);
           if (!s.oss_object_key.startsWith(ns)) {
             ossLogger.warn('sign', `OSS 越权登记被拒：${s.oss_object_key} 不属于 ${ns}`, { userId: realUser.id });
             return sendJSON(res, 403, { error: 'OSS 对象键越权：不属于当前用户命名空间' });
           }
           // 服务端重签下载 URL：不信任客户端传来的 oss_url，杜绝伪造/过期链接
           try {
-            const { getUrl } = buildOssGetUrl(activeCfg, s.oss_object_key);
+            const { getUrl } = ossMod.buildOssGetUrl(activeCfg, s.oss_object_key);
             s.oss_url = getUrl;
           } catch (e) {
             return sendJSON(res, 200, { success: false, message: `OSS 下载签名失败：${String(e.message || '').slice(0, 80)}` });
           }
+        }
+        // 防御性兜底：拒绝把无 URL 的占位项落库/覆盖（典型如 GenerationBar failed 占位）
+        // 注意：oss_object_key 已在上方重签为 oss_url，所以此处判空包含 oss_url 即可
+        if (!s.full_url && !s.thumbnail && !s.oss_url) {
+          continue;
         }
         // 真实文件大小：前端已带则直接用；否则落库后由服务端异步回探（不受浏览器缓存/CORS 影响）
         const fileSize = (typeof it.fileSize === 'number' && it.fileSize > 0) ? it.fileSize : null;
@@ -2316,20 +2361,21 @@ async function handleAPI(req, res) {
         'title', 'status', 'error_message', 'failed_at', 'is_favorite', 'prompt',
         'ratio', 'model', 'category', 'thumbnail', 'full_url', 'oss_url',
         'oss_object_key', 'oss_uploaded', 'source', 'type',
+        'is_default', 'default_key',
       ]);
       const s = toSnake(body);
       // ── OSS 命名空间隔离：非 admin 更新 objectKey 时校验归属 + 服务端重签下载 URL ──
       if (s.oss_object_key && realUser.role !== 'admin') {
-        const oss = await loadOssConfigs(pgPool);
+        const oss = await ossMod.loadOssConfigs(pgPool);
         const ac = oss.list.find(c => c.id === oss.activeId);
         if (!ac || !oss.enabled) return sendJSON(res, 403, { error: 'OSS 未配置' });
-        const ns = userOssNamespace(ac, realUser.id);
+        const ns = ossMod.userOssNamespace(ac, realUser.id);
         if (!s.oss_object_key.startsWith(ns)) {
           ossLogger.warn('sign', `OSS 越权更新被拒：${s.oss_object_key} 不属于 ${ns}`, { userId: realUser.id });
           return sendJSON(res, 403, { error: 'OSS 对象键越权：不属于当前用户命名空间' });
         }
         try {
-          const { getUrl } = buildOssGetUrl(ac, s.oss_object_key);
+          const { getUrl } = ossMod.buildOssGetUrl(ac, s.oss_object_key);
           s.oss_url = getUrl;
         } catch (e) {
           return sendJSON(res, 200, { success: false, message: `OSS 下载签名失败：${String(e.message || '').slice(0, 80)}` });
@@ -2347,6 +2393,38 @@ async function handleAPI(req, res) {
       if (fields.length === 0) return sendJSON(res, 200, { ok: true, noop: true });
       vals.push(id);
       await pgPool.query(`UPDATE media SET ${fields.join(',')} WHERE id=$${i}`, vals);
+
+      // ── 管理员「设为示例」时同步到全局示例模板库 default_assets；取消时移除 ──
+      // 示例库（/api/admin/samples）查询 default_assets，只有写入该表才会出现在后台示例列表。
+      if (realUser.role === 'admin' && s.is_default !== undefined) {
+        const sampleKey = s.default_key || `admin_${id}`;
+        if (s.is_default) {
+          const m = await pgPool.query(
+            'SELECT title,type,thumbnail,full_url,prompt,model,ratio,category,tags FROM media WHERE id=$1',
+            [id]
+          );
+          if (m.rows.length) {
+            const row = m.rows[0];
+            const tagsJson = Array.isArray(row.tags) ? JSON.stringify(row.tags) : (row.tags || '[]');
+            await pgPool.query(
+              `INSERT INTO default_assets (id,key,title,type,thumbnail,full_url,prompt,model,ratio,source,category,status,sort,tags)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'default',$10,'success',0,$11::jsonb)
+               ON CONFLICT (key) DO UPDATE SET
+                 title=EXCLUDED.title, type=EXCLUDED.type, thumbnail=EXCLUDED.thumbnail,
+                 full_url=EXCLUDED.full_url, prompt=EXCLUDED.prompt, model=EXCLUDED.model,
+                 ratio=EXCLUDED.ratio, category=EXCLUDED.category, tags=EXCLUDED.tags`,
+              ['da-' + crypto.randomUUID(), sampleKey,
+               row.title || '', row.type || 'image',
+               row.thumbnail || row.full_url || '', row.full_url || row.thumbnail || '',
+               row.prompt || '', row.model || '', row.ratio || '1:1',
+               row.category || 'generated', tagsJson]
+            );
+          }
+        } else {
+          await pgPool.query('DELETE FROM default_assets WHERE key=$1', [sampleKey]);
+        }
+      }
+
       return sendJSON(res, 200, { ok: true });
     }
     // 非 PG 兜底（JSON 文件模式）
@@ -2772,36 +2850,14 @@ async function handleAPI(req, res) {
         negative: (body.negative || '').toString().trim(),
       },
     };
-    // 兼容旧调用：sync=1 时直接返回完整结果（用于一次性同步测试/老客户端）——同样走计费（L9）
-    if (body.sync) {
-      try {
-        const result = await dispatcher.generate(pgPool, genOpts);
-        if (result && result.status === 'success') {
-          await billing.commitCredits(pgPool, realUser.id, cost, idemKey, pay.pool);
-          // 双边记账（sync 路径）：按 (provider, model) 组记录后台量 vs 客户量
-          try {
-            const groups = (result && result.consumption) || [];
-            const totalUnits = groups.reduce((s, g) => s + (g.units || 0), 0) || 1;
-            for (const g of groups) {
-              const alloc = Math.round((cost || 0) * (g.units || 0) / totalUnits);
-              await accounting.recordConsumption(pgPool, {
-                scope: 'user', actorId: realUser.id, purpose: 'generate',
-                providerId: g.providerId || '', modelId: g.modelId || '', modelType: g.modelType || 'image',
-                outputUnits: g.units || 0, customerChargeCredits: alloc,
-                idempotencyKey: `${idemKey}:${g.providerId}:${g.modelId}`, taskRef: idemKey,
-              });
-            }
-          } catch (e) { console.warn('[accounting generate-sync]', e.message); }
-        } else {
-          await billing.releaseCredits(pgPool, realUser.id, cost, idemKey, pay.pool).catch(() => {});
-        }
-        return sendJSON(res, 200, result);
-      } catch (e) {
-        await billing.releaseCredits(pgPool, realUser.id, cost, idemKey, pay.pool).catch(() => {});
-        return sendJSON(res, 200, { status: 'failed', error: `分发异常：${(e && e.message) || String(e)}` });
-      }
-    }
-    // 异步：插入任务表，后台跑，前端轮询（完成回调里 commit/release）
+    // [Phase 1 主流化 已删] 原兼容 if (body.sync) 同步通道已废弃：
+    //   - 旧注释「用于一次性同步测试/老客户端」已无任何调用方
+    //   - 与全异步主流范式（done 回调里服务端最终化资产 + 前端 waitForTask + SSE）相悖
+    //   - 维护双通道容易引发双写/双扣/单边结算等隐蔽 bug
+    //   旧的 sync 路径曾在 commitCredits / recordConsumption 走自己的计费副本，
+    //   现在唯一通道就是异步生成 + 前端轮询/SSE。
+
+    // 异步：插入任务表，后台跑，前端轮询（完成回调里 commit/release + 服务端最终化）
     try {
       const { taskId, error } = await dispatcher.generateAsync(pgPool, genOpts);
       if (error) {
@@ -3287,7 +3343,7 @@ async function handleAPI(req, res) {
 
   // ── Models ──
   if (url === '/api/models' && method === 'GET') {
-    if (pgPool) { const r = await pgPool.query('SELECT * FROM models ORDER BY created_at'); return sendJSON(res, 200, r.rows.map(fromSnake)); }
+    if (pgPool) { const r = await pgPool.query('SELECT * FROM models ORDER BY sort_order ASC, created_at ASC'); return sendJSON(res, 200, r.rows.map(fromSnake)); }
     return sendJSON(res, 200, readJSON('models'));
   }
   // ── POST /api/models：单条创建（RESTful，不再是破坏性全量同步）──
@@ -3351,6 +3407,7 @@ async function handleAPI(req, res) {
       max_concurrent: 'maxConcurrent', estimated_seconds: 'estimatedSeconds',
       category: 'category', commercial_use: 'commercialUse', creator: 'creator',
       param_template: 'paramTemplate',
+      sort_order: 'sortOrder',
     };
     if (!pgPool) return sendJSON(res, 501, { error: 'JSON 兜底模式不支持 PATCH' });
     try {
@@ -3375,6 +3432,7 @@ async function handleAPI(req, res) {
         else if (col === 'type') v = v == null ? 'image' : String(v);
         else if (col === 'display_name') v = String(v);
         else if (col === 'param_template') v = JSON.stringify((v && typeof v === 'object') ? v : (v == null ? {} : v));
+        else if (col === 'sort_order') v = (v == null || v === '' || Number.isNaN(Number(v))) ? 0 : Math.floor(Number(v));
         cols.push(col); vals.push(v);
       }
       // 校验：仅当本次 patch 真正改动奖励余额相关字段时，才强制校验「支持奖励余额必须填写奖励积分(>0)」
@@ -3468,158 +3526,16 @@ async function handleAPI(req, res) {
     return sendJSON(res, 200, { ok: true });
   }
 
-  // ── OSS 多槽位签名 helpers ──
-  // 阿里云 OSS 与腾讯云 COS 都用 HMAC-SHA1 手写签名（不引入 SDK，少 200KB 依赖）
-  function aliyunHost(cfg) {
-    const epRaw = String(cfg.endpointExternal || '').replace(/^https?:\/\//, '');
-    return epRaw.includes(cfg.bucket) ? epRaw : `${cfg.bucket}.${epRaw}`;
-  }
-  function aliyunBuildSignedUrls(cfg, objectKey) {
-    const host = aliyunHost(cfg);
-    const rawUrl = `https://${host}/${objectKey}`;
-    const expires = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
-    // GET 签名：query-string 形式，4 段（不含 CanonicalizedOSSHeaders 行）
-    const qParams = `Expires=${expires}&OSSAccessKeyId=${cfg.accessKeyId}`;
-    const getSignStr = `GET\n\n\n${expires}\n/${cfg.bucket}/${objectKey}`;
-    const getSig = crypto.createHmac('sha1', cfg.accessKeySecret).update(getSignStr).digest('base64');
-    return { rawUrl, signedUrl: `${rawUrl}?${qParams}&Signature=${encodeURIComponent(getSig)}`, expires };
-  }
-  function aliyunPutHeaders(cfg, objectKey, buffer, contentType) {
-    const md5 = crypto.createHash('md5').update(buffer).digest('base64');
-    const date = new Date().toUTCString();
-    const signStr = `PUT\n${md5}\n${contentType}\n${date}\n/${cfg.bucket}/${objectKey}`;
-    const sig = crypto.createHmac('sha1', cfg.accessKeySecret).update(signStr).digest('base64');
-    return {
-      md5, date,
-      headers: {
-        'Authorization': `OSS ${cfg.accessKeyId}:${sig}`,
-        'Content-Type': contentType,
-        'Content-MD5': md5,
-        'Date': date,
-      },
-    };
-  }
-  function tencentCosHost(cfg) {
-    // 腾讯云 COS 域名格式：{bucket}-{appid}.cos.{region}.myqcloud.com
-    const region = cfg.region || 'ap-shanghai';
-    const appId = cfg.appId || '';
-    const hostName = `${cfg.bucket}${appId ? '-' + appId : ''}.cos.${region}.myqcloud.com`;
-    return `https://${hostName}`;
-  }
-  function tencentCosPutHeaders(cfg, objectKey, buffer, contentType) {
-    // 腾讯云对象存储 PUT 签名：使用 SecretId/SecretKey（这里存为 accessKeyId/accessKeySecret）
-    // Header 签名流程：固定 q-sign-algorithm + q-ak, q-sign-time, q-key-time, q-header-list, q-url-param-list, q-signature
-    const secretId = cfg.accessKeyId;
-    const secretKey = cfg.accessKeySecret;
-    const qKeyTime = `${Math.floor(Date.now() / 1000)};${Math.floor(Date.now() / 1000) + 7 * 24 * 3600}`;
-    const signKey = crypto.createHmac('sha1', secretKey).update(qKeyTime).digest();
-    const httpString = `put\n/${objectKey}\n\nhost=${cfg._hostName || ''}\n`;
-    const stringToSign = `sha1\n${qKeyTime}\n${crypto.createHash('sha1').update(httpString).digest('hex')}\n`;
-    const signature = crypto.createHmac('sha1', signKey).update(stringToSign).digest('hex');
-    // 也支持 query-string 签名（更简单）：放在 header 'Authorization' 里
-    const signatureHeader = `q-sign-algorithm=sha1&q-ak=${secretId}&q-sign-time=${qKeyTime}&q-key-time=${qKeyTime}&q-header-list=host&q-url-param-list=&q-signature=${signature}`;
-    return {
-      headers: {
-        'Authorization': signatureHeader,
-        'Host': cfg._hostName || '',
-        'Content-Type': contentType || 'application/octet-stream',
-        'Content-Length': String(buffer.length),
-      },
-    };
-  }
-  function tencentCosSignUrl(cfg, objectKey) {
-    const hostName = cfg._hostName || `${cfg.bucket}${cfg.appId ? '-' + cfg.appId : ''}.cos.${cfg.region || 'ap-shanghai'}.myqcloud.com`;
-    const secretId = cfg.accessKeyId;
-    const secretKey = cfg.accessKeySecret;
-    const qKeyTime = `${Math.floor(Date.now() / 1000)};${Math.floor(Date.now() / 1000) + 7 * 24 * 3600}`;
-    const signKey = crypto.createHmac('sha1', secretKey).update(qKeyTime).digest();
-    const httpString = `get\n/${objectKey}\n\nhost=${hostName}\n`;
-    const stringToSign = `sha1\n${qKeyTime}\n${crypto.createHash('sha1').update(httpString).digest('hex')}\n`;
-    const signature = crypto.createHmac('sha1', signKey).update(stringToSign).digest('hex');
-    const host = `https://${hostName}`;
-    return { rawUrl: `${host}/${objectKey}`, signedUrl: `${host}/${objectKey}?q-sign-algorithm=sha1&q-ak=${secretId}&q-sign-time=${qKeyTime}&q-key-time=${qKeyTime}&q-header-list=host&q-url-param-list=&q-signature=${signature}`, expires: Math.floor(Date.now() / 1000) + 7 * 24 * 3600 };
-  }
-  // ── 浏览器直传专用：query-string 形式 PUT 预签名（不依赖 forbidden header） ──
-  // 阿里云 OSS 的 header 签名依赖 Date/Content-MD5（浏览器无法手动设置），
-  // 腾讯云 COS 的 header 签名依赖 Host（浏览器会覆写），两者直传都必须走 URL 签名。
-  function aliyunPutSignUrl(cfg, objectKey, contentType) {
-    const host = aliyunHost(cfg);
-    const rawUrl = `https://${host}/${objectKey}`;
-    const expires = Math.floor(Date.now() / 1000) + 3600; // PUT 预签名 1h 足够
-    // PUT 签名（无 MD5）：PUT\n\n{contentType}\n{expires}\n/{bucket}/{objectKey}
-    const putSignStr = `PUT\n\n${contentType}\n${expires}\n/${cfg.bucket}/${objectKey}`;
-    const putSig = crypto.createHmac('sha1', cfg.accessKeySecret).update(putSignStr).digest('base64');
-    const putUrl = `${rawUrl}?OSSAccessKeyId=${encodeURIComponent(cfg.accessKeyId)}&Expires=${expires}&Signature=${encodeURIComponent(putSig)}`;
-    const { signedUrl, expires: getExpires } = aliyunBuildSignedUrls(cfg, objectKey);
-    return { rawUrl, putUrl, getUrl: signedUrl, expires: getExpires, putExpires: expires };
-  }
-  function tencentCosPutSignUrl(cfg, objectKey, contentType) {
-    const hostName = cfg._hostName || `${cfg.bucket}${cfg.appId ? '-' + cfg.appId : ''}.cos.${cfg.region || 'ap-shanghai'}.myqcloud.com`;
-    const host = `https://${hostName}`;
-    const secretId = cfg.accessKeyId;
-    const secretKey = cfg.accessKeySecret;
-    const qKeyTime = `${Math.floor(Date.now() / 1000)};${Math.floor(Date.now() / 1000) + 3600}`;
-    const signKey = crypto.createHmac('sha1', secretKey).update(qKeyTime).digest();
-    const httpString = `put\n/${objectKey}\n\nhost=${hostName}\n`;
-    const stringToSign = `sha1\n${qKeyTime}\n${crypto.createHash('sha1').update(httpString).digest('hex')}\n`;
-    const signature = crypto.createHmac('sha1', signKey).update(stringToSign).digest('hex');
-    const putUrl = `${host}/${objectKey}?q-sign-algorithm=sha1&q-ak=${secretId}&q-sign-time=${qKeyTime}&q-key-time=${qKeyTime}&q-header-list=host&q-url-param-list=&q-signature=${signature}`;
-    const { signedUrl, expires } = tencentCosSignUrl(cfg, objectKey);
-    return { rawUrl: `${host}/${objectKey}`, putUrl, getUrl: signedUrl, expires, putExpires: Math.floor(Date.now() / 1000) + 3600 };
-  }
-  // 按 provider 重签 GET（下载）预签名 URL —— 供媒体登记时服务端签发，杜绝信任客户端传来的 oss_url
-  function buildOssGetUrl(cfg, objectKey) {
-    if (cfg.providerType === 'tencent-cos') {
-      const { signedUrl, expires } = tencentCosSignUrl(cfg, objectKey);
-      return { getUrl: signedUrl, expires };
-    }
-    const { signedUrl, expires } = aliyunBuildSignedUrls(cfg, objectKey);
-    return { getUrl: signedUrl, expires };
-  }
-  // 计算某用户的 OSS 命名空间前缀，用于隔离校验（与 sign-upload 的 objectKey 构造保持一致）
-  function userOssNamespace(cfg, userId) {
-    const prefix = (cfg?.pathPrefix || 'images/').replace(/^\/+|\/+$/g, '');
-    return `${prefix}/${userId}/`;
-  }
-  // 公共：从 oss_configs 拉所有（或单条）
-  async function loadOssConfigs(pgPool) {
-    if (pgPool) {
-      const [cfg, list] = await Promise.all([
-        pgPool.query('SELECT * FROM oss_config WHERE id=1'),
-        pgPool.query('SELECT * FROM oss_configs ORDER BY created_at'),
-      ]);
-      return { enabled: cfg.rows[0]?.enabled !== false, activeId: cfg.rows[0]?.active_id || '', list: list.rows.map(fromSnake) };
-    }
-    const settings = readJSON('oss_settings') || {}; // {enabled, activeId}
-    const list = Array.isArray(readJSON('oss_configs')) ? readJSON('oss_configs') : [];
-    return { enabled: settings.enabled !== false, activeId: settings.activeId || (list[0]?.id || ''), list };
-  }
-  function getProviderConfigsObj() { return { enabled: loadOssConfigs().enabled, activeId: loadOssConfigs().activeId, list: loadOssConfigs().list }; }
-  function diagnoseOssError(providerType, status, body) {
-    const text = String(body || '').slice(0, 200);
-    if (providerType === 'aliyun-oss') {
-      if (text.includes('NoSuchBucket')) return 'Bucket 不存在，请检查 Bucket 名称';
-      if (text.includes('SignatureDoesNotMatch')) return '签名错误，请检查 AccessKey 或 Bucket';
-      if (text.includes('AccessDenied')) return '访问被拒绝，请检查 AccessKey 权限';
-      return `阿里云 OSS PUT HTTP ${status}: ${text}`;
-    } else {
-      // 腾讯云错误诊断
-      if (text.includes('NoSuchBucket') || text.includes('NoSuchResource')) return 'Bucket 不存在或 AppId/Region/Bucket 组合错';
-      if (text.includes('SignatureDoesNotMatch') || text.includes('AuthFailure')) return '签名失败，请检查 SecretId/SecretKey/AppId/Region';
-      if (text.includes('AccessDenied')) return '访问被拒绝，请检查 CAM 权限（putObject）';
-      return `腾讯云 COS PUT HTTP ${status}: ${text}`;
-    }
-  }
-  // OSS 实时日志（前端 OssConfigPanel 订阅）。细节会在 record() 内自动脱敏。
-  const ossLog = (level, action, message, details) => ossLogger[level](action, message, details);
+  // ── OSS 多槽位签名 / loadOssConfigs / diagnoseOssError / logger 已全部抽到 server/oss.cjs（Phase 1 主流化）
+  //   此处仅保留路由分发，签名/上传调用走 ossMod.* ──
   const adminId = (req) => req.user?.id || req.user?.email || 'guest';
 
   // ── OSS 总览（enabled + active + configs 列表） ──
   if (url === '/api/oss' && method === 'GET') {
     const t0 = Date.now();
-    const { enabled, activeId, list } = await loadOssConfigs(pgPool);
+    const { enabled, activeId, list } = await ossMod.loadOssConfigs(pgPool);
     const active = list.find(c => c.id === activeId) || null;
-    ossLog('info', 'list', `读取 OSS 总览：${list.length} 个槽位，活跃 ${active?.bucket || '无'}`, { durationMs: Date.now() - t0, slotCount: list.length, activeBucket: active?.bucket });
+    ossMod.log('info', 'list', `读取 OSS 总览：${list.length} 个槽位，活跃 ${active?.bucket || '无'}`, { durationMs: Date.now() - t0, slotCount: list.length, activeBucket: active?.bucket });
     return sendJSON(res, 200, {
       enabled,
       activeId,
@@ -3651,7 +3567,7 @@ async function handleAPI(req, res) {
       settings.enabled = next;
       writeJSON('oss_settings', settings);
     }
-    ossLog('success', 'toggle', `OSS 总开关 → ${next ? '开' : '关'}（操作员 ${adminId(req)}）`, { enabled: next });
+    ossMod.log('success', 'toggle', `OSS 总开关 → ${next ? '开' : '关'}（操作员 ${adminId(req)}）`, { enabled: next });
     return sendJSON(res, 200, { ok: true });
   }
 
@@ -3662,7 +3578,7 @@ async function handleAPI(req, res) {
     const id = decodeURIComponent(cfgMatch[1]);
     const body = await parseBody(req) || {};
     if (!body.providerType || !['aliyun-oss', 'tencent-cos'].includes(body.providerType)) {
-      ossLog('warn', 'save', `保存槽位 ${id} 失败：providerType 非法`, { id });
+      ossMod.log('warn', 'save', `保存槽位 ${id} 失败：providerType 非法`, { id });
       return sendJSON(res, 200, { ok: false, error: 'providerType 必须为 aliyun-oss 或 tencent-cos' });
     }
     const row = {
@@ -3693,7 +3609,7 @@ async function handleAPI(req, res) {
       if (idx >= 0) arr[idx] = row; else arr.push(row);
       writeJSON('oss_configs', arr);
     }
-    ossLog('success', 'save', `保存槽位 ${id}（${row.providerType}, bucket=${row.bucket}）`, { id, providerType: row.providerType, bucket: row.bucket, displayName: row.displayName });
+    ossMod.log('success', 'save', `保存槽位 ${id}（${row.providerType}, bucket=${row.bucket}）`, { id, providerType: row.providerType, bucket: row.bucket, displayName: row.displayName });
     return sendJSON(res, 200, { ok: true, id });
   }
   if (cfgMatch && method === 'DELETE') {
@@ -3706,7 +3622,7 @@ async function handleAPI(req, res) {
       const arr = Array.isArray(readJSON('oss_configs')) ? readJSON('oss_configs') : [];
       writeJSON('oss_configs', arr.filter(c => c.id !== id));
     }
-    ossLog('success', 'delete', `删除槽位 ${id}`, { id });
+    ossMod.log('success', 'delete', `删除槽位 ${id}`, { id });
     return sendJSON(res, 200, { ok: true });
   }
   const newCfgMatch = url === '/api/oss/configs' && method === 'POST';
@@ -3726,7 +3642,7 @@ async function handleAPI(req, res) {
       arr.push(row);
       writeJSON('oss_configs', arr);
     }
-    ossLog('success', 'create', `创建槽位 ${id}（${row.providerType}）`, { id, providerType: row.providerType, displayName: row.displayName });
+    ossMod.log('success', 'create', `创建槽位 ${id}（${row.providerType}）`, { id, providerType: row.providerType, displayName: row.displayName });
     return sendJSON(res, 200, { ok: true, ...row });
   }
 
@@ -3735,9 +3651,9 @@ async function handleAPI(req, res) {
   if (actMatch && method === 'POST') {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const id = decodeURIComponent(actMatch[1]);
-    const { list } = await loadOssConfigs(pgPool);
+    const { list } = await ossMod.loadOssConfigs(pgPool);
     if (!list.find(c => c.id === id)) {
-      ossLog('warn', 'activate', `切活失败：槽位 ${id} 不存在`, { id });
+      ossMod.log('warn', 'activate', `切活失败：槽位 ${id} 不存在`, { id });
       return sendJSON(res, 200, { ok: false, error: '槽位不存在' });
     }
     if (pgPool) {
@@ -3747,7 +3663,7 @@ async function handleAPI(req, res) {
       settings.activeId = id;
       writeJSON('oss_settings', settings);
     }
-    ossLog('success', 'activate', `切活 → ${id}`, { id });
+    ossMod.log('success', 'activate', `切活 → ${id}`, { id });
     return sendJSON(res, 200, { ok: true, activeId: id });
   }
 
@@ -3764,17 +3680,17 @@ async function handleAPI(req, res) {
     let testSlotId = null;
     if (testMatch) {
       if (!paramCfg?.accessKeyId || !paramCfg?.accessKeySecret || !paramCfg?.bucket) {
-        ossLog('warn', 'test', '试连失败：AccessKey/AccessKeySecret/Bucket 不能为空', { providerType: paramCfg.providerType });
+        ossMod.log('warn', 'test', '试连失败：AccessKey/AccessKeySecret/Bucket 不能为空', { providerType: paramCfg.providerType });
         return sendJSON(res, 200, { success: false, message: 'AccessKey/AccessKeySecret/Bucket 不能为空' });
       }
       cfg = { providerType: paramCfg.providerType || 'aliyun-oss', bucket: paramCfg.bucket, region: paramCfg.region, appId: paramCfg.appId, accessKeyId: paramCfg.accessKeyId, accessKeySecret: paramCfg.accessKeySecret, endpointExternal: paramCfg.endpointExternal };
     } else {
       if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
       testSlotId = decodeURIComponent(cfgTestMatch[1]);
-      const { list } = await loadOssConfigs(pgPool);
+      const { list } = await ossMod.loadOssConfigs(pgPool);
       cfg = list.find(c => c.id === testSlotId);
       if (!cfg) {
-        ossLog('warn', 'test', `试连失败：槽位 ${testSlotId} 不存在`, { id: testSlotId });
+        ossMod.log('warn', 'test', `试连失败：槽位 ${testSlotId} 不存在`, { id: testSlotId });
         return sendJSON(res, 200, { success: false, message: '槽位不存在' });
       }
     }
@@ -3784,29 +3700,29 @@ async function handleAPI(req, res) {
       if (cfg.providerType === 'tencent-cos') {
         cfg._hostName = `${cfg.bucket}${cfg.appId ? '-' + cfg.appId : ''}.cos.${cfg.region || 'ap-shanghai'}.myqcloud.com`;
         url2put = `https://${cfg._hostName}/__probe_${Date.now()}`;
-        const h = tencentCosPutHeaders(cfg, `__probe_${Date.now()}.bin`, Buffer.alloc(1), 'application/octet-stream');
+        const h = ossMod.tencentCosPutHeaders(cfg, `__probe_${Date.now()}.bin`, Buffer.alloc(1), 'application/octet-stream');
         headers = h.headers;
       } else {
         const host = cfg.endpointExternal?.includes(cfg.bucket) ? cfg.endpointExternal : `${cfg.bucket}.${cfg.endpointExternal}`;
         url2put = `https://${host}/__probe_${Date.now()}`;
-        const h = aliyunPutHeaders(cfg, `__probe_${Date.now()}`, Buffer.alloc(1), 'application/octet-stream');
+        const h = ossMod.aliyunPutHeaders(cfg, `__probe_${Date.now()}`, Buffer.alloc(1), 'application/octet-stream');
         headers = h.headers;
       }
       const r = await fetch(url2put, { method: 'PUT', headers, body: Buffer.alloc(1) });
       const dur = Date.now() - t0;
       // 200 = 写到了；403/401/400 = 鉴权/权限错，但说明能连上；404 = 不该发生的；200 + 403 各自含义不同
       if (r.status === 200) {
-        ossLog('success', 'test', `试连成功：${cfg.providerType} ${cfg.bucket}（${dur}ms）`, { id: testSlotId, providerType: cfg.providerType, bucket: cfg.bucket, status: 200, durationMs: dur });
+        ossMod.log('success', 'test', `试连成功：${cfg.providerType} ${cfg.bucket}（${dur}ms）`, { id: testSlotId, providerType: cfg.providerType, bucket: cfg.bucket, status: 200, durationMs: dur });
         return sendJSON(res, 200, { success: true, message: `连接成功，${cfg.providerType} Bucket "${cfg.bucket}" 可写`, status: 200 });
       }
-      const msg = diagnoseOssError(cfg.providerType, r.status, await r.text());
-      ossLog('error', 'test', `试连失败：${cfg.providerType} ${cfg.bucket} → HTTP ${r.status}`, { id: testSlotId, providerType: cfg.providerType, bucket: cfg.bucket, status: r.status, durationMs: dur, error: msg });
+      const msg = ossMod.diagnoseOssError(cfg.providerType, r.status, await r.text());
+      ossMod.log('error', 'test', `试连失败：${cfg.providerType} ${cfg.bucket} → HTTP ${r.status}`, { id: testSlotId, providerType: cfg.providerType, bucket: cfg.bucket, status: r.status, durationMs: dur, error: msg });
       if (r.status === 403) return sendJSON(res, 200, { success: false, message: msg, status: 403 });
       if (r.status === 404) return sendJSON(res, 200, { success: false, message: msg, status: 404 });
       return sendJSON(res, 200, { success: false, message: msg, status: r.status });
     } catch (e) {
       const msg = `网络异常：${e.message.slice(0, 100)}`;
-      ossLog('error', 'test', `试连异常：${cfg.providerType} ${cfg.bucket}`, { id: testSlotId, providerType: cfg.providerType, bucket: cfg.bucket, error: msg });
+      ossMod.log('error', 'test', `试连异常：${cfg.providerType} ${cfg.bucket}`, { id: testSlotId, providerType: cfg.providerType, bucket: cfg.bucket, error: msg });
       return sendJSON(res, 200, { success: false, message: msg });
     }
   }
@@ -3816,22 +3732,22 @@ async function handleAPI(req, res) {
   if (url === '/api/oss/sign-upload' && method === 'POST') {
     const t0 = Date.now();
     const body = await parseBody(req);
-    const { enabled, activeId, list } = await loadOssConfigs(pgPool);
+    const { enabled, activeId, list } = await ossMod.loadOssConfigs(pgPool);
     if (!enabled) {
-      ossLog('warn', 'sign', '签发失败：OSS 总开关未启用', { userId: req.user?.id });
+      ossMod.log('warn', 'sign', '签发失败：OSS 总开关未启用', { userId: req.user?.id });
       return sendJSON(res, 200, { success: false, message: 'OSS 总开关未启用' });
     }
     const activeCfg = list.find(c => c.id === activeId);
     if (!activeCfg) {
-      ossLog('warn', 'sign', '签发失败：未配置 active OSS 槽位', { userId: req.user?.id });
+      ossMod.log('warn', 'sign', '签发失败：未配置 active OSS 槽位', { userId: req.user?.id });
       return sendJSON(res, 200, { success: false, message: '未配置 active OSS 槽位' });
     }
     if (!activeCfg.enabled) {
-      ossLog('warn', 'sign', '签发失败：active OSS 槽位已停用', { userId: req.user?.id, activeId });
+      ossMod.log('warn', 'sign', '签发失败：active OSS 槽位已停用', { userId: req.user?.id, activeId });
       return sendJSON(res, 200, { success: false, message: 'active OSS 槽位已停用' });
     }
     if (!activeCfg.accessKeyId || !activeCfg.accessKeySecret || !activeCfg.bucket) {
-      ossLog('warn', 'sign', '签发失败：active 配置不完整（缺 AccessKey 或 Bucket）', { userId: req.user?.id, activeId });
+      ossMod.log('warn', 'sign', '签发失败：active 配置不完整（缺 AccessKey 或 Bucket）', { userId: req.user?.id, activeId });
       return sendJSON(res, 200, { success: false, message: 'active 配置不完整（缺 AccessKey 或 Bucket）' });
     }
     // 锁前缀：images/{userId}/，防止越权写他人目录
@@ -3850,12 +3766,12 @@ async function handleAPI(req, res) {
       if (activeCfg.providerType === 'tencent-cos') {
         cfg = { ...activeCfg };
         cfg._hostName = `${cfg.bucket}${cfg.appId ? '-' + cfg.appId : ''}.cos.${cfg.region || 'ap-shanghai'}.myqcloud.com`;
-        signed = tencentCosPutSignUrl(cfg, objectKey, contentType);
+        signed = ossMod.tencentCosPutSignUrl(cfg, objectKey, contentType);
       } else {
-        signed = aliyunPutSignUrl(activeCfg, objectKey, contentType);
+        signed = ossMod.aliyunPutSignUrl(activeCfg, objectKey, contentType);
       }
       const dur = Date.now() - t0;
-      ossLog('success', 'sign', `[${providerTag}] 🔏 签发直传 ${objectKey} → PUT 1h / GET 7d（${dur}ms）`, {
+      ossMod.log('success', 'sign', `[${providerTag}] 🔏 签发直传 ${objectKey} → PUT 1h / GET 7d（${dur}ms）`, {
         userId,
         providerType: activeCfg.providerType,
         bucket: activeCfg.bucket,
@@ -3877,24 +3793,24 @@ async function handleAPI(req, res) {
       });
     } catch (e) {
       const msg = `签名签发失败：${e.message.slice(0, 100)}`;
-      ossLog('error', 'sign', `签发异常：${activeCfg.providerType} ${activeCfg.bucket}`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, error: msg });
+      ossMod.log('error', 'sign', `签发异常：${activeCfg.providerType} ${activeCfg.bucket}`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, error: msg });
       return sendJSON(res, 200, { success: false, message: msg });
     }
   }
 
-  // ── OSS 后端接管上传（业务服务器拉字节 + PUT 到 OSS，浏览器零直传） ──
-  // 入参（JSON 二选一）：
-  //   • { sourceUrl, fileName?, contentType? }  —— 后端按 URL 拉取字节（生成结果 / 外部 URL 入库）
-  //   • { fileName, contentType, dataBase64 }    —— 浏览器上传本地文件（base64 透传，免新增 multipart 解析）
+  // ── OSS 后端接管上传（业务服务器拉字节 + PUT 到 OSS） ──
+  // 仅用于「外部 URL 入库」：浏览器无法对第三方 URL 做 SSRF 安全拉取，故由后端中继。
+  // 本地文件 / 生成结果（data:）一律走主流「前端预签名直传」(/api/oss/sign-upload)，不再经后端 base64 中继。
+  // 入参：{ sourceUrl, fileName?, contentType? }
   // 返回 { ok, ossUrl(GET 7d), ossObjectKey, providerType } 或 { ok:false, message }
   if (url === '/api/oss/ingest' && method === 'POST') {
     const t0 = Date.now();
     const userId = req.user?.id;
     if (!userId) return sendJSON(res, 401, { ok: false, message: '请先登录后再上传' });
     const body = await parseBody(req) || {};
-    const { enabled, activeId, list } = await loadOssConfigs(pgPool);
+    const { enabled, activeId, list } = await ossMod.loadOssConfigs(pgPool);
     if (!enabled) {
-      ossLog('warn', 'ingest', '接管上传失败：OSS 总开关未启用', { userId });
+      ossMod.log('warn', 'ingest', '接管上传失败：OSS 总开关未启用', { userId });
       return sendJSON(res, 200, { ok: false, message: 'OSS 总开关未启用' });
     }
     const activeCfg = list.find(c => c.id === activeId);
@@ -3934,13 +3850,9 @@ async function handleAPI(req, res) {
         if (buffer.length > MAX) return sendJSON(res, 200, { ok: false, message: '源图超过 50MB 上限' });
         const ct = r.headers.get('content-type');
         if (ct) contentType = ct.split(';')[0].trim();
-      } else if (body?.dataBase64 && typeof body.dataBase64 === 'string') {
-        buffer = Buffer.from(body.dataBase64, 'base64');
-        srcLabel = 'local-base64';
-        if (buffer.length === 0) return sendJSON(res, 200, { ok: false, message: '空文件' });
-        if (buffer.length > MAX) return sendJSON(res, 200, { ok: false, message: '文件超过 50MB 上限' });
       } else {
-        return sendJSON(res, 200, { ok: false, message: '缺少 sourceUrl 或 dataBase64' });
+        // 本地文件上传已改为「浏览器预签名直传 OSS」，不再经后端 base64 中继（见 /api/oss/sign-upload）
+        return sendJSON(res, 200, { ok: false, message: '仅支持 sourceUrl（外部 URL 入库），本地文件请走预签名直传' });
       }
     } catch (e) {
       return sendJSON(res, 200, { ok: false, message: `取字节失败：${(e instanceof Error ? e.message : String(e)).slice(0, 100)}` });
@@ -3958,22 +3870,22 @@ async function handleAPI(req, res) {
       if (activeCfg.providerType === 'tencent-cos') {
         const cfg = { ...activeCfg };
         cfg._hostName = `${cfg.bucket}${cfg.appId ? '-' + cfg.appId : ''}.cos.${cfg.region || 'ap-shanghai'}.myqcloud.com`;
-        signed = tencentCosPutSignUrl(cfg, objectKey, contentType);
+        signed = ossMod.tencentCosPutSignUrl(cfg, objectKey, contentType);
       } else {
-        signed = aliyunPutSignUrl(activeCfg, objectKey, contentType);
+        signed = ossMod.aliyunPutSignUrl(activeCfg, objectKey, contentType);
       }
       const putRes = await fetch(signed.putUrl, { method: 'PUT', body: buffer, headers: { 'Content-Type': contentType } });
       if (!putRes.ok) {
-        const msg = diagnoseOssError(activeCfg.providerType, putRes.status, await putRes.text().catch(() => ''));
-        ossLog('error', 'ingest', `上传失败：${activeCfg.providerType} ${activeCfg.bucket} → ${msg}`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, srcLabel });
+        const msg = ossMod.diagnoseOssError(activeCfg.providerType, putRes.status, await putRes.text().catch(() => ''));
+        ossMod.log('error', 'ingest', `上传失败：${activeCfg.providerType} ${activeCfg.bucket} → ${msg}`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, srcLabel });
         return sendJSON(res, 200, { ok: false, message: msg });
       }
       const getUrl = signed.getUrl || '';
-      ossLog('success', 'ingest', `[${providerTag}] ✅ 后端接管上传 ${objectKey} → GET 7d（${Date.now() - t0}ms）`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, srcLabel, durationMs: Date.now() - t0 });
+      ossMod.log('success', 'ingest', `[${providerTag}] ✅ 后端接管上传 ${objectKey} → GET 7d（${Date.now() - t0}ms）`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, srcLabel, durationMs: Date.now() - t0 });
       return sendJSON(res, 200, { ok: true, ossUrl: getUrl, ossObjectKey: objectKey, providerType: activeCfg.providerType });
     } catch (e) {
       const msg = `上传异常：${(e instanceof Error ? e.message : String(e)).slice(0, 100)}`;
-      ossLog('error', 'ingest', `上传异常：${activeCfg.providerType} ${activeCfg.bucket}`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, srcLabel, error: msg });
+      ossMod.log('error', 'ingest', `上传异常：${activeCfg.providerType} ${activeCfg.bucket}`, { userId, providerType: activeCfg.providerType, bucket: activeCfg.bucket, objectKey, srcLabel, error: msg });
       return sendJSON(res, 200, { ok: false, message: msg });
     }
   }

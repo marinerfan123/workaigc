@@ -300,14 +300,14 @@ export async function apiTestOss(config: Record<string, any>): Promise<{
 }
 
 /**
- * 后端接管 OSS 上传：浏览器把来源（外部 URL 或本地文件 base64）交给后端，
- * 后端拉字节 + PUT 到 OSS，返回 7 天 GET 签名 ossUrl。业务服务器零直传。
+ * 后端接管 OSS 上传（仅外部 URL 入库）：浏览器把外部 URL 交给后端，
+ * 后端做 SSRF 校验后拉字节 + PUT 到 OSS，返回 7 天 GET 签名 ossUrl。
+ * 注意：本地文件 / 生成结果(data:) 已改为「前端预签名直传」，不走此接口。
  */
 export async function apiIngestOss(body: {
   sourceUrl?: string;
   fileName?: string;
   contentType?: string;
-  dataBase64?: string;
 }): Promise<{
   ok: boolean;
   ossUrl?: string;
@@ -323,6 +323,36 @@ export async function apiIngestOss(body: {
   } catch (e) {
     return {
       ok: false,
+      message: (e instanceof Error ? e.message : String(e)).slice(0, 100),
+    };
+  }
+}
+
+/**
+ * 主流上传：后端签「短时 PUT 预签名 URL」（AK/SK 不出后端），浏览器裸二进制直传 OSS。
+ * 返回 putUrl（直传用，默认 1h）/ getUrl（7d GET 签名，落库用）/ objectKey（命名空间=images/{userId}/）。
+ */
+export async function apiSignOssUpload(body: {
+  fileName?: string;
+  contentType?: string;
+}): Promise<{
+  success: boolean;
+  objectKey?: string;
+  putUrl?: string;
+  getUrl?: string;
+  putExpires?: number;
+  expires?: number;
+  providerType?: string;
+  message?: string;
+}> {
+  try {
+    return await apiFetch('/api/oss/sign-upload', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    return {
+      success: false,
       message: (e instanceof Error ? e.message : String(e)).slice(0, 100),
     };
   }
@@ -480,8 +510,9 @@ export async function apiAdminPromoteReferenceStyle(id: string, body: { isPromot
 }
 
 /** 过滤掉刷新后失效的 blob URL 临时项（本地上传的临时文件不持久化） */
-export function stripBlobItems<T extends { thumbnail?: string }>(items: T[]): T[] {
-  return items.filter((m) => !m.thumbnail?.startsWith('blob:'));
+export function stripBlobItems<T extends { thumbnail?: string; fullUrl?: string }>(items: T[]): T[] {
+  // 防御性兜底：绝不把 blob:/data: 临时 URL 落库（data: 即 base64 资产，必须先在 OSS 直传后存永久链接）
+  return items.filter((m) => !m.thumbnail?.startsWith('blob:') && !m.fullUrl?.startsWith('data:'));
 }
 
 // ─── 服务端生成分发 ─────────────────────────────

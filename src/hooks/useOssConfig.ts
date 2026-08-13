@@ -7,7 +7,7 @@ import {
 import {
   apiGetOss, apiSetOssEnabled, apiCreateOssSlot, apiUpdateOssSlot,
   apiDeleteOssSlot, apiActivateOssSlot, apiTestOssSlot, apiTestOss,
-  apiIngestOss, ensureApi,
+  apiIngestOss, apiSignOssUpload, ensureApi,
 } from '@/services/api';
 
 // ─── 多槽位 OSS 共享状态（仅内存，持久化全部走后端 API） ────────────
@@ -176,8 +176,10 @@ export function useOssConfig() {
   );
 
   /**
-   * 后端接管上传 —— 浏览器上传【本地文件】，base64 透传后端，后端 PUT 到 OSS。
-   * 避免新增 multipart 解析；图片场景足够（超大视频建议走 sourceUrl）。
+   * 主流上传 —— 后端签「短时 PUT 预签名 URL」（AK/SK 不出后端），
+   * 浏览器裸二进制直传 OSS。零 base64、零中继、零 33% 带宽膨胀。
+   * 适用于本地文件与生成结果（data: → dataUrlToFile 转 File 后直传）。
+   * 超大文件（>100MB）仍可靠（单 PUT 上限 5GB）；如需断点续传再上 OSS 分片。
    */
   const ingestFile = useCallback(
     async (
@@ -187,20 +189,26 @@ export function useOssConfig() {
       if (!s.enabled || !active) {
         return { success: false, url: '', objectKey: '', error: 'OSS 未启用或无 active 槽位' };
       }
-      const dataBase64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error('读取文件失败'));
-        reader.onload = () => {
-          const result = reader.result as string;
-          resolve(result.includes(',') ? result.split(',')[1] : result);
-        };
-        reader.readAsDataURL(file as Blob);
-      });
-      const r = await apiIngestOss({ fileName, contentType: (file as File).type || 'image/jpeg', dataBase64 });
-      if (!r.ok || !r.ossUrl) {
-        return { success: false, url: '', objectKey: r.ossObjectKey || '', providerType: r.providerType, error: r.message || 'ingest 失败' };
+      const contentType = (file as File).type || 'application/octet-stream';
+      // 1) 后端签短时 PUT 预签名 URL（命名空间锁 userId，fails-closed）
+      const sign = await apiSignOssUpload({ fileName, contentType });
+      if (!sign.success || !sign.putUrl || !sign.getUrl || !sign.objectKey) {
+        return { success: false, url: '', objectKey: '', providerType: sign.providerType, error: sign.message || '签发直传 URL 失败' };
       }
-      return { success: true, url: r.ossUrl, objectKey: r.ossObjectKey || '', providerType: r.providerType };
+      // 2) 浏览器裸二进制直传 OSS（body 直接是 File/Blob，不编码 base64）
+      try {
+        const putRes = await fetch(sign.putUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': contentType },
+          body: file,
+        });
+        if (!putRes.ok) {
+          return { success: false, url: '', objectKey: sign.objectKey, providerType: sign.providerType, error: `OSS 直传失败 HTTP ${putRes.status}` };
+        }
+      } catch (e) {
+        return { success: false, url: '', objectKey: sign.objectKey, providerType: sign.providerType, error: `OSS 直传异常：${(e instanceof Error ? e.message : String(e)).slice(0, 100)}` };
+      }
+      return { success: true, url: sign.getUrl, objectKey: sign.objectKey, providerType: sign.providerType };
     },
     [s.enabled, active],
   );

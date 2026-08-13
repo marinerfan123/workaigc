@@ -7,6 +7,7 @@ import {
   Download,
   Trash2,
   Share2,
+  Star,
   Image as ImageIcon,
   ImagePlus,
   Sparkles,
@@ -50,6 +51,9 @@ interface MediaCardProps {
    * 命中条件：item.status 不是 'failed' 但图片 URL 实际加载失败（破图/404/超时）。
    */
   onProbeFailed?: (item: IMediaItem, error: string) => void;
+  /** 管理员：将此图设为/取消示例 */
+  isAdmin?: boolean;
+  onSetExample?: (item: IMediaItem) => void;
   gridSize: 'S' | 'M' | 'L';
 }
 
@@ -66,6 +70,8 @@ export default function MediaCard({
   onAddAsReference,
   onUseRecipe,
   onRemix,
+  isAdmin,
+  onSetExample,
   gridSize,
 }: MediaCardProps) {
   const [moreOpen, setMoreOpen] = useState(false);
@@ -163,6 +169,7 @@ export default function MediaCard({
     { icon: Edit3, label: '重命名' },
     { icon: Share2, label: '分享' },
     { icon: Palette, label: '设置项目封面' },
+    ...(isAdmin && !isPending && !isFailed ? [{ icon: Star, label: item.isDefault ? '取消示例' : '设为示例' }] : []),
     { icon: Trash2, label: '移至回收站', danger: true },
   ];
 
@@ -445,6 +452,7 @@ export default function MediaCard({
                     if (mi.label === '添加为参考图' && onAddAsReference) onAddAsReference(item.fullUrl);
                     if (mi.label === '使用此配方创作' && onUseRecipe) onUseRecipe(item);
                     if (mi.label === '生成变体' && onRemix) onRemix(item);
+                    if ((mi.label === '设为示例' || mi.label === '取消示例') && onSetExample) onSetExample(item);
                     closeMenu();
                   }}
                   className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs transition-colors ${

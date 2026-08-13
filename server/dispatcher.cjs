@@ -13,6 +13,7 @@ const { loadDispatchPairs } = require('./modules/modelhub/bindings.cjs');
 // ModelHub V3 — 智能路由尝试数据落地（generation_jobs / generation_attempts）：双写，best-effort 不阻断生成
 const { makeJobRecorder, NULL_RECORDER, recordResumeJob } = require('./modules/modelhub/jobs.cjs');
 const router = require('./modules/modelhub/router.cjs'); // Phase 3.4 确定性智能路由（纯函数，非阻断接入）
+const assetFinalize = require('./assetFinalize.cjs'); // Phase 1 主流化：服务端最终化 provider 资源到 OSS + 写 media（替代前端 processResultImages）
 
 // ─── 日志总线注入（由 server.js 启动时 setLogSink(logbus) 注入）───
 // 生成失败 / 异常必须落到后台「核心错误日志 + 实时监控」(logbus.emit('ERROR') → syslog 持久化 + SSE 广播)，
@@ -133,6 +134,10 @@ function resolveEndpoint(provider, model, kind) {
 
 // ─── 图片生成 ──────────────────────────────────────
 const RATIO_TO_SIZE = { '16:9': '1792x1024', '4:3': '1024x768', '1:1': '1024x1024', '3:4': '768x1024', '9:16': '1024x1792' };
+// OpenAI GPT Image 系列（gpt-image-1 / gpt-image-2 / gpt-image-1.5）支持的 size 枚举与 DALL-E 3 不同。
+// 官方有效值：auto / 1024x1024 / 1536x1024（横向 16:9） / 1024x1536（纵向 9:16）。
+// 其余比例回退到 auto，由模型按提示词自动决定画幅。
+const GPT_IMAGE_RATIO_TO_SIZE = { '1:1': '1024x1024', '16:9': '1536x1024', '9:16': '1024x1536', 'auto': 'auto' };
 const RES_MULTIPLIER = { '1k': 1, '2k': 2, '4k': 4, '8k': 8 };
 
 function bumpSize(size, res) {
@@ -142,6 +147,12 @@ function bumpSize(size, res) {
   return `${w * mul}x${h * mul}`;
 }
 
+function isGptImageModel(model) {
+  if (!model) return false;
+  const name = (model.upstreamModelName || model.model_id || model.model || '').toLowerCase();
+  return /gpt-image/i.test(name);
+}
+
 async function imageGenerate(provider, model, opts) {
   const { prompt, ratio, resolution, count, referenceImages, negative } = opts;
   const baseUrl = provider.base_url;
@@ -149,6 +160,7 @@ async function imageGenerate(provider, model, opts) {
   if (!apiKey) return { images: [], status: 'error', error: '服务商未配置 API Key' };
 
   const isAgnes = /agnes-ai\.cn/i.test(baseUrl || '');
+  const isGptImage = isGptImageModel(model);
   const de = provider.default_endpoint || {};
   const me = (model && model.endpoint) || {};
   const sizeFormat = me.sizeFormat || de.sizeFormat || (isAgnes ? 'agnes' : 'openai');
@@ -156,24 +168,33 @@ async function imageGenerate(provider, model, opts) {
     : (de.img2imgInExtraBody != null ? de.img2imgInExtraBody : isAgnes));
 
   const hasImages = Array.isArray(referenceImages) && referenceImages.length > 0;
-  const size = sizeFormat === 'agnes'
-    ? String(resolution || '1k').toUpperCase()
-    : bumpSize(RATIO_TO_SIZE[ratio] || '1024x1024', resolution);
+  let size;
+  if (isGptImage) {
+    size = GPT_IMAGE_RATIO_TO_SIZE[ratio] || GPT_IMAGE_RATIO_TO_SIZE.auto;
+  } else if (sizeFormat === 'agnes') {
+    size = String(resolution || '1k').toUpperCase();
+  } else {
+    size = bumpSize(RATIO_TO_SIZE[ratio] || '1024x1024', resolution);
+  }
 
   const vars = {
     model: model.upstreamModelName || model.model_id, // Phase 2：上游 wire name 取自 binding（兜底 model_id）
     prompt,
     n: Math.max(1, Math.min(4, count || 1)),
     size,
-    ratio,
   };
-  if (sizeFormat !== 'agnes') {
-    vars.resolution = resolution;
-  }
-  // 反向提示词（正负向搭配刚需）：SD/自定义端点支持 negative_prompt 字段；
-  // agnes 图像端点规范不含此字段，跳过以免其严格校验报错（negative 仍存库，UI 完整展示）。
-  if (sizeFormat !== 'agnes' && negative) {
-    vars.negative_prompt = negative;
+  // OpenAI GPT Image 官方端点不识别 ratio / resolution / negative_prompt；
+  // 传这些字段会被官方忽略，但严格的中转站可能报错。DALL-E 3 / SD / 自定义端点才需要它们。
+  if (!isGptImage) {
+    vars.ratio = ratio;
+    if (sizeFormat !== 'agnes') {
+      vars.resolution = resolution;
+    }
+    // 反向提示词（正负向搭配刚需）：SD/自定义端点支持 negative_prompt 字段；
+    // agnes 图像端点规范不含此字段，跳过以免其严格校验报错（negative 仍存库，UI 完整展示）。
+    if (sizeFormat !== 'agnes' && negative) {
+      vars.negative_prompt = negative;
+    }
   }
   // 图生图/多图合成：Agnes 等要求把参考图放到 extra_body.image；
   // 同时保留顶层 images 兼容 relay / 自定义端点。
@@ -760,6 +781,7 @@ async function generate(pgPool, opts) {
   // 2. 唯一 resolver：display_name / model_id / 遗留 model 字符串 → canonical model_id 数组
   //    （禁止在 dispatcher 内散落处理 display_name；旧客户端传 display_name 经此归一）
   const modelIds = await resolveModelIdentity(pgPool, model);
+  const canonicalModelId = opts.canonicalModelId || modelIds[0] || model || '';
   if (modelIds.length === 0) {
     return { status: 'failed', error: `未找到模型：${model}`, images: [] };
   }
@@ -845,11 +867,12 @@ async function generateAsync(pgPool, opts) {
   const { model, displayModelName, prompt, count, contentType, referenceImages, pendingIds = [], clientMeta = {}, user_id, idempotencyKey, cost = 0, costPool = 'recharge' } = opts;
   // 生成一个稳定 taskId：便于前端 localStorage 持久化关联
   const taskId = `gt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  // 归一 canonical model_id：旧任务 / 遗留孤儿可能传 display_name，resolver 兜底；
+  // model 列保留展示名（displayModelName || 原始 model 字符串），model_id 列写 canonical。
+  let canonicalModelId = '';
   try {
-    // 归一 canonical model_id：旧任务 / 遗留孤儿可能传 display_name，resolver 兜底；
-    // model 列保留展示名（displayModelName || 原始 model 字符串），model_id 列写 canonical。
     const resolved = await resolveModelIdentity(pgPool, model);
-    const canonicalModelId = resolved[0] || model || '';
+    canonicalModelId = resolved[0] || model || '';
     const displayModel = (typeof displayModelName === 'string' && displayModelName) ? displayModelName : (model || '');
     await pgPool.query(
       `INSERT INTO generation_tasks
@@ -860,9 +883,9 @@ async function generateAsync(pgPool, opts) {
   } catch (e) {
     return { taskId: null, error: `写入任务表失败：${e.message}` };
   }
-  // 注入 taskId + onSubmitted：视频提交后立即持久化 provider task id（崩溃恢复地基）。
+  // 注入 taskId + canonicalModelId + onSubmitted：视频提交后立即持久化 provider task id（崩溃恢复地基）。
   // runOpts 透传到 generate → dispatchOne → attemptOnAccount → videoGenerate，视频任务提交成功后即写库。
-  const runOpts = { ...opts, taskId, onSubmitted: (info) => persistProviderTaskId(pgPool, taskId, info) };
+  const runOpts = { ...opts, taskId, canonicalModelId, onSubmitted: (info) => persistProviderTaskId(pgPool, taskId, info) };
 
   // 后台跑：完成后更新 PG（不再 await）
   generate(pgPool, runOpts)
@@ -881,8 +904,9 @@ async function generateAsync(pgPool, opts) {
       try {
         if (ok) {
           // G3 结算点：成功 commit（reserve 已在 /api/generate handler 扣除）。
-          // 注意：media 由前端负责写入（含 OSS 上传 + 探活 + 永久化），后端不重复写，
-          // 避免双写重复行 + 原始服务商 URL 易过期（与 OSS 永久化目标冲突）。
+          // Phase 1 主流化：资产最终化下沉到服务端（fetch provider 字节 → OSS PUT → 写 media），
+          // 前端不再负责 OSS 上传、不再负责 provider→OSS 转换、不再负责写 media 表 —— 主流做法
+          // （Replicate/fal.ai/Stability）一致。
           await billing.commitCredits(pgPool, user_id, cost, idempotencyKey, costPool);
           // 双边记账：按 (provider, model) 组记录后台量 vs 客户量（图/视频按资产数；客户收费按产出比例分摊，整体 margin 精确）
           try {
@@ -899,12 +923,59 @@ async function generateAsync(pgPool, opts) {
               });
             }
           } catch (e) { console.warn('[accounting generate-async]', e.message); }
+
+          // ── 服务端最终化：fetch → OSS → media ──
+          // 失败兜底：写占位行（status=pending_upload），保留 provider_url 供后台 reaper 重试，
+          // 失败绝不能阻断 done（积分已扣，资产必然落处）；仅前端可能要展示「资源暂时走 provider URL」
+          let finalized;
+          try {
+            finalized = await assetFinalize.finalizeTask(pgPool, {
+              userId: user_id,
+              taskId,
+              prompt,
+              model: canonicalModelId,
+              ratio: (opts && opts.ratio) || (clientMeta && clientMeta.ratio) || '1:1',
+              contentType: contentType || 'image',
+              // 与前端占位 id 一一对应，让 onGenerate 在前端按 id 找占位并替换，绝不丢图
+              pendingIds: (opts && Array.isArray(opts.pendingIds)) ? opts.pendingIds : [],
+            }, result.images || [], result.videoUrl || null);
+          } catch (e) {
+            console.warn('[dispatcher] 资产最终化异常（不影响 done 标记）:', e.message);
+            logError('dispatcher.finalize', `资产最终化失败 taskId=${taskId}: ${e && e.message}`, { taskId, userId: user_id || '', contentType: contentType || 'image' });
+            finalized = { images: [], video: null, errors: [(e && e.message) || String(e)] };
+          }
+          const finalImages = (finalized.images || []).map((it) => ({
+            mediaId: it.mediaId,
+            ossUrl: it.ossUrl,
+            ossObjectKey: it.ossObjectKey || '',
+            ossUploaded: !!it.ossUploaded,
+            status: it.status,
+            contentType: it.contentType || 'image/jpeg',
+            fileSize: it.fileSize || 0,
+          }));
+          const finalVideo = finalized.video
+            ? {
+                mediaId: finalized.video.mediaId,
+                ossUrl: finalized.video.ossUrl,
+                ossObjectKey: finalized.video.ossObjectKey || '',
+                ossUploaded: !!finalized.video.ossUploaded,
+                status: finalized.video.status,
+                contentType: finalized.video.contentType || 'video/mp4',
+                fileSize: finalized.video.fileSize || 0,
+              }
+            : null;
+          const finalResult = Object.assign({}, result, {
+            images: finalImages,
+            videoUrl: finalVideo ? finalVideo.ossUrl : (result.videoUrl || ''),
+            videoMedia: finalVideo,
+            finalizeErrors: finalized.errors || [],
+          });
           await pgPool.query(
             `UPDATE generation_tasks SET status=$2, result=$3, error=$4, completed_at=NOW(), user_id=$5
              WHERE task_id=$1`,
-            [taskId, 'done', JSON.stringify(result || {}), (result && result.error) || '', user_id],
+            [taskId, 'done', JSON.stringify(finalResult), (result && result.error) || '', user_id],
           );
-          realtime.emitTaskUpdate(user_id, { taskId, status: 'done', result: result || null, error: (result && result.error) || '' });
+          realtime.emitTaskUpdate(user_id, { taskId, status: 'done', result: finalResult, error: (result && result.error) || '' });
         } else if (result && result.status === 'throttled') {
           // 资源全不可用（该任务所有可用供应商都冷却/限流）→ 进入等待区后台重试，
           // 不立即判失败、不释放积分（仍持有，等待真正生成或超时再释放）。

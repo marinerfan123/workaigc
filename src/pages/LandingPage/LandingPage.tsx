@@ -18,6 +18,7 @@ import {
   Clapperboard,
 } from 'lucide-react';
 import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authStore';
+import { formatCredits } from '@/utils/format';
 
 /* ── 整个计划：创意生产流水线（M5：点子→剧本→分镜→视频→剧集，五阶段可回退）──
    生图/视频生成是驱动第 3–4 步产出的引擎，而非独立终点。
@@ -125,7 +126,7 @@ export default function LandingPage() {
                   className="flex items-center gap-2 rounded-full bg-white/5 py-1 pl-2 pr-1 transition-colors hover:bg-white/10"
                 >
                   <span className="shrink-0 rounded-full border border-amber-500/20 bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-400" title="赠送余额 / 充值余额">
-                    {user.rewardCredits ?? 0} / {user.rechargeCredits ?? 0}
+                    {formatCredits(user.rewardCredits)} / {formatCredits(user.rechargeCredits)}
                   </span>
                   <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 text-xs font-bold text-black">
                     {(user.displayName || user.email || 'U')[0]?.toUpperCase() || 'U'}

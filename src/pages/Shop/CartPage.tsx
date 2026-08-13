@@ -96,7 +96,7 @@ export default function CartPage() {
             <div className="text-sm font-medium text-white">结算摘要</div>
             <div className="mt-3 flex items-center justify-between text-sm">
               <span className="text-zinc-400">商品（{items.reduce((s, i) => s + i.qty, 0)} 件）</span>
-              <span className="text-white">{total} 积分</span>
+              <span className="text-white">{formatCredits(total)} 积分</span>
             </div>
             <div className="mt-2 flex items-center justify-between text-xs text-zinc-500">
               <span>当前余额</span>

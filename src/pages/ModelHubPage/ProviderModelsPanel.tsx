@@ -7,6 +7,7 @@ import {
 import { toast } from 'sonner';
 import { type IAiModel, type ModelType } from '@/data/models';
 import { useModelHub } from '@/hooks/useModelHub';
+import { formatCredits } from '@/utils/format';
 
 const TYPE_LABELS: Record<ModelType, string> = { image: '图片', video: '视频', text: '文本' };
 const TYPE_ICON: Record<ModelType, typeof ImageIcon> = { image: ImageIcon, video: VideoIcon, text: Type };
@@ -145,7 +146,7 @@ export default function ProviderModelsPanel({ providerId, providerName, open, on
     const targets = filtered.map((m) => m.id);
     setModels((prev) => prev.map((m) => (m.providerId === providerId && targets.includes(m.id) ? { ...m, creditCost: n } : m)));
     for (const m of filtered) void patchModel(m.id, { creditCost: n }).catch(() => {});
-    toast.success(`批量价格已设为 ${n} 积分（共 ${filtered.length} 个）`);
+    toast.success(`批量价格已设为 ${formatCredits(n)} 积分（共 ${filtered.length} 个）`);
     setBatchPrice('');
   };
 
@@ -406,6 +407,7 @@ function ModelDetail({ model, onPatch }: { model: IAiModel; onPatch: (id: string
   const [secs, setSecs] = useState(model.estimatedSeconds != null ? String(model.estimatedSeconds) : '');
   const [category, setCategory] = useState(model.category || '');
   const [type, setType] = useState<ModelType>(model.type || 'image');
+  const [sort, setSort] = useState(model.sortOrder != null ? String(model.sortOrder) : '0');
 
   // 切换选中模型时同步
   useEffect(() => {
@@ -416,6 +418,7 @@ function ModelDetail({ model, onPatch }: { model: IAiModel; onPatch: (id: string
     setSecs(model.estimatedSeconds != null ? String(model.estimatedSeconds) : '');
     setCategory(model.category || '');
     setType(model.type || 'image');
+    setSort(model.sortOrder != null ? String(model.sortOrder) : '0');
     setBusy(null);
   }, [model.id]);
 
@@ -532,6 +535,9 @@ function ModelDetail({ model, onPatch }: { model: IAiModel; onPatch: (id: string
             <NumField label="估算耗时" value={secs} suffix="秒"
               onChange={setSecs}
               onBlur={(n) => { const cur = model.estimatedSeconds != null ? model.estimatedSeconds : null; n !== cur && save('estimatedSeconds', { estimatedSeconds: n }); }} />
+            <NumField label="排序权重" value={sort} suffix="越小越靠前"
+              onChange={setSort}
+              onBlur={(n) => { const cur = model.sortOrder != null ? model.sortOrder : 0; (n ?? 0) !== cur && save('sortOrder', { sortOrder: n ?? 0 }); }} />
           </Section>
 
           {/* 元信息 */}

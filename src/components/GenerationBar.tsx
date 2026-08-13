@@ -34,8 +34,9 @@ import Image from '@/components/ui/image';
 import { IMediaItem } from '@/data/media';
 import { ReferenceStyleSelector } from '@/components/ReferenceStyleSelector';
 import { useModelHub } from '@/hooks/useModelHub';
-import { groupModelsByModelId } from '@/utils/groupModels';
-import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
+import { groupModelsByModelId, sortGroupedModels, type ModelSortMode } from '@/utils/groupModels';
+// Phase 1 主流化：客户端不再做 OSS 上传（fetch+PUT 全部交给服务端 assetFinalize），
+// GenerationBar 不再 import useOssConfig / dataUrlToFile；OSS 配置请使用 useOssConfig 在其他模块读取。
 import { waitForTask } from '@/hooks/useGenerationStream';
 import { apiGenerate, apiOptimizePrompt, apiTranslatePrompt, apiGetGenerationStatus, apiListActiveGenerations, apiGetProviderStates, apiGetQueueStatus, type ReferenceStyle } from '@/services/api';
 import { refreshUser, setAuthModalOpen, useAuth } from '@/services/authStore';
@@ -235,6 +236,8 @@ interface GenerationBarProps {
   onNegativePromptChange?: (v: string) => void;
   /** 由「用此角色创作」带入的角色 id：生成出的素材会自动归属到该角色，用于角色生成记录聚合 */
   characterId?: string;
+  /** 工作台模型下拉排序方式：manual（后端 sort_order）/ name（名称）/ credits（积分）。缺省 manual */
+  modelSortMode?: ModelSortMode;
 }
 
 /** 父级调用 retry() 时用的参数：仅需 prompt + model + ratio（其它用当前 settings） */
@@ -286,6 +289,7 @@ function GenerationBar({
   negativePrompt,
   onNegativePromptChange,
   characterId,
+  modelSortMode = 'manual',
   ref,
 }: GenerationBarProps & { ref?: React.Ref<GenerationBarHandle> }) {
   const characterIdRef = useRef(characterId);
@@ -299,7 +303,7 @@ function GenerationBar({
   // 翻译进行中（与优化共用禁用态，避免并发）
   const [translating, setTranslating] = useState(false);
   // 优化输出语言：en（英文，生图引擎需要）/ zh（中文，国内工具）/ both（英文主填 + 中文对照）
-  const [optLang, setOptLang] = useState<'en' | 'zh' | 'both'>('en');
+  const [optLang, setOptLang] = useState<'en' | 'zh' | 'both'>('zh');
   // 中英对照模式下展示的中文正向对照（只读预览）
   const [zhPreview, setZhPreview] = useState('');
   const [promptEditorOpen, setPromptEditorOpen] = useState(false);
@@ -347,7 +351,7 @@ function GenerationBar({
   }, [settingsOpen, modelMenuOpen, agentOpen]);
 
   const { providers, models, getProviderName, getDefaultModel } = useModelHub();
-  const { config: ossConfig, ingestFromUrl, ingestFile } = useOssConfig();
+  // const { config: ossConfig, ingestFromUrl, ingestFile } = useOssConfig();  // Phase 1 删：客户端不再负责 OSS 上传
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // 关闭设置浮层并把焦点还给提示词输入框（点击任一选项后应立即可输入）
   const closeSettingsAndFocus = () => {
@@ -409,89 +413,18 @@ function GenerationBar({
     savePersistedTasks(loadPersistedTasks().filter((x) => x.taskId !== taskId));
   };
 
-  // ── 抽取结果处理为可复用函数（初始提交 / 刷新恢复两条路径都走这个）──
-  /**
-   * 把后端返回的图片 URL 列表逐张：下载 → 上传 OSS（若开启）→ 探活 → 替换 pending。
-   * 与同步流程保持完全一致：失败回填 mock；OSS 关闭有 toast 提示。
-   */
-  const processResultImages = async (
-    resultImages: string[],
-    pendingIds: string[],
-    ctx: { prompt: string; model: string; ratio: string; contentType: 'image' | 'video'; createdAt: number; referenceStyleId?: string | null; creditCost?: number },
-  ): Promise<{ success: number; failed: number }> => {
-    let success = 0;
-    for (let i = 0; i < resultImages.length && i < pendingIds.length; i++) {
-      const pendingId = pendingIds[i];
-      let ossUrl = '';
-      let ossObjectKey = '';
-      let ossUploaded = false;
-      const fileName = `gen-${ctx.createdAt}-${i}.jpg`;
-      const MAX_ATTEMPTS = 3;
-      if (ossConfig.enabled) {
-        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-          try {
-            const uploadResult = resultImages[i].startsWith('data:')
-              ? await ingestFile(dataUrlToFile(resultImages[i], fileName), fileName)
-              : await ingestFromUrl(resultImages[i], fileName);
-            if (uploadResult.success && uploadResult.url) {
-              ossUrl = uploadResult.url;
-              ossObjectKey = uploadResult.objectKey;
-              ossUploaded = true;
-              logger.info(`OSS 上传成功（第 ${attempt}/${MAX_ATTEMPTS} 次）：${ossUrl}`);
-              break;
-            }
-          } catch (e) {
-            logger.warn(`OSS 上传异常（第 ${attempt}/${MAX_ATTEMPTS} 次）：${e instanceof Error ? e.message : String(e)}`);
-          }
-          if (attempt < MAX_ATTEMPTS) await new Promise((r) => setTimeout(r, 800));
-        }
-        if (!ossUploaded) {
-          logger.warn(`OSS 上传经 ${MAX_ATTEMPTS} 次重试仍失败，回退到模型原始 URL：${resultImages[i].slice(0, 80)}`);
-          toast.warning(`图片 ${i + 1} 上传 OSS 失败，已回退使用服务商原始链接（链接可能随时过期）`, { duration: 4000 });
-        }
-      } else {
-        toast.error('OSS 未开启，请到「模型 Hub → 存储配置」开启', { duration: 5000 });
-      }
-      const persistentUrl = ossUploaded ? ossUrl : resultImages[i];
-      // 不再做 probeImageLoad(provider URL) 探测 —— provider 临时链接没 CORS 头，
-      // <img> 加载受 CORS 限制 onload/onerror 不可靠，会把生产已成功的好图误判成 failed。
-      // 信任服务端 200（resultImages[i] 已返图 = 生成成功）→ finalItem.status 直接 success，
-      // UI 层 useMediaUrlStatus 走 OSS 主路径 / provider 兜底，失效链接由 useImageProbe 友好提示。
-      const finalItem: IMediaItem = {
-        id: pendingId,
-        title: ctx.prompt.slice(0, 20) || '生成结果',
-        type: ctx.contentType,
-        thumbnail: persistentUrl,
-        fullUrl: persistentUrl,
-        prompt: ctx.prompt,
-        model: ctx.model,
-        ratio: ctx.ratio,
-        createdAt: new Date().toISOString(),
-        isFavorite: false,
-        isDeleted: false,
-        source: 'user',
-        ossUrl,
-        ossObjectKey,
-        ossUploaded,
-        progress: 100,
-        characterId: characterIdRef.current,
-        referenceStyleId: ctx.referenceStyleId || undefined,
-        creditCost: typeof ctx.creditCost === 'number' ? ctx.creditCost : undefined,
-      };
-      // finalItem.status 默认 'success'——server 已返图就是成功。
-      // 显示层由 useMediaUrlStatus 处理：OSS 链接直接展示，provider 兜底链接失效时由 useImageProbe 提示。
-      onGenerate(finalItem);
-      success++;
-    }
-    return { success, failed: pendingIds.length - success };
-  };
+  // ── 单个 task 的轮询：waitForTask 拿到 result.images[]（Phase 1 主流化：服务端最终化后的对象数组，
+  //   不再是 provider URL 字符串）。服务端已在 dispatcher.done 回调里 fetch→OSS PUT→写 media，
+  //   前端只负责按 mediaId 找占位并替换。客户端零 base64 / 零客户端上传。──
 
-  // ── 单个 task 的轮询：完成后调用 processResultImages；中断/失败有兜底 ──
+  // ── 单个 task 的轮询：waitForTask 拿到 result.images[]（Phase 1 主流化：服务端最终化后的对象数组，
+  //   不再是 provider URL 字符串）。服务端已在 dispatcher.done 回调里 fetch→OSS PUT→写 media，
+  //   前端只负责按 mediaId 找占位并替换。客户端零 base64 / 零客户端上传。──
   // pendingItems 用于恢复时回插到 mediaList（首次提交通常 null，因为已经插好了）
   const pollTaskUntilDone = async (
     taskId: string,
     pendingIds: string[],
-    ctx: { prompt: string; model: string; ratio: string; contentType: 'image' | 'video'; createdAt: number },
+    ctx: { prompt: string; model: string; ratio: string; contentType: 'image' | 'video'; createdAt: number; referenceStyleId?: string | null; creditCost?: number },
     pendingItemsToRestore: IMediaItem[] | null,
   ): Promise<void> => {
     // 第一次进入轮询：若是恢复路径，先把 pending 占位回插到 mediaList
@@ -508,10 +441,77 @@ function GenerationBar({
     if (final.status === 'done' && final.result) {
       const imgs = (final.result.images || []).filter(Boolean);
       if (imgs.length > 0) {
-        await processResultImages(imgs, pendingIds, ctx);
-        toast.success(`生成完成 · ${imgs.length} 张`, { duration: 2500 });
-      } else if (ctx.contentType === 'video' && (final.result as { videoUrl?: string }).videoUrl) {
-        // 视频：直接以服务商 URL 落库（视频不重传 OSS，按存储铁律只存地址索引）—— 与图片流程对等
+        // Phase 1 主流化：imgs[i] 已是服务端最终化后的资产对象（mediaId/ossUrl/ossObjectKey/ossUploaded/status），
+        // 不再做客户端 OSS 上传、不再 fetch、不再触发 processResultImages。
+        for (let i = 0; i < imgs.length && i < pendingIds.length; i++) {
+          const it = imgs[i] as { mediaId: string; ossUrl: string; ossObjectKey?: string; ossUploaded?: boolean; status?: string; contentType?: string; fileSize?: number };
+          const pendingId = pendingIds[i];
+          const persistentUrl = it.ossUrl || '';
+          // 防御：服务端最终化未返回可用资产（mediaId 或 URL 缺失，典型场景：PG 宕机导致落库失败）。
+          // 若直接以 pendingId 转正为 success 会产出「无 URL 死链」并落库，故改为失败占位，让用户重试。
+          if (!it.mediaId || !persistentUrl) {
+            markPendingAsFailed(
+              [pendingId],
+              '生成已完成但资产未正确落库（缺少 mediaId 或 URL），请重试',
+              { prompt: ctx.prompt, model: ctx.model, ratio: ctx.ratio, contentType: ctx.contentType },
+            );
+            continue;
+          }
+          // finalItem.status = 'success' 表示成功落 OSS；'pending_upload' 表示 reaper 后台继续重传，前端先以 OSS 或 provider URL 展示。
+          const finalItem: IMediaItem = {
+            id: it.mediaId || pendingId,
+            title: ctx.prompt.slice(0, 20) || '生成结果',
+            type: ctx.contentType,
+            thumbnail: persistentUrl,
+            fullUrl: persistentUrl,
+            prompt: ctx.prompt,
+            model: ctx.model,
+            ratio: ctx.ratio,
+            createdAt: new Date().toISOString(),
+            isFavorite: false,
+            isDeleted: false,
+            source: 'user',
+            ossUrl: it.ossUrl || '',
+            ossObjectKey: it.ossObjectKey || '',
+            ossUploaded: !!it.ossUploaded,
+            status: (it.status === 'pending_upload' ? 'pending_upload' : (it.status === 'failed' ? 'failed' : 'success')),
+            progress: 100,
+            characterId: characterIdRef.current,
+            referenceStyleId: ctx.referenceStyleId || undefined,
+            creditCost: typeof ctx.creditCost === 'number' ? ctx.creditCost : undefined,
+          };
+          onGenerate(finalItem);
+        }
+        toast.success(`生成完成 · ${imgs.length} 张${imgs.some((x: { ossUploaded?: boolean }) => !x.ossUploaded) ? '（部分 OSS 重传中）' : ''}`, { duration: 2500 });
+      } else if (ctx.contentType === 'video' && final.result.videoMedia) {
+        // 视频：result.videoMedia 已是服务端最终化后的资产对象，失败回退时 ossUrl 是 providerUrl
+        const v = final.result.videoMedia as { mediaId: string; ossUrl: string; ossObjectKey?: string; ossUploaded?: boolean; status?: string; contentType?: string; fileSize?: number };
+        const finalItem: IMediaItem = {
+          id: v.mediaId || pendingIds[0],
+          title: ctx.prompt.slice(0, 20) || '视频生成',
+          type: 'video',
+          thumbnail: v.ossUrl,
+          fullUrl: v.ossUrl,
+          prompt: ctx.prompt,
+          model: ctx.model,
+          ratio: ctx.ratio,
+          createdAt: new Date().toISOString(),
+          isFavorite: false,
+          isDeleted: false,
+          source: 'user',
+          ossUrl: v.ossUrl || '',
+          ossObjectKey: v.ossObjectKey || '',
+          ossUploaded: !!v.ossUploaded,
+          status: (v.status === 'pending_upload' ? 'pending_upload' : (v.status === 'failed' ? 'failed' : 'success')),
+          progress: 100,
+          characterId: characterIdRef.current,
+          referenceStyleId: ctx.referenceStyleId || undefined,
+          creditCost: typeof ctx.creditCost === 'number' ? ctx.creditCost : undefined,
+        };
+        onGenerate(finalItem);
+        toast.success('视频生成完成', { duration: 2500 });
+      } else if ((final.result as { videoUrl?: string }).videoUrl) {
+        // 兜底：若 videoMedia 不可用但有 videoUrl 仍可展示（极少见，正常路径应走 videoMedia）
         const videoUrl = (final.result as { videoUrl?: string }).videoUrl as string;
         const finalItem: IMediaItem = {
           id: pendingIds[0],
@@ -728,6 +728,11 @@ function GenerationBar({
 
   // 按 model_id 聚合（同 model_id 多供应商 → 一个入口，避免重名）
   const groupedModels = groupModelsByModelId(availableModels);
+  // 按系统设置指定的方式对下拉排序（manual 保持后端 sort_order）
+  const sortedGroupedModels = useMemo(
+    () => sortGroupedModels(groupedModels, modelSortMode),
+    [groupedModels, modelSortMode]
+  );
 
   // 顶栏展示名：优先映射名
   const currentModelLabel = getEffectiveModelName(currentModel) || settings.model || '无';
@@ -911,7 +916,7 @@ function GenerationBar({
           ok: true,
           reason: 'FALLBACK',
           title: '赠送余额不足，将使用充值余额',
-          message: `当前模型支持赠送余额：赠送余额需 ${rewardRequired}，您现有赠送 ${reward} 不足，将自动使用充值余额（${recharge}）抵扣 ${cost} 积分。`,
+          message: `当前模型支持赠送余额：赠送余额需 ${formatCredits(rewardRequired)}，您现有赠送 ${formatCredits(reward)} 不足，将自动使用充值余额（${formatCredits(recharge)}）抵扣 ${formatCredits(cost)} 积分。`,
         };
       }
       // 不足提示：避免"需 0"的文案
@@ -919,9 +924,9 @@ function GenerationBar({
       if (cost === 0) {
         insufficientMsg = `当前模型支持赠送余额：赠送余额需 ${rewardRequired}，您现有赠送 ${reward} 不足，无法支付本次生成。`;
       } else if (rewardRequired === 0) {
-        insufficientMsg = `当前模型支持赠送余额：充值余额需 ${cost}，您现有充值 ${recharge} 不足，无法支付本次生成。`;
+        insufficientMsg = `当前模型支持赠送余额：充值余额需 ${formatCredits(cost)}，您现有充值 ${formatCredits(recharge)} 不足，无法支付本次生成。`;
       } else {
-        insufficientMsg = `当前模型支持赠送余额：赠送余额需 ${rewardRequired}，充值余额需 ${cost}。\n您现有 赠送 ${reward} · 充值 ${recharge}，均不足以支付本次生成。`;
+        insufficientMsg = `当前模型支持赠送余额：赠送余额需 ${formatCredits(rewardRequired)}，充值余额需 ${formatCredits(cost)}。\n您现有 赠送 ${formatCredits(reward)} · 充值 ${formatCredits(recharge)}，均不足以支付本次生成。`;
       }
       return {
         ok: false,
@@ -936,7 +941,7 @@ function GenerationBar({
       ok: false,
       reason: 'NEED_RECHARGE',
       title: '该模型不支持赠送余额',
-      message: `此模型仅可用充值余额支付 ${cost} 积分，您当前充值余额 ${recharge} 不足，请先充值。`,
+      message: `此模型仅可用充值余额支付 ${formatCredits(cost)} 积分，您当前充值余额 ${formatCredits(recharge)} 不足，请先充值。`,
     };
   };
 
@@ -1492,7 +1497,7 @@ function GenerationBar({
                 <>
                   <div
                     className="fixed inset-0 z-[9998] bg-black/40 backdrop-blur-sm"
-                    onClick={() => setSettingsOpen(false)}
+                    onClick={() => { setSettingsOpen(false); setTimeout(() => inputRef.current?.focus(), 0); }}
                   />
                   <div
                     className="generationbar-portal fixed z-[9999] w-80 overflow-hidden rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl shadow-black/60"
@@ -1528,7 +1533,7 @@ function GenerationBar({
                               <button
                                 key={q}
                                 onMouseDown={(e) => e.preventDefault()}
-                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, quality: q }); closeSettingsAndFocus(); }}
+                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, quality: q }); }}
                                 className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                   settings.quality === q
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1555,7 +1560,7 @@ function GenerationBar({
                               <button
                                 key={res}
                                 onMouseDown={(e) => e.preventDefault()}
-                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, resolution: res }); closeSettingsAndFocus(); }}
+                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, resolution: res }); }}
                                 className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                   (settings.resolution || '1k') === res
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1583,7 +1588,7 @@ function GenerationBar({
                               <button
                                 key={m}
                                 onMouseDown={(e) => e.preventDefault()}
-                                onClick={(e) => { e.stopPropagation(); changeVideoMode(m); closeSettingsAndFocus(); }}
+                                onClick={(e) => { e.stopPropagation(); changeVideoMode(m); }}
                                 className={`rounded-xl px-2 py-2 text-[11px] font-medium transition-all duration-200 ${
                                   effectiveVideoMode === m
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1620,7 +1625,7 @@ function GenerationBar({
                           <button
                             key={r}
                             onMouseDown={(e) => e.preventDefault()}
-                            onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, ratio: r as Ratio }); closeSettingsAndFocus(); }}
+                            onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, ratio: r as Ratio }); }}
                               className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                 settings.ratio === r
                                   ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1648,7 +1653,7 @@ function GenerationBar({
                               <button
                                 key={res}
                                 onMouseDown={(e) => e.preventDefault()}
-                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, resolution: res }); closeSettingsAndFocus(); }}
+                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, resolution: res }); }}
                                   className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                     activeRes === res
                                       ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1679,7 +1684,7 @@ function GenerationBar({
                               <button
                                 key={d}
                                 onMouseDown={(e) => e.preventDefault()}
-                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, duration: d }); closeSettingsAndFocus(); }}
+                                onClick={(e) => { e.stopPropagation(); onSettingsChange({ ...settings, duration: d }); }}
                                 className={`rounded-xl py-2 text-xs font-medium transition-all duration-200 ${
                                   (settings.duration ?? 6) === d
                                     ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/30'
@@ -1825,12 +1830,12 @@ function GenerationBar({
 
                     {/* 模型列表 */}
                     <div className="max-h-72 overflow-y-auto p-1.5 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
-                      {groupedModels.length === 0 ? (
+                      {sortedGroupedModels.length === 0 ? (
                         <div className="py-6 text-center text-xs text-zinc-600">
                           暂无可用模型
                         </div>
                       ) : (
-                        groupedModels.map((g) => {
+                        sortedGroupedModels.map((g) => {
                           const active = settings.model === g.modelId || settings.model === g.displayName;
                           return (
                           <button
@@ -1919,9 +1924,9 @@ function GenerationBar({
                 title="赠送余额（平台赠送/活动发放，限定模型可用，优先扣减）· 充值余额（真钱充值，全部模型可用）。点击前往充值"
                 className="flex shrink-0 items-center gap-1.5 rounded-full bg-zinc-800/50 px-2 py-1 text-[10px] font-semibold tabular-nums hover:bg-zinc-800 transition-colors"
               >
-                <span className="text-emerald-400" title="赠送余额">赠送 {user.rewardCredits || 0}</span>
+                <span className="text-emerald-400" title="赠送余额">赠送 {formatCredits(user.rewardCredits)}</span>
                 <span className="text-zinc-600">·</span>
-                <span className="text-amber-400" title="充值余额">充值 {user.rechargeCredits || 0}</span>
+                <span className="text-amber-400" title="充值余额">充值 {formatCredits(user.rechargeCredits)}</span>
               </button>
             )}
           </div>
@@ -2214,7 +2219,7 @@ function GenerationBar({
             {/* 优化输出语言选择：让客户选，选一种另一种丢弃；中英对照则两者都给 */}
             <div className="mt-3 flex items-center gap-2">
               <span className="text-[11px] text-zinc-500">优化语言</span>
-              {(['en', 'zh', 'both'] as const).map((l) => (
+              {(['zh', 'en', 'both'] as const).map((l) => (
                 <button
                   key={l}
                   type="button"

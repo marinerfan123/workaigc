@@ -212,6 +212,9 @@ export interface IAiModel {
   updatedAt?: string;
   /** 最后更新人（后端维护） */
   updatedBy?: string;
+  /** 手动排序权重：数值越小越靠前；同级按 createdAt 升序兜底。
+   *  后台编辑面板「调度」区可改；前端展示顺序由后端 ORDER BY sort_order, created_at 决定。 */
+  sortOrder?: number;
 }
 
 /**

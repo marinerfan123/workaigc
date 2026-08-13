@@ -37,6 +37,7 @@ import MonitoringStandalonePage from '@/pages/Admin/MonitoringStandalonePage';
 import FinancePage from '@/pages/Admin/FinancePage';
 import PaymentSettingsPage from '@/pages/Admin/PaymentSettingsPage';
 import AdminPlaceholderPage from '@/pages/Admin/AdminPlaceholderPage';
+import SystemSettingsPage from '@/pages/Admin/SystemSettingsPage';
 import LedgerPage from '@/pages/Admin/LedgerPage';
 
 // 创作工作室（M5 流水线）
@@ -140,8 +141,8 @@ export default function App() {
           <Route path="logs" element={<LogsPage />} />
           <Route path="errors" element={<ErrorLogsPage />} />
           <Route path="monitoring" element={<MonitoringPage />} />
-          {/* 模块注册表中的建设中占位入口（对应长期架构的分期路线） */}
-          <Route path="settings" element={<AdminPlaceholderPage title="系统设置" note="站点配置、功能开关、维护模式、品牌等平台级设置聚合。" />} />
+          {/* 系统设置：平台级配置聚合（当前承载工作台模型排序） */}
+          <Route path="settings" element={<SystemSettingsPage />} />
           <Route path="storage" element={<AdminPlaceholderPage title="存储管理" note="OSS  bucket、CDN、配额与资产生命周期管理（oss_config 表已就绪）。" />} />
           <Route path="ledger" element={<LedgerPage />} />
           <Route path="recommend" element={<AdminPlaceholderPage title="推荐管理" note="排序、精选、个性化分发与搜索调权。" />} />

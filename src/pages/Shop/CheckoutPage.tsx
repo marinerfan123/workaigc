@@ -42,7 +42,7 @@ export default function CheckoutPage() {
   async function submit() {
     if (!items.length || submitting) return;
     if (!enough) {
-      toast.error(`积分不足，还差 ${total - balance} 积分`);
+      toast.error(`积分不足，还差 ${formatCredits(total - balance)} 积分`);
       return;
     }
     setSubmitting(true);
@@ -109,7 +109,7 @@ export default function CheckoutPage() {
             <div className="mt-3 space-y-2 text-sm">
               <div className="flex justify-between text-zinc-400">
                 <span>商品（{items.reduce((s, i) => s + i.qty, 0)} 件）</span>
-                <span className="text-white">{total} 积分</span>
+                <span className="text-white">{formatCredits(total)} 积分</span>
               </div>
               <div className="flex justify-between text-zinc-400">
                 <span>支付方式</span>
@@ -118,25 +118,25 @@ export default function CheckoutPage() {
             </div>
             <div className="mt-3 flex items-center justify-between border-t border-zinc-800 pt-3">
               <span className="text-sm text-zinc-400">应付</span>
-              <span className="text-lg font-semibold text-emerald-400">{total} 积分</span>
+              <span className="text-lg font-semibold text-emerald-400">{formatCredits(total)} 积分</span>
             </div>
             <div className="mt-3 space-y-1.5 border-t border-zinc-800 pt-3 text-xs">
               <div className="flex items-center justify-between text-zinc-500">
                 <span>赠送积分余额</span>
-                <span className={reward > 0 ? 'text-emerald-300' : 'text-zinc-400'}>{reward}</span>
+                <span className={reward > 0 ? 'text-emerald-300' : 'text-zinc-400'}>{formatCredits(reward)}</span>
               </div>
               <div className="flex items-center justify-between text-zinc-500">
                 <span>充值积分余额</span>
-                <span className={recharge > 0 ? 'text-emerald-300' : 'text-zinc-400'}>{recharge}</span>
+                <span className={recharge > 0 ? 'text-emerald-300' : 'text-zinc-400'}>{formatCredits(recharge)}</span>
               </div>
               <div className="flex items-center justify-between text-zinc-400">
                 <span>合计可用</span>
-                <span className={enough ? 'text-emerald-300' : 'text-red-400'}>{balance} 积分</span>
+                <span className={enough ? 'text-emerald-300' : 'text-red-400'}>{formatCredits(balance)} 积分</span>
               </div>
             </div>
             {!enough && (
               <div className="mt-2 space-y-2">
-                <p className="text-xs text-red-400">积分不足，还差 {total - balance} 积分（赠送 + 充值合计）</p>
+                <p className="text-xs text-red-400">积分不足，还差 {formatCredits(total - balance)} 积分（赠送 + 充值合计）</p>
                 <button
                   type="button"
                   onClick={() => navigate('/recharge')}

@@ -30,6 +30,7 @@ import { toast } from 'sonner';
 import { useImageProbe } from '@/hooks/useImageProbe';
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { getModelDisplayNameByDisplayName, getModelCreditCostByDisplayName } from '@/hooks/useModelHub';
+import { formatCredits } from '@/utils/format';
 
 interface DetailPanelProps {
   item: IMediaItem | null;
@@ -396,7 +397,7 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
                 const cost = getModelCreditCostByDisplayName(item.model);
                 return cost > 0 ? (
                   <span className="rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold">
-                    {cost} 积分
+                    {formatCredits(cost)} 积分
                   </span>
                 ) : null;
               })()}

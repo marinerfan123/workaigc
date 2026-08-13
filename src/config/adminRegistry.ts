@@ -67,7 +67,7 @@ export const ADMIN_MODULES: AdminModule[] = [
   { key: 'admin-logs', label: '系统日志', icon: ScrollText, path: '/admin/logs', group: 'platform' },
   { key: 'admin-errors', label: '错误归档', icon: XCircle, path: '/admin/errors', group: 'platform' },
   { key: 'admin-monitoring', label: '业务诊断', icon: Database, path: '/admin/monitoring', group: 'platform' },
-  { key: 'admin-settings', label: '系统设置', icon: Settings2, path: '/admin/settings', group: 'platform', comingSoon: true },
+  { key: 'admin-settings', label: '系统设置', icon: Settings2, path: '/admin/settings', group: 'platform' },
   { key: 'admin-storage', label: '存储管理', icon: HardDrive, path: '/admin/storage', group: 'platform', comingSoon: true },
 
   // ── 供给与成本（模型 / 技能 / 智能体 / 创作空间 / 参考图 / 盈亏）──

@@ -27,8 +27,9 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { IMediaItem } from '@/data/media';
-import { apiGetMedia, apiGetMediaCounts, apiSaveMedia, type MediaCounts } from '@/services/api';
+import { apiGetMedia, apiGetMediaCounts, apiSaveMedia, stripBlobItems, type MediaCounts } from '@/services/api';
 import Image from '@/components/ui/image';
+import { useOssConfig } from '@/hooks/useOssConfig';
 
 interface MediaPickerProps {
   open: boolean;
@@ -117,6 +118,8 @@ export default function MediaPicker({
   const [multiSelected, setMultiSelected] = useState<Set<string>>(new Set());
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [uploading, setUploading] = useState(false);
+
+  const { config: ossConfig, ingestFile } = useOssConfig();
 
   const listRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -273,14 +276,16 @@ export default function MediaPicker({
     }
   };
 
-  /* ---------- 上传 ---------- */
+  /* ---------- 上传（主流：本地资产必须上 OSS，后端签预签名 + 浏览器直传） ---------- */
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     setUploading(true);
     try {
       const newItems: Partial<IMediaItem>[] = [];
+      const ossOk = ossConfig.enabled;
       for (const file of Array.from(files)) {
+        // 本地预览（仅当前会话，不落库 base64）
         const dataUrl = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result as string);
@@ -289,12 +294,27 @@ export default function MediaPicker({
         });
         const isVideo = file.type.startsWith('video/');
         const isAudio = file.type.startsWith('audio/');
+        const id = `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const ext = file.name.includes('.')
+          ? file.name.split('.').pop()!.toLowerCase()
+          : isVideo ? 'mp4' : isAudio ? 'mp3' : 'jpg';
+        // 默认用本地预览；OSS 开启时直传并替换为 OSS 永久链接
+        let fullUrl = dataUrl;
+        let thumbnail = dataUrl;
+        if (ossOk) {
+          try {
+            const up = await ingestFile(file, `${id}.${ext}`);
+            if (up.success && up.url) { fullUrl = up.url; thumbnail = up.url; }
+          } catch {
+            /* 直传失败保留本地预览，不阻塞 */
+          }
+        }
         newItems.push({
-          id: `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          id,
           title: file.name.replace(/\.[^.]+$/, ''),
           type: isVideo ? 'video' : isAudio ? 'audio' : 'image',
-          thumbnail: dataUrl,
-          fullUrl: dataUrl,
+          thumbnail,
+          fullUrl,
           prompt: '',
           model: '本地上传',
           ratio: '',
@@ -306,10 +326,10 @@ export default function MediaPicker({
           createdAt: new Date().toISOString(),
         });
       }
-      // 乐观更新
+      // 乐观更新（本地预览即时可见）
       setList((prev) => [...newItems.reverse(), ...prev]);
-      // 同步后端（失败也无妨，本地已经能用）
-      await apiSaveMedia(newItems).catch(() => undefined);
+      // 同步后端（防御性 stripBlobItems：绝不落库 data:/blob: 临时 URL）
+      await apiSaveMedia(stripBlobItems(newItems)).catch(() => undefined);
       // 刷新一次以拿到后端真实 id/oss
       void load();
     } finally {

@@ -290,7 +290,7 @@ export default function RechargePage() {
                             )}
                             <span className={`text-xl font-bold ${active ? 'text-emerald-300' : 'text-white'}`}>¥{pkg.price}</span>
                             <span className={`mt-1 text-xs ${pkg.bonus > 0 ? 'text-amber-300' : 'text-zinc-500'}`}>
-                              得 {totalCredits} 积分
+                              得 {formatCredits(totalCredits)} 积分
                             </span>
                             {pkg.bonus > 0 && (
                               <span className="mt-1 text-[10px] text-emerald-400/80">+{pkg.bonus} 赠送</span>
@@ -386,7 +386,7 @@ export default function RechargePage() {
                     </div>
                     <div className="mt-1 flex items-center justify-between text-xs">
                       <span className="text-zinc-500">预计获得积分</span>
-                      <span className={valid ? 'text-emerald-300' : 'text-red-400'}>{valid ? `${creditsPreview} 积分` : '金额过低，无法充值'}</span>
+                      <span className={valid ? 'text-emerald-300' : 'text-red-400'}>{valid ? `${formatCredits(creditsPreview)} 积分` : '金额过低，无法充值'}</span>
                     </div>
                     <div className="mt-3 border-t border-white/5 pt-2 text-[11px] text-zinc-500">
                       默认按所选金额支付，支付成功后积分将自动到账

@@ -478,7 +478,16 @@ function createAdmin(ctx) {
   }
 
   async function deleteSample(id) {
+    // 先取 key，删除模板后同步把引用该模板的 media 取消示例标记，避免死数据
+    const r = await pg().query('SELECT key FROM default_assets WHERE id=$1', [id]);
+    const key = r.rows[0]?.key;
     await pg().query('DELETE FROM default_assets WHERE id=$1', [id]);
+    if (key) {
+      await pg().query(
+        "UPDATE media SET is_default=FALSE, default_key=NULL, source='user' WHERE default_key=$1",
+        [key]
+      );
+    }
     return { ok: true };
   }
 

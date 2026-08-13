@@ -145,8 +145,9 @@ export default function ModelHubPage() {
   // 全局调度设置（最大并发 + 等待区阈值）
   const [maxThreads, setMaxThreads] = useState(10);
   const [waitingAreaThreshold, setWaitingAreaThreshold] = useState(10);
-  // 新用户注册赠送（注册赠送积分，后台可视化设置）
+  // 新用户注册赠送（后台可视化设置）
   const [signupBonus, setSignupBonus] = useState(50);
+  const [signupRechargeBonus, setSignupRechargeBonus] = useState(0);
   useEffect(() => {
     apiGetSettings().then((s) => {
       if (s && s.maxThreads) setMaxThreads(Number(s.maxThreads) || 10);
@@ -155,6 +156,9 @@ export default function ModelHubPage() {
       }
       if (s && Number(s.signupBonusCredits) > 0) {
         setSignupBonus(Math.floor(Number(s.signupBonusCredits)));
+      }
+      if (s && Number(s.signupBonusRechargeCredits) >= 0) {
+        setSignupRechargeBonus(Math.floor(Number(s.signupBonusRechargeCredits)));
       }
     }).catch(() => {});
   }, []);
@@ -167,9 +171,11 @@ export default function ModelHubPage() {
   };
   const saveSignupBonus = async () => {
     const cur = (await apiGetSettings().catch(() => ({}))) || {};
-    const v = Math.max(0, Math.floor(Number(signupBonus) || 0));
-    await apiSaveSettings({ ...cur, signupBonusCredits: v });
-    setSignupBonus(v);
+    const vReward = Math.max(0, Math.floor(Number(signupBonus) || 0));
+    const vRecharge = Math.max(0, Math.floor(Number(signupRechargeBonus) || 0));
+    await apiSaveSettings({ ...cur, signupBonusCredits: vReward, signupBonusRechargeCredits: vRecharge });
+    setSignupBonus(vReward);
+    setSignupRechargeBonus(vRecharge);
     toast.success('注册赠送已保存');
   };
 
@@ -1099,18 +1105,31 @@ export default function ModelHubPage() {
                 <h3 className="text-sm font-bold text-white">新用户注册赠送</h3>
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-                <div className="flex-1">
-                  <label className="mb-1.5 block text-xs font-medium text-zinc-400">注册赠送积分</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={100000}
-                    value={signupBonus}
-                    onChange={(e) => setSignupBonus(Number(e.target.value) || 0)}
-                    className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
-                  />
-                  <p className="mt-1 text-[10px] text-zinc-500">
-                    新用户注册时自动赠送的积分，保存后立即对新注册用户生效（优先级：后台设置 &gt; 环境变量 &gt; 默认 50）。
+                <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-zinc-400">赠送余额</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100000}
+                      value={signupBonus}
+                      onChange={(e) => setSignupBonus(Number(e.target.value) || 0)}
+                      className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-medium text-zinc-400">充值余额赠送</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100000}
+                      value={signupRechargeBonus}
+                      onChange={(e) => setSignupRechargeBonus(Number(e.target.value) || 0)}
+                      className="w-full rounded-2xl bg-zinc-800/50 px-4 py-2.5 text-sm text-white border border-zinc-700 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                    />
+                  </div>
+                  <p className="col-span-1 sm:col-span-2 mt-1 text-[10px] text-zinc-500">
+                    新用户注册时自动赠送的积分，分别进入赠送余额与充值余额；保存后立即对新注册用户生效（优先级：后台设置 &gt; 环境变量 &gt; 默认赠送 50 / 充值 0）。
                   </p>
                 </div>
                 <button

@@ -79,11 +79,10 @@ export function workspaceDockConfig(
           },
         ],
       },
-      // ── 供给与成本（supply）─────────────────────
-      // 后台注册表把模型 Hub / 技能 / 智能体 / 创作空间 / 参考图 / 盈亏归为供给侧；
-      // 前台对应创作者的生产入口：素材库全部分类 + 角色管理。
+      // ── 素材库（供给侧 supply）──────────────────
+      // 后台注册表把模型 Hub / 参考图 / 示例库等归为供给侧；前台创作者的生产入口首先是素材库。
       {
-        title: '创作',
+        title: '素材库',
         collapsible: true,
         defaultExpanded: true,
         items: [
@@ -95,36 +94,21 @@ export function workspaceDockConfig(
           { key: 'lib-prop', label: '道具', icon: Sparkles, path: '/library/prop', end: true, count: counts?.prop },
           { key: 'lib-other', label: '其他', icon: MoreHorizontal, path: '/library/other', end: true, count: counts?.other },
           { key: 'lib-upload', label: '上传的内容', icon: Upload, path: '/library/upload', end: true, count: counts?.upload },
-          { key: 'characters', label: '角色管理', icon: User, path: '/characters', end: true },
         ],
       },
-      // ── 集市与推荐（demand）─────────────────────
-      {
-        title: '探索',
-        collapsible: true,
-        items: [
-          { key: 'global-studio', label: '创作工作室', icon: Clapperboard, path: '/studio', end: true },
-          { key: 'global-shop', label: 'AI 市集', icon: ShoppingBag, path: '/shop', end: true },
-        ],
-      },
-      // ── 用户与财务（people）─────────────────────
+      // ── 我的（用户与财务 people）────────────────
+      // 角色管理是创作者的个人资产维护，与账户设置同属用户侧，避免和素材库「角色」分类混淆。
       {
         title: '我的',
         collapsible: true,
-        items: [{ key: 'account', label: '账户设置', icon: Settings2, path: '/account', end: true }],
+        items: [
+          { key: 'characters', label: '角色管理', icon: User, path: '/characters', end: true },
+          { key: 'account', label: '账户设置', icon: Settings2, path: '/account', end: true },
+        ],
       },
-      // ── 平台基座（platform）：仅管理员可见 ───────
-      // 模型 Hub 已在后台供给侧注册（/model-hub），前台不再重复挂出；
-      // 此处只保留进入管理后台的总入口。
-      ...(userRole === 'admin'
-        ? [
-            {
-              title: '平台',
-              collapsible: true,
-              items: [{ key: 'global-admin', label: '管理后台', icon: ShieldAlert, path: '/admin', end: true }],
-            },
-          ]
-        : []),
+      // ── 全站（跨模块跳转）──────────────────────
+      // 与创作工作室、AI 市集保持一致：底部统一放置到其他主模块的入口。
+      globalNavSection(userRole, { collapsible: true, excludeWorkspace: true }),
     ],
   };
 }

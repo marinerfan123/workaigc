@@ -18,9 +18,17 @@ import { useModelHub, getModelDisplayNameByDisplayName, getModelCreditCostByDisp
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
 import { useLayoutOutlet } from '@/components/Layout';
-import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiGetSettings, apiSaveSettings, ensureApi, stripBlobItems, apiGetReferenceStyles, apiCancelGeneration } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiDeleteMedia, apiUpdateMedia, apiGetSettings, apiSaveSettings, ensureApi, stripBlobItems, apiGetReferenceStyles, apiCancelGeneration } from '@/services/api';
 import type { Ratio, Quality, VideoMode } from '@/data/settings';
 import type { ReferenceStyle } from '@/services/api';
+import { formatCredits } from '@/utils/format';
+import type { ModelSortMode } from '@/utils/groupModels';
+import { useAuth } from '@/services/authStore';
+
+/** 把任意值规整为合法的模型排序模式（非法/缺省回退 manual） */
+function normalizeSortMode(v: unknown): ModelSortMode {
+  return v === 'name' || v === 'credits' ? v : 'manual';
+}
 
 interface IGenerationSettings {
   contentType: 'image' | 'video';
@@ -62,6 +70,8 @@ function WsThumb({ item }: { item: IMediaItem }) {
 export default function WorkspacePage() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin' || user?.role === 'system';
   const generationBarRef = useRef<GenerationBarHandle>(null);
   const [mediaList, setMediaList] = useState<IMediaItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -73,6 +83,8 @@ export default function WorkspacePage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [settings, setSettings] = useState<IGenerationSettings>(DEFAULT_SETTINGS);
+  // 工作台模型下拉排序方式（系统设置 → workspaceModelSort，缺省 manual 保持后端 sort_order）
+  const [modelSortMode, setModelSortMode] = useState<ModelSortMode>('manual');
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
@@ -149,6 +161,8 @@ export default function WorkspacePage() {
           loaded.videoMode = 't2v';
         }
         setSettings(loaded);
+        // 模型下拉排序方式：从系统设置读取（缺省 manual）
+        setModelSortMode(normalizeSortMode(parsed.workspaceModelSort));
       } else {
         const defaultModel = getDefaultModel('image');
         if (defaultModel) {
@@ -244,9 +258,15 @@ export default function WorkspacePage() {
     setSettings(next);
   };
 
-  // 持久化（写回后端）—— 跳过 pending 状态（生成中不持久化，等真图回来再写）
+  // 持久化（写回后端）—— 跳过 pending 占位、failed 占位，以及「任意已终态但三列 URL 全空」的死链占位。
+  // pending 由 GenerationBar 轮询持有；failed / success 占位若三列 URL 全空，落库会形成「死链(无 URL)」，
+  // 故无论 status 为何，只要无可用 URL 都禁止落库（与 server.js POST /api/media 空 URL 兜底保持一致）。
   useEffect(() => {
-    const persistable = stripBlobItems(mediaList).filter((m) => m.status !== 'pending');
+    const persistable = stripBlobItems(mediaList).filter((m) => {
+      if (m.status === 'pending' || m.status === 'failed') return false;
+      const hasUrl = !!(m.thumbnail || m.fullUrl || m.ossUrl);
+      return hasUrl;
+    });
     if (persistable.length > 0) {
       apiSaveMedia(persistable);
     }
@@ -461,6 +481,28 @@ export default function WorkspacePage() {
     setViewerOpen(false);
   };
 
+  // 管理员：设为/取消示例
+  const handleSetExample = async (item: IMediaItem) => {
+    const next = !item.isDefault;
+    try {
+      await apiUpdateMedia(item.id, {
+        isDefault: next,
+        source: next ? 'default' : (item.source === 'default' ? 'user' : item.source),
+        defaultKey: next ? `admin_${item.id}` : null,
+      });
+      setMediaList((prev) =>
+        prev.map((m) =>
+          m.id === item.id
+            ? { ...m, isDefault: next, source: next ? 'default' as const : (m.source === 'default' ? 'user' as const : m.source), defaultKey: next ? `admin_${item.id}` : undefined }
+            : m
+        )
+      );
+      toast.success(next ? '已设为示例' : '已取消示例');
+    } catch {
+      toast.error('操作失败，请重试');
+    }
+  };
+
   // T3 推广样式一键创作：把推广样式当参考图 + 归因到样式设计者（用于分成）
   const handleUsePromotedStyle = (style: ReferenceStyle) => {
     generationBarRef.current?.generate({
@@ -592,7 +634,7 @@ export default function WorkspacePage() {
                           const cost = getModelCreditCostByDisplayName(item.model);
                           return cost > 0 ? (
                             <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold">
-                              {cost} 积分
+                              {formatCredits(cost)} 积分
                             </span>
                           ) : null;
                         })()}
@@ -626,6 +668,8 @@ export default function WorkspacePage() {
                     onAddAsReference={handleAddReference}
                     onUseRecipe={handleUseRecipe}
                     onRemix={handleRemix}
+                    isAdmin={isAdmin}
+                    onSetExample={handleSetExample}
                     gridSize={gridSize}
                   />
                 ))}
@@ -665,6 +709,7 @@ export default function WorkspacePage() {
               negativePrompt={negativePrompt}
               onNegativePromptChange={setNegativePrompt}
               characterId={activeCharacter?.id}
+              modelSortMode={modelSortMode}
             />
           </div>
         </div>

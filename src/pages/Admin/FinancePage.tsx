@@ -446,11 +446,11 @@ function KpiDetailPanel({ data, onUserLedger }: { data: any; onUserLedger?: (uid
       <div>
         {data.summary && (
           <div className="mb-3 flex flex-wrap gap-3 text-xs">
-            {data.summary.totalCredits != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">总积分 <b className="ml-1 text-white">{data.summary.totalCredits.toLocaleString()}</b></span>}
-            {data.summary.rewardPool != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">赠送池 <b className="ml-1 text-emerald-400">{data.summary.rewardPool.toLocaleString()}</b></span>}
-            {data.summary.rechargePool != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">充值池 <b className="ml-1 text-blue-400">{data.summary.rechargePool.toLocaleString()}</b></span>}
-            {data.summary.totalReward != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">总赠送 <b className="ml-1 text-emerald-400">{data.summary.totalReward.toLocaleString()}</b></span>}
-            {data.summary.totalRecharge != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">总充值 <b className="ml-1 text-blue-400">{data.summary.totalRecharge.toLocaleString()}</b></span>}
+            {data.summary.totalCredits != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">总积分 <b className="ml-1 text-white">{formatCredits(data.summary.totalCredits)}</b></span>}
+            {data.summary.rewardPool != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">赠送池 <b className="ml-1 text-emerald-400">{formatCredits(data.summary.rewardPool)}</b></span>}
+            {data.summary.rechargePool != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">充值池 <b className="ml-1 text-blue-400">{formatCredits(data.summary.rechargePool)}</b></span>}
+            {data.summary.totalReward != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">总赠送 <b className="ml-1 text-emerald-400">{formatCredits(data.summary.totalReward)}</b></span>}
+            {data.summary.totalRecharge != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">总充值 <b className="ml-1 text-blue-400">{formatCredits(data.summary.totalRecharge)}</b></span>}
             {data.summary.holders != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">持有人数 <b className="ml-1 text-white">{data.summary.holders}</b></span>}
           </div>
         )}
@@ -463,11 +463,11 @@ function KpiDetailPanel({ data, onUserLedger }: { data: any; onUserLedger?: (uid
               {data.items.map((u: any, i: number) => (
                 <tr key={i} className="border-t border-zinc-800/60">
                   <td className="py-1.5 pr-3 text-zinc-300">{u.name}{onUserLedger ? <button onClick={() => onUserLedger(u.userId)} className="ml-1.5 text-[10px] text-emerald-400 hover:underline">账本</button> : null}</td>
-                  <td className="py-1.5 pr-3 text-right tabular-nums text-white">{u.credits.toLocaleString()}</td>
+                  <td className="py-1.5 pr-3 text-right tabular-nums text-white">{formatCredits(u.credits)}</td>
                   {m === 'balance' ? <>
-                    <td className="py-1.5 pr-3 text-right tabular-nums text-emerald-400">{(u.rewardCredits || 0).toLocaleString()}</td>
-                    <td className="py-1.5 pr-3 text-right tabular-nums text-blue-400">{(u.rechargeCredits || 0).toLocaleString()}</td>
-                  </> : <td className="py-1.5 pr-3 text-right tabular-nums" style={{ color: m.includes('reward') ? '#34d399' : '#60a5fa' }}>{(m.includes('reward') ? u.rewardCredits : u.rechargeCredits || 0).toLocaleString()}</td>}
+                    <td className="py-1.5 pr-3 text-right tabular-nums text-emerald-400">{formatCredits(u.rewardCredits)}</td>
+                    <td className="py-1.5 pr-3 text-right tabular-nums text-blue-400">{formatCredits(u.rechargeCredits)}</td>
+                  </> : <td className="py-1.5 pr-3 text-right tabular-nums" style={{ color: m.includes('reward') ? '#34d399' : '#60a5fa' }}>{formatCredits(m.includes('reward') ? u.rewardCredits : u.rechargeCredits)}</td>}
                 </tr>
               ))}
               {!data.items.length && <tr><td colSpan={4} className="py-4 text-center text-zinc-500">暂无数据</td></tr>}
@@ -531,11 +531,11 @@ function KpiDetailPanel({ data, onUserLedger }: { data: any; onUserLedger?: (uid
       <div>
         {data.summary && (
           <div className="mb-3 flex flex-wrap gap-3 text-xs">
-            {data.summary.totalConsumed != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">总消费 <b className="ml-1 text-white">{data.summary.totalConsumed.toLocaleString()}</b></span>}
-            {data.summary.totalGranted != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">总发放 <b className="ml-1 text-white">{data.summary.totalGranted.toLocaleString()}</b></span>}
-            {data.summary.netAdjustment != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">净调整 <b className={`ml-1 ${data.summary.netAdjustment >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{data.summary.netAdjustment >= 0 ? '+' : ''}{data.summary.netAdjustment.toLocaleString()}</b></span>}
-            {data.summary.totalRewardGranted != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">赠送发放 <b className="ml-1 text-emerald-400">{data.summary.totalRewardGranted.toLocaleString()}</b></span>}
-            {data.summary.totalRechargeGranted != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">充值到账 <b className="ml-1 text-blue-400">{data.summary.totalRechargeGranted.toLocaleString()}</b></span>}
+            {data.summary.totalConsumed != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">总消费 <b className="ml-1 text-white">{formatCredits(data.summary.totalConsumed)}</b></span>}
+            {data.summary.totalGranted != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">总发放 <b className="ml-1 text-white">{formatCredits(data.summary.totalGranted)}</b></span>}
+            {data.summary.netAdjustment != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">净调整 <b className={`ml-1 ${data.summary.netAdjustment >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{data.summary.netAdjustment >= 0 ? '+' : '-'}{formatCredits(Math.abs(data.summary.netAdjustment))}</b></span>}
+            {data.summary.totalRewardGranted != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">赠送发放 <b className="ml-1 text-emerald-400">{formatCredits(data.summary.totalRewardGranted)}</b></span>}
+            {data.summary.totalRechargeGranted != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">充值到账 <b className="ml-1 text-blue-400">{formatCredits(data.summary.totalRechargeGranted)}</b></span>}
             {data.summary.txCount != null && <span className="rounded-lg bg-zinc-800 px-2.5 py-1 text-zinc-300">笔数 <b className="ml-1 text-white">{data.summary.txCount}</b></span>}
           </div>
         )}
@@ -543,7 +543,7 @@ function KpiDetailPanel({ data, onUserLedger }: { data: any; onUserLedger?: (uid
           <div className="mb-3 flex flex-wrap gap-2 text-[11px]">
             <span className="text-zinc-500">按用途：</span>
             {data.byPurpose.map((bp: any) => (
-              <span key={bp.ref} className="rounded-lg bg-zinc-800/60 px-2 py-0.5 text-zinc-400">{bp.ref}: {Number(bp.amount).toLocaleString()} ({bp.count}次)</span>
+              <span key={bp.ref} className="rounded-lg bg-zinc-800/60 px-2 py-0.5 text-zinc-400">{bp.ref}: {formatCredits(bp.amount)} ({bp.count}次)</span>
             ))}
           </div>
         )}
@@ -551,7 +551,7 @@ function KpiDetailPanel({ data, onUserLedger }: { data: any; onUserLedger?: (uid
           <div className="mb-3 flex flex-wrap gap-2 text-[11px]">
             <span className="text-zinc-500">按池：</span>
             {data.byPool.map((bp: any) => (
-              <span key={bp.pool} className="rounded-lg bg-zinc-800/60 px-2 py-0.5 text-zinc-400">{bp.pool || '默认'}: {Number(bp.amount).toLocaleString()} ({bp.count}次)</span>
+              <span key={bp.pool} className="rounded-lg bg-zinc-800/60 px-2 py-0.5 text-zinc-400">{bp.pool || '默认'}: {formatCredits(bp.amount)} ({bp.count}次)</span>
             ))}
           </div>
         )}
@@ -566,10 +566,10 @@ function KpiDetailPanel({ data, onUserLedger }: { data: any; onUserLedger?: (uid
                 return (
                   <tr key={t.id} className="border-t border-zinc-800/60">
                     <td className="py-1.5 pr-3 text-zinc-300">{t.user || '—'}{onUserLedger ? <button onClick={() => onUserLedger(t.userId)} className="ml-1.5 text-[10px] text-emerald-400 hover:underline">账本</button> : null}</td>
-                    <td className={`py-1.5 pr-3 text-right tabular-nums font-semibold ${neg ? 'text-red-400' : 'text-emerald-400'}`}>{neg ? '' : '+'}{Math.abs(t.amount).toLocaleString()}</td>
+                    <td className={`py-1.5 pr-3 text-right tabular-nums font-semibold ${neg ? 'text-red-400' : 'text-emerald-400'}`}>{neg ? '-' : '+'}{formatCredits(Math.abs(t.amount))}</td>
                     <td className="py-1.5 pr-3 max-w-[180px] truncate text-[11px] text-zinc-500" title={t.ref}>{t.ref || '—'}</td>
                     {m !== 'adjusted' ? <td className="py-1.5 pr-3 text-[11px] text-zinc-600">{t.pool || '—'}</td> : null}
-                    <td className="py-1.5 pr-3 text-right text-xs text-zinc-500">{t.balanceAfter != null ? t.balanceAfter.toLocaleString() : '—'}</td>
+                    <td className="py-1.5 pr-3 text-right text-xs text-zinc-500">{t.balanceAfter != null ? formatCredits(t.balanceAfter) : '—'}</td>
                     <td className="py-1.5 text-[11px] text-zinc-500">{fmt(t.createdAt)}</td>
                   </tr>
                 );
@@ -601,9 +601,9 @@ function KpiDetailPanel({ data, onUserLedger }: { data: any; onUserLedger?: (uid
               {data.items.map((u: any) => (
                 <tr key={u.userId} className="border-t border-zinc-800/60">
                   <td className="py-1.5 pr-3 text-zinc-300">{u.name}</td>
-                  <td className="py-1.5 pr-3 text-right tabular-nums text-white">{u.credits.toLocaleString()}</td>
-                  <td className="py-1.5 pr-3 text-right tabular-nums text-emerald-400">{(u.rewardCredits || 0).toLocaleString()}</td>
-                  <td className="py-1.5 pr-3 text-right tabular-nums text-blue-400">{(u.rechargeCredits || 0).toLocaleString()}</td>
+                  <td className="py-1.5 pr-3 text-right tabular-nums text-white">{formatCredits(u.credits)}</td>
+                  <td className="py-1.5 pr-3 text-right tabular-nums text-emerald-400">{formatCredits(u.rewardCredits)}</td>
+                  <td className="py-1.5 pr-3 text-right tabular-nums text-blue-400">{formatCredits(u.rechargeCredits)}</td>
                   <td className="py-1.5 pr-3 text-[11px] text-zinc-500">{u.role}</td>
                   <td className="py-1.5 pr-3 text-[11px] text-zinc-500">{fmt(u.createdAt)}</td>
                   <td className="py-1.5">{onUserLedger ? <button onClick={() => onUserLedger(u.userId)} className="text-[11px] text-emerald-400 hover:underline">账本</button> : null}</td>

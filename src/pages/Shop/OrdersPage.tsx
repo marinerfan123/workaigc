@@ -79,7 +79,7 @@ export default function OrdersPage() {
                     <div className="mt-1 text-sm text-zinc-400">{o.itemCount ?? 0} 件商品 · {fmt(o.createdAt)}</div>
                   </div>
                   <div className="text-right">
-                    <div className="text-sm font-semibold text-emerald-400">{o.totalCredits} 积分</div>
+                    <div className="text-sm font-semibold text-emerald-400">{formatCredits(o.totalCredits)} 积分</div>
                   </div>
                   <ChevronDown className={`size-4 shrink-0 text-zinc-500 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
                 </button>

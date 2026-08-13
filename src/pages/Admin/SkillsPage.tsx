@@ -10,6 +10,7 @@ import {
   apiAdminDeleteSkill,
   type ISkill,
 } from '@/services/api';
+import { formatCredits } from '@/utils/format';
 
 const STAGE_OPTIONS = [
   { value: 'generation', label: '生成 (generation)' },
@@ -285,7 +286,7 @@ export default function SkillsPage() {
                 <p className="mt-2 line-clamp-2 text-xs text-zinc-400">{s.description || '—'}</p>
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
                   <span className="rounded-md bg-zinc-800/60 px-1.5 py-0.5">stage: {s.stage}</span>
-                  <span className="rounded-md bg-zinc-800/60 px-1.5 py-0.5">花费: {s.costCredits} 积分</span>
+                  <span className="rounded-md bg-zinc-800/60 px-1.5 py-0.5">花费: {formatCredits(s.costCredits)} 积分</span>
                   <span className="rounded-md bg-zinc-800/60 px-1.5 py-0.5">v{s.version}</span>
                 </div>
                 <div className="mt-3 flex items-center gap-2">

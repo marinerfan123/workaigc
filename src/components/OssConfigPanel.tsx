@@ -21,6 +21,21 @@ const PROVIDER_META: Record<OssProviderType, { label: string; color: string; rin
   'tencent-cos': { label: '腾讯云 COS', color: 'text-sky-300',   ring: 'ring-sky-500/30',     bg: 'bg-gradient-to-br from-sky-500/15 to-cyan-500/10' },
 };
 
+const UNKNOWN_PROVIDER_META = { label: '未知存储', color: 'text-zinc-300', ring: 'ring-zinc-500/30', bg: 'bg-zinc-500/10' };
+
+function getProviderMeta(providerType?: string | null) {
+  return PROVIDER_META[providerType as OssProviderType] ?? UNKNOWN_PROVIDER_META;
+}
+
+function ProviderBadge({ providerType, className = '' }: { providerType?: string | null; className?: string }) {
+  const meta = getProviderMeta(providerType);
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold ring-1 ${meta.bg} ${meta.color} ${meta.ring} ${className}`}>
+      {meta.label}
+    </span>
+  );
+}
+
 const PROVIDER_PRESETS: Record<OssProviderType, { region: string; regionLabel: string; endpointExternal: string }> = {
   'aliyun-oss': { region: 'cn-shanghai', regionLabel: '华东2（上海）', endpointExternal: 'oss-cn-shanghai.aliyuncs.com' },
   'tencent-cos': { region: 'ap-shanghai', regionLabel: '上海', endpointExternal: 'cos.ap-shanghai.myqcloud.com' },
@@ -152,11 +167,7 @@ export function OssConfigPanel() {
               ) : (
                 <span className="text-sm text-zinc-400">尚未设置活跃账号，所有上传将失败</span>
               )}
-              {active && (
-                <span className={`shrink-0 ml-auto inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold ring-1 ${PROVIDER_META[active.providerType].bg} ${PROVIDER_META[active.providerType].color} ${PROVIDER_META[active.providerType].ring}`}>
-                  {PROVIDER_META[active.providerType].label}
-                </span>
-              )}
+              {active && <ProviderBadge providerType={active.providerType} className="shrink-0 ml-auto" />}
             </div>
             {active && (
               <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-zinc-400">
@@ -178,14 +189,11 @@ export function OssConfigPanel() {
           </div>
           <div className="space-y-1.5">
             {configs.map((c) => {
-              const meta = PROVIDER_META[c.providerType];
               const isActive = c.id === active?.id;
               const testR = testResults[c.id];
               return (
                 <div key={c.id} className={`group flex items-center gap-3 rounded-xl border px-3 py-2.5 transition-all ${isActive ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-zinc-800 bg-zinc-950/40 hover:border-zinc-700'}`}>
-                  <span className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold ring-1 ${meta.bg} ${meta.color} ${meta.ring}`}>
-                    {meta.label}
-                  </span>
+                  <ProviderBadge providerType={c.providerType} className="shrink-0" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <span className="truncate text-[13px] font-medium text-white">{c.displayName || c.bucket || c.id}</span>

@@ -64,6 +64,7 @@ export function groupModelsByModelId(models: IAiModel[]): GroupedModel[] {
         rows: [],
         supportedResolutions: [],
         creditCost: 0,
+        supportsRewardBalance: false,
       };
       map.set(m.modelId, g);
     }
@@ -72,8 +73,8 @@ export function groupModelsByModelId(models: IAiModel[]): GroupedModel[] {
     if (m.enabled) g.enabled = true;
     if (typeof m.creditCost === 'number' && m.creditCost > g.creditCost) g.creditCost = m.creditCost;
 
-    // 双池积分聚合：支持赠送余额（任一支持即支持）；赠送价取支持行中的最大值
-    if (m.supportsRewardBalance !== false && g.supportsRewardBalance !== true) {
+    // 双池积分聚合：支持赠送余额（任一支持即支持，undefined 视为支持以兼容旧数据）；赠送价取支持行中的最大值
+    if (m.supportsRewardBalance !== false) {
       g.supportsRewardBalance = true;
     }
     if (m.supportsRewardBalance !== false && typeof m.rewardCreditsRequired === 'number' && m.rewardCreditsRequired > 0) {
@@ -130,4 +131,30 @@ export function groupModelsByModelId(models: IAiModel[]): GroupedModel[] {
   }
 
   return result;
+}
+
+/**
+ * 工作台模型下拉的排序方式。
+ * - manual：保持后端 sort_order 定义的顺序（后台「排序权重」字段控制，最精确）
+ * - name：按展示名（中文 locale）字母序
+ * - credits：按积分数升序（便宜的排前面）
+ */
+export type ModelSortMode = 'manual' | 'name' | 'credits';
+
+/**
+ * 按指定方式对聚合后的模型组排序。
+ * manual 模式直接返回原数组引用（不重排，保留后端 sort_order），
+ * 其余模式返回新数组，避免污染上游缓存的模型列表。
+ */
+export function sortGroupedModels(groups: GroupedModel[], mode: ModelSortMode = 'manual'): GroupedModel[] {
+  if (mode === 'manual') return groups;
+  const arr = [...groups];
+  if (mode === 'name') {
+    arr.sort((a, b) =>
+      (a.displayName || a.modelId).localeCompare(b.displayName || b.modelId, 'zh')
+    );
+  } else if (mode === 'credits') {
+    arr.sort((a, b) => (a.creditCost || 0) - (b.creditCost || 0));
+  }
+  return arr;
 }

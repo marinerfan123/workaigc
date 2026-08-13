@@ -6,10 +6,37 @@
 //   这既拿到「SSE 近实时完成通知」的主流体验，又对 SSE 故障零信任依赖。
 import { apiGetGenerationStatus } from '../services/api';
 
+export type GenerationResultImage = {
+  // Phase 1 主流化：服务端最终化（dispatcher.done → assetFinalize → fetch + OSS PUT + 写 media）。
+  // 前端只接收已最终化的资产对象，零 base64 / 零客户端上传：
+  //   - mediaId = 前端创建占位时给的 pendingId（id 锁定，onGenerate 按 id 找占位并替换）
+  //   - ossUrl = 服务端签发的 7d GET 预签名 URL；status=pending_upload 时是 providerUrl 兜底
+  //   - ossObjectKey = ${prefix}/${userId}/... 的完整 key（reaper 重传用）
+  //   - ossUploaded = true 表示已成功落 OSS；false 表示 pending_upload（reaper 后续续传）
+  mediaId: string;
+  ossUrl: string;
+  ossObjectKey?: string;
+  ossUploaded?: boolean;
+  status?: 'success' | 'pending_upload' | 'failed';
+  contentType?: string;
+  fileSize?: number;
+};
+export type GenerationResultVideo = GenerationResultImage;
+export type GenerationResultMeta = {
+  // 与成功生成结果绑定（来源 provider/usedProviders/consumption 等保留，供 accounting 链路审计）
+  source?: string;
+  usedProviders?: string[];
+  errors?: string[];
+  finalizeErrors?: string[];
+  consumption?: unknown[]; // 后台量 vs 客户量消费分配（双余额链路专用）
+  // 视频通道：videoMedia 是最终化的视频对象；videoUrl 是兜底链接（OSS 未开 或 失败时为 providerUrl）
+  videoMedia?: GenerationResultVideo | null;
+  videoUrl?: string;
+};
 export type TaskUpdate = {
   taskId: string;
   status: 'running' | 'waiting' | 'done' | 'failed' | 'cancelled' | 'not_found' | 'unknown';
-  result?: { images?: string[]; source?: string; usedProviders?: string[]; videoUrl?: string } | null;
+  result?: { images?: GenerationResultImage[]; videoUrl?: string; videoMedia?: GenerationResultVideo | null } & GenerationResultMeta | null;
   error?: string;
   pendingIds?: string[];
   model?: string;

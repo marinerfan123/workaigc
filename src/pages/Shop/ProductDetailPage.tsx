@@ -60,7 +60,7 @@ export default function ProductDetailPage() {
     setTrialLoading(false);
     if (r.ok) {
       setTrialResult(r.content || '');
-      toast.success(`试跑成功 · 消耗 ${r.costCredits ?? 0} 积分 · ${r.modelUsed || ''}`);
+      toast.success(`试跑成功 · 消耗 ${formatCredits(r.costCredits ?? 0)} 积分 · ${r.modelUsed || ''}`);
     } else {
       toast.error(r.error || '试跑失败');
     }
@@ -148,7 +148,7 @@ export default function ProductDetailPage() {
             <div className="space-y-3">
               <div className="flex items-center gap-2 text-xs text-zinc-400">
                 <Sparkles className="size-4 text-emerald-400" />
-                技能 <code className="text-zinc-300">{sk.key}</code> · adapter <code className="text-zinc-300">{sk.adapter}</code> · 单次 {sk.costCredits ?? 0} 积分
+                技能 <code className="text-zinc-300">{sk.key}</code> · adapter <code className="text-zinc-300">{sk.adapter}</code> · 单次 {formatCredits(sk.costCredits ?? 0)} 积分
               </div>
               <textarea
                 value={trialInput}

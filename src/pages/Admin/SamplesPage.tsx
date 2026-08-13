@@ -15,7 +15,34 @@ const TYPES = ['image', 'video'];
 const RATIOS = ['1:1', '3:4', '4:5', '16:9', '9:16', '21:9'];
 const STATUSES = ['success', 'pending', 'failed'];
 
+const CATEGORY_LABELS: Record<string, string> = {
+  character: '角色',
+  scene: '场景',
+  prop: '道具参考',
+  other: '其他',
+  generated: '生成示例',
+  upload: '上传示例',
+};
+const TYPE_LABELS: Record<string, string> = {
+  image: '图片',
+  video: '视频',
+};
+const RATIO_LABELS: Record<string, string> = {
+  '1:1': '1:1（正方形）',
+  '3:4': '3:4（竖屏）',
+  '4:5': '4:5（竖屏）',
+  '16:9': '16:9（横屏）',
+  '9:16': '9:16（竖屏）',
+  '21:9': '21:9（宽屏）',
+};
+const STATUS_LABELS: Record<string, string> = {
+  success: '成功',
+  pending: '生成中',
+  failed: '失败',
+};
+
 const cn = (...c: Array<string | false | null | undefined>) => c.filter(Boolean).join(' ');
+const labelOf = (map: Record<string, string>, key?: string | null, fallback = '—') => (key && map[key]) ? `${key}（${map[key]}）` : fallback;
 
 interface Sample {
   id: string;
@@ -187,9 +214,9 @@ export default function SamplesPage() {
                   <div className="font-medium text-white">{s.title || '（无标题）'}</div>
                   <div className="text-[11px] text-zinc-500">{s.key}</div>
                 </td>
-                <td className="px-4 py-3 text-zinc-300">{s.category}</td>
-                <td className="px-4 py-3 text-zinc-300">{s.type}</td>
-                <td className="px-4 py-3 text-zinc-300">{s.ratio}</td>
+                <td className="px-4 py-3 text-zinc-300">{labelOf(CATEGORY_LABELS, s.category)}</td>
+                <td className="px-4 py-3 text-zinc-300">{labelOf(TYPE_LABELS, s.type)}</td>
+                <td className="px-4 py-3 text-zinc-300">{RATIO_LABELS[s.ratio] || s.ratio}</td>
                 <td className="px-4 py-3 text-zinc-300">{s.model || '—'}</td>
                 <td className="px-4 py-3 text-zinc-300">{s.sort}</td>
                 <td className="px-4 py-3">
@@ -224,17 +251,17 @@ export default function SamplesPage() {
               <div className="grid grid-cols-2 gap-3">
                 <Field label="分类">
                   <select className={inputCls} value={form.category || 'character'} onChange={(e) => set('category', e.target.value)}>
-                    {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                    {CATEGORIES.map((c) => <option key={c} value={c}>{c}（{CATEGORY_LABELS[c]}）</option>)}
                   </select>
                 </Field>
                 <Field label="类型">
                   <select className={inputCls} value={form.type || 'image'} onChange={(e) => set('type', e.target.value)}>
-                    {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    {TYPES.map((t) => <option key={t} value={t}>{t}（{TYPE_LABELS[t]}）</option>)}
                   </select>
                 </Field>
                 <Field label="比例">
                   <select className={inputCls} value={form.ratio || '1:1'} onChange={(e) => set('ratio', e.target.value)}>
-                    {RATIOS.map((r) => <option key={r} value={r}>{r}</option>)}
+                    {RATIOS.map((r) => <option key={r} value={r}>{RATIO_LABELS[r] || r}</option>)}
                   </select>
                 </Field>
                 <Field label="排序">
@@ -251,9 +278,9 @@ export default function SamplesPage() {
                 <textarea className={cn(inputCls, 'h-20 resize-none')} value={form.prompt || ''} onChange={(e) => set('prompt', e.target.value)} />
               </Field>
               <Field label="状态">
-                <select className={inputCls} value={form.status || 'success'} onChange={(e) => set('status', e.target.value)}>
-                  {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
+                  <select className={inputCls} value={form.status || 'success'} onChange={(e) => set('status', e.target.value)}>
+                    {STATUSES.map((s) => <option key={s} value={s}>{s}（{STATUS_LABELS[s]}）</option>)}
+                  </select>
               </Field>
             </div>
             <div className="mt-6 flex justify-end gap-2">

@@ -239,7 +239,7 @@ export default function ModelPricePage() {
         const ok = window.confirm(
           `检测到「${mid}」曾设置价格 ${formatCredits(hist.creditCost)} 积分（${when}）。\n\n`
           + `确定 = 沿用原价 ${formatCredits(hist.creditCost)} 积分\n`
-          + `取消 = 使用当前填写的 ${cost || 0} 积分`,
+          + `取消 = 使用当前填写的 ${formatCredits(cost || 0)} 积分`,
         );
         if (ok) cost = hist.creditCost;
       }

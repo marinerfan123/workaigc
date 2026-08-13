@@ -106,7 +106,7 @@ export default function SellerPage() {
                 <div className="text-xs text-zinc-500">{o.orderNo}</div>
                 <div className="mt-0.5 text-sm text-zinc-400">{o.itemCount ?? 0} 件商品</div>
               </div>
-              <div className="text-sm font-semibold text-emerald-400">{o.totalCredits} 积分</div>
+              <div className="text-sm font-semibold text-emerald-400">{formatCredits(o.totalCredits)} 积分</div>
             </div>
           ))}
         </div>
