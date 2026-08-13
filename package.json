@@ -77,9 +77,12 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@lark-apaas/coding-presets-react": "^0.1.0",
+    "@tailwindcss/vite": "^4.3.2",
     "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^6.0.3",
     "concurrently": "^9",
     "eslint": "^9",
     "typescript": "~5.9",
