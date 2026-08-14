@@ -60,7 +60,7 @@ export default function AuthPage() {
               <h1 className="text-lg font-semibold text-white">
                 {mode === 'login' ? '登录' : '注册'}
               </h1>
-              <p className="text-xs text-zinc-500">AI 创作平台账号</p>
+              <p className="text-xs text-zinc-500">墨灵AI 账号</p>
             </div>
           </div>
 

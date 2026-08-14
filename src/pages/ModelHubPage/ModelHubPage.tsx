@@ -1010,48 +1010,50 @@ export default function ModelHubPage() {
           </div>
         ) : activeTab === 'providers' ? (
           <>
-            {/* Tab-专属操作：从模板添加（移到这里避免顶部按钮数变化引起错位） */}
-            <div className="mb-4 flex items-center justify-end">
-              <div className="relative">
-                <button
-                  onClick={() => setTemplateMenuOpen(!templateMenuOpen)}
-                  className="flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs text-white hover:border-zinc-600 transition-colors"
-                >
-                  <Plus className="size-3.5" />
-                  从模板添加
-                  <ChevronDown className="size-3 text-zinc-500" />
-                </button>
-                {templateMenuOpen && (
-                  <>
-                    <div className="fixed inset-0 z-30" onClick={() => setTemplateMenuOpen(false)} />
-                    <div className="absolute right-0 top-full z-40 mt-1 max-h-80 w-64 overflow-y-auto rounded-2xl bg-zinc-900 border border-zinc-800 p-1.5">
-                      <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500">官方</div>
-                      {PROVIDER_TEMPLATES.filter((t) => t.type === 'official').map((t) => (
-                        <button
-                          key={t.name}
-                          onClick={() => handleAddTemplate(t)}
-                          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs text-white hover:bg-zinc-800/70 transition-colors"
-                        >
-                          <Zap className="size-3.5 text-emerald-400" />
-                          <span className="flex-1 truncate">{t.name}</span>
-                        </button>
-                      ))}
-                      <div className="mt-1 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500">中转站</div>
-                      {PROVIDER_TEMPLATES.filter((t) => t.type === 'relay').map((t) => (
-                        <button
-                          key={t.name}
-                          onClick={() => handleAddTemplate(t)}
-                          className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs text-white hover:bg-zinc-800/70 transition-colors"
-                        >
-                          <Server className="size-3.5 text-blue-400" />
-                          <span className="flex-1 truncate">{t.name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
+            {/* Tab-专属操作：从模板添加（已清空测试占位模板，当前不渲染） */}
+            {PROVIDER_TEMPLATES.length > 0 && (
+              <div className="mb-4 flex items-center justify-end">
+                <div className="relative">
+                  <button
+                    onClick={() => setTemplateMenuOpen(!templateMenuOpen)}
+                    className="flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-900 px-4 py-2 text-xs text-white hover:border-zinc-600 transition-colors"
+                  >
+                    <Plus className="size-3.5" />
+                    从模板添加
+                    <ChevronDown className="size-3 text-zinc-500" />
+                  </button>
+                  {templateMenuOpen && (
+                    <>
+                      <div className="fixed inset-0 z-30" onClick={() => setTemplateMenuOpen(false)} />
+                      <div className="absolute right-0 top-full z-40 mt-1 max-h-80 w-64 overflow-y-auto rounded-2xl bg-zinc-900 border border-zinc-800 p-1.5">
+                        <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500">官方</div>
+                        {PROVIDER_TEMPLATES.filter((t) => t.type === 'official').map((t) => (
+                          <button
+                            key={t.name}
+                            onClick={() => handleAddTemplate(t)}
+                            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs text-white hover:bg-zinc-800/70 transition-colors"
+                          >
+                            <Zap className="size-3.5 text-emerald-400" />
+                            <span className="flex-1 truncate">{t.name}</span>
+                          </button>
+                        ))}
+                        <div className="mt-1 px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-500">中转站</div>
+                        {PROVIDER_TEMPLATES.filter((t) => t.type === 'relay').map((t) => (
+                          <button
+                            key={t.name}
+                            onClick={() => handleAddTemplate(t)}
+                            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-xs text-white hover:bg-zinc-800/70 transition-colors"
+                          >
+                            <Server className="size-3.5 text-blue-400" />
+                            <span className="flex-1 truncate">{t.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* 生成调度设置（全局最大并发） */}
             <div className="mb-4 rounded-[1.5rem] border border-zinc-800 bg-zinc-900/50 p-5">

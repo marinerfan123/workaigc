@@ -6,7 +6,7 @@
 // 后端 PUT /api/settings 已做合并写入（局部保存不会覆盖后台其它配置）。
 import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
-import { Settings2, Save, Loader2, ArrowDownWideNarrow } from 'lucide-react';
+import { Settings2, Save, Loader2, ArrowDownWideNarrow, Gauge, Clock } from 'lucide-react';
 import { apiGetSettings, apiSaveSettings } from '@/services/api';
 import type { ModelSortMode } from '@/utils/groupModels';
 
@@ -29,6 +29,12 @@ export default function SystemSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // 生成限流（应用层，按 IP）：每窗口最大次数 + 时间窗口（秒）
+  const [genLimit, setGenLimit] = useState<number>(30);
+  const [genWindow, setGenWindow] = useState<number>(60);
+  const [loadedLimit, setLoadedLimit] = useState<number>(30);
+  const [loadedWindow, setLoadedWindow] = useState<number>(60);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -38,6 +44,15 @@ export default function SystemSettingsPage() {
           const m = normalizeSort(s.workspaceModelSort);
           setSortMode(m);
           setLoaded(m);
+          const rl = (s.genRateLimit && typeof s.genRateLimit === 'object') ? s.genRateLimit : {};
+          const lim = Number(rl.limit);
+          const win = Number(rl.windowSec);
+          const safeLimit = Number.isInteger(lim) && lim > 0 ? lim : 30;
+          const safeWindow = Number.isInteger(win) && win > 0 ? win : 60;
+          setGenLimit(safeLimit);
+          setGenWindow(safeWindow);
+          setLoadedLimit(safeLimit);
+          setLoadedWindow(safeWindow);
         }
       } catch {
         // 读不到配置不阻断，回退默认 manual
@@ -48,21 +63,29 @@ export default function SystemSettingsPage() {
     return () => { cancelled = true; };
   }, []);
 
-  const dirty = sortMode !== loaded;
+  const dirty = sortMode !== loaded
+    || genLimit !== loadedLimit
+    || genWindow !== loadedWindow;
 
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
       const cur = (await apiGetSettings().catch(() => ({}))) || {};
-      await apiSaveSettings({ ...cur, workspaceModelSort: sortMode });
+      await apiSaveSettings({
+        ...cur,
+        workspaceModelSort: sortMode,
+        genRateLimit: { limit: genLimit, windowSec: genWindow },
+      });
       setLoaded(sortMode);
+      setLoadedLimit(genLimit);
+      setLoadedWindow(genWindow);
       toast.success('已保存系统设置');
     } catch (e) {
       toast.error('保存失败：' + (e instanceof Error ? e.message : String(e)));
     } finally {
       setSaving(false);
     }
-  }, [sortMode]);
+  }, [sortMode, genLimit, genWindow]);
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
@@ -146,6 +169,67 @@ export default function SystemSettingsPage() {
             {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
             保存设置
           </button>
+        </div>
+      </section>
+
+      {/* 生成限流（应用层，按客户端 IP） */}
+      <section className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
+        <div className="mb-1 flex items-center gap-2">
+          <Gauge className="h-4 w-4 text-emerald-400" />
+          <h2 className="text-sm font-medium text-zinc-100">生成限流</h2>
+        </div>
+        <p className="mb-4 text-xs text-zinc-500">
+          限制同一客户端 IP 在指定时间窗口内可提交的最大生成次数，用于防止刷爆供应商配额或积分滥用。
+          后端读取此配置后立即生效（30 秒内缓存同步）。
+        </p>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {/* 每窗口最大次数 */}
+          <div>
+            <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-zinc-300">
+              <Gauge className="h-3.5 w-3.5 text-zinc-500" />
+              每窗口最大次数
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={1000}
+              value={genLimit}
+              disabled={loading}
+              onChange={(e) => {
+                const v = Math.max(1, Math.min(1000, Math.floor(Number(e.target.value) || 1)));
+                setGenLimit(v);
+              }}
+              className="w-full rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-500/60"
+            />
+            <p className="mt-1 text-[11px] text-zinc-600">取值范围 1 – 1000，默认 30</p>
+          </div>
+
+          {/* 时间窗口（秒） */}
+          <div>
+            <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-zinc-300">
+              <Clock className="h-3.5 w-3.5 text-zinc-500" />
+              时间窗口（秒）
+            </label>
+            <input
+              type="number"
+              min={10}
+              max={3600}
+              value={genWindow}
+              disabled={loading}
+              onChange={(e) => {
+                const v = Math.max(10, Math.min(3600, Math.floor(Number(e.target.value) || 60)));
+                setGenWindow(v);
+              }}
+              className="w-full rounded-lg border border-zinc-800 bg-zinc-950/60 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-500/60"
+            />
+            <p className="mt-1 text-[11px] text-zinc-600">取值范围 10 – 3600，默认 60</p>
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-lg border border-zinc-800/80 bg-zinc-950/40 px-3 py-2 text-[11px] text-zinc-500">
+          等效规则：同一 IP 每 <span className="text-zinc-300">{genWindow}</span> 秒最多提交{' '}
+          <span className="text-zinc-300">{genLimit}</span> 次生成。超过后返回「生成请求过于频繁」，需等待窗口重置。
         </div>
       </section>
     </div>

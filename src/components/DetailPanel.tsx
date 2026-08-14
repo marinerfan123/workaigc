@@ -42,9 +42,11 @@ interface DetailPanelProps {
   onAddAsReference?: (url: string) => void;
   /** 上传 OSS 后更新当前 item 的回调 */
   onUpdate?: (item: IMediaItem) => void;
+  /** 制作视频：以当前图片为参考图切换到视频生成 */
+  onMakeVideo?: () => void;
 }
 
-export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose, onUsePrompt, onAddAsReference, onUpdate }: DetailPanelProps) {
+export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose, onUsePrompt, onAddAsReference, onUpdate, onMakeVideo }: DetailPanelProps) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [copied, setCopied] = useState(false); // OSS 链接复制成功的瞬时反馈
   const { config: ossConfig, ingestFromUrl, ingestFile } = useOssConfig();
@@ -471,7 +473,8 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
             )}
           </button>
           <button
-            disabled={isPending}
+            onClick={() => !isPending && onMakeVideo?.()}
+            disabled={isPending || !onMakeVideo}
             className="flex w-full items-center justify-center gap-2 rounded-full border border-zinc-800 px-4 py-2.5 text-sm font-medium text-white hover:bg-zinc-800/50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Play className="size-4" />

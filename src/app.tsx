@@ -18,6 +18,7 @@ import AuthModal from '@/components/AuthModal';
 import { Toaster } from '@/components/ui/sonner';
 import { RequireAdmin } from '@/components/RequireAdmin';
 import { RequireAuth } from '@/components/RequireAuth';
+import CustomerServiceFloat from '@/components/CustomerServiceFloat';
 
 // 后台（M3 总控台 / M4 智能体 / M2 流水 / 用户 / 技能 / 电商后台）
 import { AdminLayout } from '@/components/layouts/AdminLayout';
@@ -177,6 +178,7 @@ export default function App() {
       </Routes>
       <AuthModal />
       <Toaster />
+      <CustomerServiceFloat />
     </ErrorBoundary>
   );
 }

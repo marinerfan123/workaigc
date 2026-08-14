@@ -90,7 +90,7 @@ export default function SamplesPage() {
   useEffect(() => { load(); }, [load]);
 
   const openCreate = () => {
-    setForm({ type: 'image', category: 'character', ratio: '1:1', status: 'success', sort: samples.length + 1 });
+    setForm({ type: 'image', category: 'character', ratio: '1:1', status: 'success', sort: samples.length + 1, model: 'GM-IMG' });
     setEditing({} as Sample);
   };
   const openEdit = (s: Sample) => {

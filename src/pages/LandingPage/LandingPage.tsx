@@ -81,7 +81,7 @@ export default function LandingPage() {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = '东方古典美人 · 创作工作台';
+    document.title = '墨灵AI';
     return () => {
       document.title = previousTitle;
     };
@@ -108,9 +108,7 @@ export default function LandingPage() {
             <span className="flex h-9 w-9 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-400 text-black shadow-lg shadow-emerald-500/20">
               <Sparkles className="size-5" />
             </span>
-            <span className="text-base font-semibold tracking-tight">
-              东方古典美人 · 创作工作台
-            </span>
+            <span className="text-base font-semibold tracking-tight">墨灵AI</span>
           </Link>
           <div className="flex items-center gap-2">
             <Link
@@ -349,7 +347,7 @@ export default function LandingPage() {
       {/* ── 页脚 ── */}
       <footer className="relative border-t border-white/5 py-8">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-6 text-xs text-zinc-600 sm:flex-row">
-          <span>东方古典美人 · 创作工作台</span>
+          <span>墨灵AI</span>
           <span>点子 → 剧本 → 分镜 → 视频 → 剧集</span>
         </div>
       </footer>

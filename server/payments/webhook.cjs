@@ -132,16 +132,17 @@ function createWebhook(ctx) {
          WHERE pay_order_no=$3`,
         [channelTradeNo, JSON.stringify({ trade_no: channelTradeNo, money: amount / 100 }), outTradeNo],
       );
-      // 本金入账（充值余额）
+      // 本金入账（充值余额）：amount 存储单位为「分」，1 元 = 1 积分，故除以 100 得实际积分
+      const principalCredits = Number(o.amount) / 100;
       const bal = await client.query(
         'UPDATE users SET recharge_credits=recharge_credits+$1 WHERE id=$2 RETURNING credits',
-        [o.amount, o.user_id],
+        [principalCredits, o.user_id],
       );
       const newBalPrincipal = bal.rows[0] ? Number(bal.rows[0].credits) : null;
       await client.query(
         `INSERT INTO credit_transactions (user_id, kind, amount, ref, pool, balance_after)
          VALUES ($1,'grant',$2,$3,'recharge',$4)`,
-        [o.user_id, o.amount, o.id, newBalPrincipal],
+        [o.user_id, principalCredits, o.id, newBalPrincipal],
       );
       // 套餐赠送积分入账（按用户拍板：赠送积分一并发放到充值余额，全模型可用）
       const bonus = Number(o.bonus) || 0;

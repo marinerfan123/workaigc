@@ -142,6 +142,10 @@ const OSS_ROW_SNAKE_MAP = {
   path_prefix: 'pathPrefix',
   custom_domain: 'customDomain',
   region_label: 'regionLabel',
+  provider_type: 'providerType',
+  display_name: 'displayName',
+  app_id: 'appId',
+  created_at: 'createdAt',
 };
 function fromSnake(row) {
   if (!row || typeof row !== 'object') return row;

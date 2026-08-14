@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom';
 import {
   Heart,
   MoreHorizontal,
-  Play,
   Download,
   Trash2,
   Share2,
@@ -26,6 +25,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import Image from '@/components/ui/image';
+import VideoPlayer from '@/components/VideoPlayer';
 import { IMediaItem } from '@/data/media';
 import { useImageProbe } from '@/hooks/useImageProbe';
 import { useMediaUrlStatus } from '@/hooks/useMediaUrl';
@@ -312,6 +312,22 @@ export default function MediaCard({
             </div>
             <p className="relative z-10 text-[11px] font-medium text-zinc-300">检测链接中…</p>
           </div>
+        ) : item.type === 'video' ? (
+          /* ─── 视频：默认暂停 + 中央播放按钮 + 底部进度条（不自动播放，避免与收藏角标重叠、省资源）─── */
+          <div
+            className="h-full w-full cursor-zoom-in"
+            title="双击放大查看"
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              onOpenViewer?.();
+            }}
+          >
+            <VideoPlayer
+              key={mediaUrl.url}
+              src={mediaUrl.url}
+              videoClassName="h-full w-full object-cover duration-700 ease-out group-hover:scale-105"
+            />
+          </div>
         ) : (
           <div
             className="h-full w-full cursor-zoom-in"
@@ -326,13 +342,6 @@ export default function MediaCard({
               alt={item.title}
               className="h-full w-full object-cover duration-700 ease-out group-hover:scale-105"
             />
-          </div>
-        )}
-
-        {/* 视频播放角标（仅成功状态显示） */}
-        {(!item.status || item.status === 'success') && item.type === 'video' && (
-          <div className="absolute left-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 backdrop-blur-sm text-white">
-            <Play className="size-3.5 fill-current" />
           </div>
         )}
 

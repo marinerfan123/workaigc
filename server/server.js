@@ -182,53 +182,6 @@ async function initDB() {
           ALTER TABLE provider_model_bindings ADD COLUMN weight INT NOT NULL DEFAULT 0;
         END IF;
       END $$;
-      -- 双余额拆分迁移：users 加奖励/充值池 + credits 改 STORED 生成列 + 流水记 pool
-      ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS pool TEXT;
-      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS cost_pool TEXT;
-      DO $$
-      DECLARE v_gen TEXT; v_type TEXT;
-      BEGIN
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reward_credits') THEN
-          ALTER TABLE users ADD COLUMN reward_credits NUMERIC(18,4) NOT NULL DEFAULT 0;
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='recharge_credits') THEN
-          ALTER TABLE users ADD COLUMN recharge_credits NUMERIC(18,4) NOT NULL DEFAULT 0;
-        END IF;
-        -- 余额池扩精度：若 credits 生成列依赖 INT 池，必须先 DROP 才能改类型；改完后再重建为 NUMERIC 生成列
-        SELECT is_generated, data_type INTO v_gen, v_type FROM information_schema.columns WHERE table_name='users' AND column_name='credits';
-        IF v_gen IS NOT DISTINCT FROM 'ALWAYS' AND v_type = 'integer' THEN
-          ALTER TABLE users DROP COLUMN credits;
-        END IF;
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='reward_credits' AND data_type='integer') THEN
-          ALTER TABLE users ALTER COLUMN reward_credits TYPE NUMERIC(18,4);
-        END IF;
-        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='recharge_credits' AND data_type='integer') THEN
-          ALTER TABLE users ALTER COLUMN recharge_credits TYPE NUMERIC(18,4);
-        END IF;
-        -- 最终确保 credits 是 NUMERIC 生成列
-        SELECT is_generated INTO v_gen FROM information_schema.columns WHERE table_name='users' AND column_name='credits';
-        IF v_gen IS NOT DISTINCT FROM 'ALWAYS' THEN
-          NULL; -- 已是生成列，无需迁移
-        ELSIF v_gen IS NOT NULL THEN
-          -- 老库：credits 仍是普通列 → 旧余额并入 recharge 池（保留全模型可用性），再转生成列
-          UPDATE users SET recharge_credits = COALESCE(recharge_credits,0) + COALESCE(credits,0)
-           WHERE reward_credits = 0 AND recharge_credits = 0;
-          ALTER TABLE users DROP COLUMN credits;
-          ALTER TABLE users ADD COLUMN credits NUMERIC(18,4) GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED;
-        ELSE
-          -- credits 列缺失：补生成列
-          ALTER TABLE users ADD COLUMN credits NUMERIC(18,4) GENERATED ALWAYS AS (reward_credits + recharge_credits) STORED;
-        END IF;
-      END $$;
-      -- 存量模型奖励价默认等于充值价（一次性，幂等，settings 标记防重跑覆盖）
-      DO $$
-      BEGIN
-        IF NOT EXISTS (SELECT 1 FROM settings WHERE key='mig_models_reward_v1') THEN
-          UPDATE models SET reward_credits_required = GREATEST(0, COALESCE(credit_cost,0)) WHERE reward_credits_required = 0;
-          INSERT INTO settings (key, value) VALUES ('mig_models_reward_v1', '{"done":true}'::jsonb)
-            ON CONFLICT (key) DO UPDATE SET value='{"done":true}'::jsonb;
-        END IF;
-      END $$;
       CREATE TABLE IF NOT EXISTS oss_config (id INTEGER PRIMARY KEY DEFAULT 1, provider TEXT DEFAULT 'aliyun-oss', access_point_name TEXT DEFAULT '', endpoint_external TEXT DEFAULT '', endpoint_internal TEXT DEFAULT '', bucket TEXT DEFAULT '', region TEXT DEFAULT '', region_label TEXT DEFAULT '', access_key_id TEXT DEFAULT '', access_key_secret TEXT DEFAULT '', path_prefix TEXT DEFAULT 'images/', custom_domain TEXT DEFAULT '', enabled BOOLEAN DEFAULT TRUE);
       -- ── 多槽位对象存储（两套 OSS 支持 + 单 active） ──
       CREATE TABLE IF NOT EXISTS oss_configs (
@@ -344,6 +297,10 @@ async function initDB() {
         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      -- 用户套餐等级（供会员调度与前端展示；缺省 free）
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS plan TEXT NOT NULL DEFAULT 'free';
+      -- 用户状态（active / suspended），管理后台启停用依赖此列
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
       CREATE TABLE IF NOT EXISTS credit_transactions (
         id            BIGSERIAL PRIMARY KEY,
         user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -379,6 +336,8 @@ async function initDB() {
       ALTER TABLE generation_tasks ALTER COLUMN cost TYPE NUMERIC(18,4);
       ALTER TABLE credit_transactions ALTER COLUMN amount TYPE NUMERIC(18,4);
       ALTER TABLE credit_transactions ALTER COLUMN balance_after TYPE NUMERIC(18,4);
+      -- 计费池标识（reward/recharge），billing.cjs reserve/commit/release 与注册送积分均写入
+      ALTER TABLE credit_transactions ADD COLUMN IF NOT EXISTS pool TEXT DEFAULT 'recharge';
       CREATE INDEX IF NOT EXISTS ix_gt_user ON generation_tasks(user_id);
       CREATE UNIQUE INDEX IF NOT EXISTS ux_gt_idem
         ON generation_tasks(idempotency_key) WHERE idempotency_key IS NOT NULL;
@@ -392,6 +351,8 @@ async function initDB() {
         ON generation_tasks(provider_task_id) WHERE provider_task_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS ix_gt_running_provider
         ON generation_tasks(status, provider_task_id) WHERE status='running' AND provider_task_id IS NOT NULL;
+      -- 计费池标识（reward/recharge），dispatcher.cjs 在途/孤儿/等待区扫描与 finalize 均读取
+      ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS cost_pool TEXT DEFAULT 'recharge';
     `);
 
     // === 模型级参数模板回填（后台可自定义；空模板按 type 派生默认）===
@@ -1083,12 +1044,12 @@ async function backfillModelParamTemplates() {
 // 初始为本地 SVG 示例素材（public/samples），保证 dev/prod 均可直出。
 // 真实素材可在 default_assets 表直接增改，或通过运营后台维护。
 const DEFAULT_ASSET_SEED = [
-  { key: 'char-01', title: '示例·古风角色', type: 'image', category: 'character', ratio: '3:4', model: 'Nano Banana Pro', thumbnail: '/samples/character.svg', prompt: '电影级 8K 超写实人像，东方古典美人，汉服，柔光，中式庭院背景。', sort: 1, tags: ['古风', '人像'] },
-  { key: 'scene-01', title: '示例·古城场景', type: 'image', category: 'scene', ratio: '16:9', model: '即梦', thumbnail: '/samples/scene.svg', prompt: '宏大古城全景，晨雾，电影感光影，超宽幅。', sort: 2, tags: ['场景', '古城'] },
-  { key: 'prop-01', title: '示例·道具参考', type: 'image', category: 'prop', ratio: '1:1', model: 'Nano Banana Pro', thumbnail: '/samples/prop.svg', prompt: '精致道具特写，金属质感，工作室打光。', sort: 3, tags: ['道具', '产品'] },
-  { key: 'style-cinematic', title: '示例·电影感风格', type: 'image', category: 'other', ratio: '16:9', model: 'Nano Banana Pro', thumbnail: '/samples/style-cinematic.svg', prompt: '电影感调色，低饱和青橙对比，胶片颗粒，宽幅构图。', sort: 4, tags: ['风格', '电影感'] },
-  { key: 'style-anime', title: '示例·二次元风格', type: 'image', category: 'other', ratio: '3:4', model: '即梦', thumbnail: '/samples/style-anime.svg', prompt: '二次元动画风格，明亮配色，清晰描边，高光柔和。', sort: 5, tags: ['风格', '二次元'] },
-  { key: 'prompt-portrait', title: '示例·人像提示词', type: 'image', category: 'other', ratio: '4:5', model: 'Nano Banana Pro', thumbnail: '/samples/prompt-portrait.svg', prompt: '8K 超写实人像，自然光，浅景深，柔和肤质，情绪自然。', sort: 6, tags: ['人像', '提示词'] },
+  { key: 'char-01', title: '示例·古风角色', type: 'image', category: 'character', ratio: '3:4', model: 'GM-IMG', thumbnail: '/samples/character.svg', prompt: '电影级 8K 超写实人像，东方古典美人，汉服，柔光，中式庭院背景。', sort: 1, tags: ['古风', '人像'] },
+  { key: 'scene-01', title: '示例·古城场景', type: 'image', category: 'scene', ratio: '16:9', model: 'GM-IMG', thumbnail: '/samples/scene.svg', prompt: '宏大古城全景，晨雾，电影感光影，超宽幅。', sort: 2, tags: ['场景', '古城'] },
+  { key: 'prop-01', title: '示例·道具参考', type: 'image', category: 'prop', ratio: '1:1', model: 'GM-IMG', thumbnail: '/samples/prop.svg', prompt: '精致道具特写，金属质感，工作室打光。', sort: 3, tags: ['道具', '产品'] },
+  { key: 'style-cinematic', title: '示例·电影感风格', type: 'image', category: 'other', ratio: '16:9', model: 'GM-IMG', thumbnail: '/samples/style-cinematic.svg', prompt: '电影感调色，低饱和青橙对比，胶片颗粒，宽幅构图。', sort: 4, tags: ['风格', '电影感'] },
+  { key: 'style-anime', title: '示例·二次元风格', type: 'image', category: 'other', ratio: '3:4', model: 'GM-IMG', thumbnail: '/samples/style-anime.svg', prompt: '二次元动画风格，明亮配色，清晰描边，高光柔和。', sort: 5, tags: ['风格', '二次元'] },
+  { key: 'prompt-portrait', title: '示例·人像提示词', type: 'image', category: 'other', ratio: '4:5', model: 'GM-IMG', thumbnail: '/samples/prompt-portrait.svg', prompt: '8K 超写实人像，自然光，浅景深，柔和肤质，情绪自然。', sort: 6, tags: ['人像', '提示词'] },
 ];
 
 async function seedDefaultAssets() {
@@ -1285,7 +1246,20 @@ const MIME = {
 };
 
 function serveStatic(req, res) {
-  let filePath = path.join(CLIENT_DIR, req.url === '/' ? 'index.html' : req.url);
+  const urlPath = req.url === '/' ? 'index.html' : req.url;
+  // 优先从 public 目录读取（可热替换资源，如客服二维码）；命中则直接返回
+  const publicFile = path.join(__dirname, '..', 'public', urlPath);
+  if (fs.existsSync(publicFile) && !fs.statSync(publicFile).isDirectory()) {
+    const ext = path.extname(publicFile);
+    applySecurityHeaders(res);
+    res.writeHead(200, {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+    });
+    return res.end(fs.readFileSync(publicFile));
+  }
+  let filePath = path.join(CLIENT_DIR, urlPath);
   try {
     if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
       filePath = path.join(CLIENT_DIR, 'index.html');
@@ -1488,6 +1462,38 @@ async function resolveStyleCommissionRate() {
   return 30;
 }
 
+// 解析「生成接口」应用层限流参数：settings.app.genRateLimit = { limit, windowSec }，
+// 默认 { limit: 30, windowSec: 60 }（每 IP 60s 内最多 30 次生成）。
+// 后台「系统设置 → 生成限流」可手动调整；仅当值合法（正整数 / 正秒）时覆盖默认，
+// 防止误配把限流关成 0（等于放开滥用）。
+// 加 30s 内存缓存，避免每次生成请求都打一次 DB。
+let _genRateCache = null;
+let _genRateCacheAt = 0;
+const GEN_RATE_CACHE_TTL = 30 * 1000;
+async function resolveGenRateLimit() {
+  const DEFAULT = { limit: 30, windowSec: 60 };
+  const now = Date.now();
+  if (_genRateCache && now - _genRateCacheAt < GEN_RATE_CACHE_TTL) return _genRateCache;
+  let result = DEFAULT;
+  if (pgPool) {
+    try {
+      const r = await pgPool.query("SELECT value FROM settings WHERE key='app'");
+      const v = (r.rows[0] && r.rows[0].value) || {};
+      const cfg = v && v.genRateLimit;
+      if (cfg && typeof cfg === 'object') {
+        const limit = Number(cfg.limit);
+        const windowSec = Number(cfg.windowSec);
+        if (Number.isInteger(limit) && limit > 0 && Number.isInteger(windowSec) && windowSec > 0) {
+          result = { limit, windowSec };
+        }
+      }
+    } catch {}
+  }
+  _genRateCache = result;
+  _genRateCacheAt = now;
+  return result;
+}
+
 // 参考样式分成：客户用某样式生图 → 按分成比例返积分给设计者（进奖励池）。
 // 设计者==客户自身时跳过（不自我分成）；幂等（同 media_id 已记则跳过）；异常绝不影响主链路。
 async function creditStyleDesigner(pg, { referenceStyleId, customerId, mediaId, chargeCredits }) {
@@ -1562,7 +1568,7 @@ async function handleRegister(req, res) {
   // 注册即拷贝公共默认资产到个人素材库（幂等）
   await ensureUserDefaults(id);
   const token = session.signSession({ id, role: 'user' });
-  session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
+  session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC, req);
   const totalCredits = reward + recharge;
   return sendJSON(res, 200, { ok: true, user: { id, email, displayName, rewardCredits: reward, rechargeCredits: recharge, credits: totalCredits, role: 'user' } });
 }
@@ -1587,7 +1593,7 @@ async function handleLogin(req, res) {
   // 注意：admin 不是「顾客」，不自动塞示例（手动推送 pushSamplesToUsers 也已排除 admin）
   if (u.role !== 'admin') await ensureUserDefaults(u.id);
   const token = session.signSession({ id: u.id, role: u.role });
-  session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
+  session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC, req);
   return sendJSON(res, 200, {
     ok: true,
     user: { id: u.id, email: u.email, displayName: u.display_name, rewardCredits: u.reward_credits, rechargeCredits: u.recharge_credits, credits: u.credits, role: u.role },
@@ -1603,7 +1609,7 @@ async function handleRefresh(req, res) {
   const user = session.getUserFromCookie(req);
   if (!user) return sendJSON(res, 401, { error: '会话无效' });
   const token = session.signSession({ id: user.id, role: user.role });
-  session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC);
+  session.setCookie(res, session.COOKIE_NAME, token, session.ACCESS_TTL_SEC, req);
   return sendJSON(res, 200, { ok: true });
 }
 
@@ -2751,8 +2757,9 @@ async function handleAPI(req, res) {
   // ── 服务端生成分发（同模型多供应商动态均衡）──
   // POST /api/generate：异步模式（默认）。立即返回 taskId，前端轮询 /api/generate/status/:taskId 拿结果。
   if (url === '/api/generate' && method === 'POST') {
-    // 限流：每 IP 60s 内最多 30 次生成（防刷爆供应商配额 / 积分滥用）
-    const rlGen = await rateLimit({ key: 'rl:gen:' + clientIp(req), limit: 30, windowSec: 60 });
+    // 生成限流（应用层，按 IP）：参数来自后台「系统设置 → 生成限流」，默认每 IP 60s 内 30 次
+    const genRl = await resolveGenRateLimit();
+    const rlGen = await rateLimit({ key: 'rl:gen:' + clientIp(req), limit: genRl.limit, windowSec: genRl.windowSec });
     if (!rlGen.allowed) {
       res.setHeader('Retry-After', String(rlGen.retryAfter));
       return sendJSON(res, 429, { error: '生成请求过于频繁，请稍后再试' });

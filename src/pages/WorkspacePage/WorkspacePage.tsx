@@ -481,6 +481,33 @@ export default function WorkspacePage() {
     setViewerOpen(false);
   };
 
+  // T3 制作视频：以当前图片为参考图，切换到视频生成模式并立即生成
+  const handleMakeVideo = (item: IMediaItem) => {
+    if (item.type === 'video') {
+      toast.info('视频不支持再次制作视频');
+      return;
+    }
+    const refUrl = item.fullUrl || item.thumbnail || item.ossUrl;
+    if (!refUrl) {
+      toast.error('当前图片没有可用的参考图链接');
+      return;
+    }
+    const videoModel = getDefaultModel('video');
+    if (!videoModel) {
+      toast.error('视频模型加载中，请稍后再试');
+      return;
+    }
+    generationBarRef.current?.generate({
+      prompt: item.prompt,
+      model: videoModel,
+      ratio: item.ratio,
+      contentType: 'video',
+      referenceImages: [refUrl],
+      auto: true,
+    });
+    setSelectedId(null);
+  };
+
   // 管理员：设为/取消示例
   const handleSetExample = async (item: IMediaItem) => {
     const next = !item.isDefault;
@@ -726,6 +753,7 @@ export default function WorkspacePage() {
             setMediaList((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
             apiSaveMedia(stripBlobItems([updated]));
           }}
+          onMakeVideo={() => selectedItem && handleMakeVideo(selectedItem)}
         />
       </div>
 

@@ -125,7 +125,7 @@ export default function RechargePage() {
   }, [custom, amount, packages]);
 
   const creditsPreview = useMemo(() => {
-    if (activePkg) return activePkg.credits + (activePkg.bonus || 0);
+    if (activePkg) return activePkg.price + (activePkg.bonus || 0);
     return finalAmount || 0;
   }, [activePkg, finalAmount]);
 
@@ -271,7 +271,7 @@ export default function RechargePage() {
                     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                       {displayPackages.map((pkg) => {
                         const active = !custom && amount === pkg.price;
-                        const totalCredits = pkg.credits + (pkg.bonus || 0);
+                        const totalCredits = pkg.price + (pkg.bonus || 0);
                         const hot = pkg.price >= 198 || pkg.price === 98;
                         return (
                           <button

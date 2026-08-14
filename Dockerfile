@@ -19,6 +19,8 @@ ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY server ./server
+# 公共静态资源（如客服群二维码），支持容器内直接替换，无需重新构建
+COPY public ./public
 # 注意：dist 已被 .dockerignore 排除，必须从构建阶段拷贝已编译产物（输出在 dist/build2）
 COPY --from=build /app/dist ./dist
 EXPOSE 3001

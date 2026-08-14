@@ -58,9 +58,9 @@ function createFinance(ctx) {
     return {
       totalCreditsInSystem: Number(totalCredits.rows[0].s),
       totalUsers: parseInt(totalUsers.rows[0].c, 10),
-      totalRechargePaid: Number(paid.rows[0].s),
+      totalRechargePaid: Number(paid.rows[0].s) / 100,
       rechargePaidCount: parseInt(paid.rows[0].c, 10),
-      totalRechargePending: Number(pending.rows[0].s),
+      totalRechargePending: Number(pending.rows[0].s) / 100,
       rechargePendingCount: parseInt(pending.rows[0].c, 10),
       rechargeFailedCount: parseInt(failed.rows[0].c, 10),
       totalConsumed: Number(consumed.rows[0].s),
@@ -73,7 +73,7 @@ function createFinance(ctx) {
       consumedByPool: { reward: commitMap.reward || 0, recharge: commitMap.recharge || 0 },
       series: series.rows.map((r) => ({
         day: r.day,
-        rechargePaid: Number(r.recharge_paid),
+        rechargePaid: Number(r.recharge_paid) / 100,
         consumed: Number(r.consumed),
         granted: Number(r.granted),
       })),
@@ -111,9 +111,9 @@ function createFinance(ctx) {
         const byChannel = await p.query("SELECT channel, COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM recharge_orders WHERE status='paid' GROUP BY channel ORDER BY s DESC");
         return {
           metric: m,
-          summary: { totalAmount: Number((await p.query("SELECT COALESCE(SUM(amount),0) AS s FROM recharge_orders WHERE status='paid'")).rows[0].s), totalCount: parseInt((await p.query("SELECT COUNT(*) AS c FROM recharge_orders WHERE status='paid'")).rows[0].c, 10) },
-          byChannel: byChannel.rows.map((x) => ({ channel: x.channel, amount: Number(x.s), count: parseInt(x.c, 10) })),
-          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', channel: x.channel, amount: Number(x.amount), payOrderNo: x.pay_order_no, createdAt: x.created_at, paidAt: x.paid_at })),
+          summary: { totalAmount: Number((await p.query("SELECT COALESCE(SUM(amount),0) AS s FROM recharge_orders WHERE status='paid'")).rows[0].s) / 100, totalCount: parseInt((await p.query("SELECT COUNT(*) AS c FROM recharge_orders WHERE status='paid'")).rows[0].c, 10) },
+          byChannel: byChannel.rows.map((x) => ({ channel: x.channel, amount: Number(x.s) / 100, count: parseInt(x.c, 10) })),
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', channel: x.channel, amount: Number(x.amount) / 100, payOrderNo: x.pay_order_no, createdAt: x.created_at, paidAt: x.paid_at })),
         };
       }
 
@@ -159,8 +159,8 @@ function createFinance(ctx) {
         const cnt = await p.query("SELECT COALESCE(SUM(amount),0) AS s, COUNT(*) AS c FROM recharge_orders WHERE status='pending'");
         return {
           metric: m,
-          summary: { totalPending: Number(cnt.rows[0].s), count: parseInt(cnt.rows[0].c, 10) },
-          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', channel: x.channel, amount: Number(x.amount), payOrderNo: x.pay_order_no, createdAt: x.created_at, expiresAt: x.expires_at })),
+          summary: { totalPending: Number(cnt.rows[0].s) / 100, count: parseInt(cnt.rows[0].c, 10) },
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', channel: x.channel, amount: Number(x.amount) / 100, payOrderNo: x.pay_order_no, createdAt: x.created_at, expiresAt: x.expires_at })),
         };
       }
 
@@ -175,7 +175,7 @@ function createFinance(ctx) {
         return {
           metric: m,
           summary: { count: parseInt(cnt.rows[0].c, 10) },
-          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', channel: x.channel, amount: Number(x.amount), payOrderNo: x.pay_order_no, createdAt: x.created_at, reason: (x.meta && typeof x.meta === 'object' && x.meta.reason) ? x.meta.reason : null })),
+          items: list.rows.map((x) => ({ id: x.id, userId: x.user_id, user: x.user || '—', channel: x.channel, amount: Number(x.amount) / 100, payOrderNo: x.pay_order_no, createdAt: x.created_at, reason: (x.meta && typeof x.meta === 'object' && x.meta.reason) ? x.meta.reason : null })),
         };
       }
 
@@ -289,7 +289,7 @@ function createFinance(ctx) {
         userId: x.user_id,
         user: x.user || '系统',
         channel: x.channel,
-        amount: Number(x.amount),
+        amount: Number(x.amount) / 100,
         status: x.status,
         payOrderNo: x.pay_order_no,
         createdAt: x.created_at,

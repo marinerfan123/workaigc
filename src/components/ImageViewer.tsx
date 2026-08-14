@@ -401,6 +401,15 @@ export default function ImageViewer({
           transition: isDragging ? 'none' : 'transform 0.2s ease-out',
         }}
       >
+        {current.type === 'video' ? (
+          <video
+            src={viewUrl}
+            className="max-h-[85vh] max-w-[90vw] object-contain select-none"
+            controls
+            loop
+            playsInline
+          />
+        ) : (
         <Image
           src={viewUrl}
           alt={current.title}
@@ -413,6 +422,7 @@ export default function ImageViewer({
             }
           }}
         />
+        )}
       </div>
 
       {/* 底部信息 */}

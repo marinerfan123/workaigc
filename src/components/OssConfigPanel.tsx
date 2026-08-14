@@ -58,7 +58,7 @@ function fmtTime(ts: number) {
 }
 
 export function OssConfigPanel() {
-  const { enabled, active, configs, setEnabled, reload, createSlot, updateSlot, deleteSlot, activateSlot, testSlot } = useOssConfig();
+  const { enabled, active, configs, setEnabled, reload, createSlot, updateSlot, deleteSlot, activateSlot, testSlot, testConfig } = useOssConfig();
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, any>>({});
@@ -120,7 +120,8 @@ export function OssConfigPanel() {
 
   async function handleTest(id: string) {
     setTestingId(id);
-    const r = await testSlot(id);
+    // 如果正在编辑该槽位，测试当前表单草稿（保存前即时校验）
+    const r = await (editingId === id ? testConfig(draft) : testSlot(id));
     setTestingId(null);
     setTestResults((prev) => ({ ...prev, [id]: r }));
   }
@@ -263,9 +264,7 @@ export function OssConfigPanel() {
         {editing && (
           <div className="rounded-3xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
             <div className="flex items-center gap-2 pb-2 border-b border-zinc-800/80">
-              <span className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold ring-1 ${PROVIDER_META[editing.providerType].bg} ${PROVIDER_META[editing.providerType].color} ${PROVIDER_META[editing.providerType].ring}`}>
-                {PROVIDER_META[editing.providerType].label}
-              </span>
+              <ProviderBadge providerType={editing.providerType} className="shrink-0" />
               <input
                 value={draft.displayName || ''}
                 onChange={(e) => updateDraft('displayName', e.target.value)}

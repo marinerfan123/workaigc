@@ -175,7 +175,7 @@ export default function RechargeModal({ open, onClose }: { open: boolean; onClos
                     : PRESETS.map((p) => ({ id: `p${p}`, price: p, credits: p, bonus: 0, name: '', _preset: true }))
                   ).map((pkg) => {
                     const active = !custom && amount === pkg.price;
-                    const totalCredits = pkg.credits + (pkg.bonus || 0);
+                    const totalCredits = pkg.price + (pkg.bonus || 0);
                     return (
                       <button
                         key={pkg.id}

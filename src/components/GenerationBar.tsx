@@ -258,6 +258,8 @@ export interface GenerationPayload {
   auto?: boolean;
   /** 归因到某个参考样式设计者（用于分成；工作台「用推广样式创作」专用） */
   referenceStyle?: ReferenceStyle | null;
+  /** 强制切换内容类型（例如图片详情页「制作视频」） */
+  contentType?: 'image' | 'video';
 }
 
 /** 父级通过 ref 触发重试 / 配方 / 变体的 imperative handle */
@@ -619,8 +621,21 @@ function GenerationBar({
     generate: (payload: GenerationPayload) => {
       // T1 配方复用：预填 prompt + model + ratio（一键复刻）
       // T2 变体 Remix：额外把示例缩略图当参考图传入 apiGenerate
+      // T3 制作视频：从图片详情页切到视频模式，并把当前图当首帧参考图
       onPromptChangeRef.current(payload.prompt);
-      onSettingsChangeRef.current({ ...settingsRef.current, model: payload.model, ratio: payload.ratio });
+      const nextSettings = { ...settingsRef.current, model: payload.model, ratio: payload.ratio as Ratio };
+      if (payload.contentType) {
+        nextSettings.contentType = payload.contentType;
+        if (payload.contentType === 'video') {
+          // 按参考图数量给默认视频模式，减少后端推导的歧义
+          const refCount = payload.referenceImages?.length || 0;
+          if (refCount === 0) nextSettings.videoMode = 't2v';
+          else if (refCount === 1) nextSettings.videoMode = 'i2v_first';
+          else if (refCount === 2) nextSettings.videoMode = 'i2v_first_last';
+          else nextSettings.videoMode = 'reference_image';
+        }
+      }
+      onSettingsChangeRef.current(nextSettings);
       if (payload.referenceImages && payload.referenceImages.length > 0) {
         onSetReferenceImagesRef.current?.(payload.referenceImages);
       }
@@ -629,7 +644,7 @@ function GenerationBar({
         setAttributedStyle(payload.referenceStyle || null);
       }
       setTimeout(() => {
-        // auto=false 时只预填不生成；否则立即生成（一键复刻 / 一键变体）
+        // auto=false 时只预填不生成；否则立即生成（一键复刻 / 一键变体 / 制作视频）
         handleGenerateRef.current(payload.auto === false ? undefined : {
           referenceImages: payload.referenceImages,
           attributedStyle: payload.referenceStyle || null,
@@ -734,8 +749,11 @@ function GenerationBar({
     [groupedModels, modelSortMode]
   );
 
-  // 顶栏展示名：优先映射名
-  const currentModelLabel = getEffectiveModelName(currentModel) || settings.model || '无';
+  // 顶栏展示名：优先映射名。
+  // 模型列表尚未从后端加载完成时，不要直接回退到 settings.model（可能是 modelId 原名），
+  // 否则首屏会闪过 `agnes-image-2.1-flash` 之类的原始 ID；显示"加载中..."占位。
+  const modelsLoaded = models.length > 0;
+  const currentModelLabel = getEffectiveModelName(currentModel) || (modelsLoaded ? settings.model : '加载中...') || '无';
   // 模型是否支持赠送余额（缺省视为支持）
   const modelSupportsReward = (m?: IAiModel | null) => (m ? m.supportsRewardBalance !== false : false);
   // 模型赠送价（支持赠送时所需赠送积分；缺省回退充值价）
@@ -756,6 +774,10 @@ function GenerationBar({
     ? (template.videoResolutions || [])
     : [];
   const showCount = settings.contentType === 'image' && template.allowCount !== false;
+  // 当前提交数量：图片 1-4，视频固定 1。顶部价格徽章按此数量展示总价。
+  const batchCount = settings.contentType === 'video'
+    ? 1
+    : Math.max(1, Math.min(4, Number(settings.count) || 1));
 
   // 是否启用「视频模式选择系统」：后台声明 videoModes 才启用（旧视频模型如 Agnes 不声明 → 走旧推导逻辑）
   const modeSystemOn = !!(template.videoModes && template.videoModes.length);
@@ -1728,18 +1750,21 @@ function GenerationBar({
                 <span className="max-w-[140px] truncate font-medium">
                   {currentModelLabel}
                 </span>
-                {/* 双池价格徽章：根据模型支持情况显示「赠送 / 充值 / 免费」 */}
+                {/* 双池价格徽章：根据模型支持情况显示「赠送 / 充值 / 免费」（按当前 batchCount 展示总价） */}
                 {currentModel && modelSupportsReward(currentModel) && modelRewardPrice(currentModel) > 0 && (
                   <span
                     className="shrink-0 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold"
-                    title={`支持赠送余额：单次生成需 ${formatCredits(modelRewardPrice(currentModel))} 赠送积分（全局优先扣赠送）`}
+                    title={`支持赠送余额：本次 ${batchCount} 张共需 ${formatCredits(modelRewardPrice(currentModel) * batchCount)} 赠送积分（单张 ${formatCredits(modelRewardPrice(currentModel))}，全局优先扣赠送）`}
                   >
-                    赠 {formatCredits(modelRewardPrice(currentModel))}
+                    赠 {formatCredits(modelRewardPrice(currentModel) * batchCount)}
                   </span>
                 )}
                 {currentModel && (currentModel.creditCost || 0) > 0 && (
-                  <span className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold" title="充值价（真钱充值余额抵扣）">
-                    {formatCredits(currentModel.creditCost)} 积分
+                  <span
+                    className="shrink-0 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 px-1.5 py-0.5 text-[9px] font-semibold"
+                    title={`充值价：本次 ${batchCount} 张共需 ${formatCredits((currentModel.creditCost || 0) * batchCount)} 充值积分（单张 ${formatCredits(currentModel.creditCost)}）`}
+                  >
+                    {formatCredits((currentModel.creditCost || 0) * batchCount)} 积分
                   </span>
                 )}
                 {currentModel && (currentModel.creditCost || 0) === 0 && (!modelSupportsReward(currentModel) || modelRewardPrice(currentModel) === 0) && (

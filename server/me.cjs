@@ -31,7 +31,7 @@ function createMe(ctx) {
       rewardCredits,
       rechargeCredits,
       credits: cur,
-      totalRecharged: Number(recharged.rows[0].s),
+      totalRecharged: Number(recharged.rows[0].s) / 100,
       totalConsumed: Number(consumed.rows[0].s),
       monthConsumed: Number(month.rows[0].s),
       totalGranted: Number(granted.rows[0].s),
@@ -74,7 +74,7 @@ function createMe(ctx) {
       items: r.rows.map((x) => ({
         id: x.id,
         payOrderNo: x.pay_order_no,
-        amount: Number(x.amount),
+        amount: Number(x.amount) / 100,
         channel: x.channel,
         status: x.status,
         createdAt: x.created_at,

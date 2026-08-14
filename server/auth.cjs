@@ -80,9 +80,25 @@ function parseCookies(req) {
   }
   return out;
 }
-function setCookie(res, name, val, maxAgeSec) {
-  // dev(http) 下省略 Secure，否则浏览器拒存导致登录循环（L8）
-  const secure = isProd ? ' Secure;' : '';
+// 判断本次请求是否走真实 TLS（HTTPS）。
+// 1) node 直连且自身是 https server：req.secure / req.connection.encrypted
+// 2) 经 nginx 反代：读 X-Forwarded-Proto（nginx 注入）
+// 裸 IP 明文 HTTP 直连时这些都不成立 → 视为非 HTTPS，不加 Secure，使浏览器能保存 cookie（L8 登录循环坑）
+// 备案后走 nginx HTTPS 反代时 X-Forwarded-Proto=https → 自动加回 Secure，无需任何改动。
+function isHttps(req) {
+  if (!req) return false;
+  if (req.secure) return true;
+  if (req.connection && req.connection.encrypted) return true;
+  const proto = req.headers && req.headers['x-forwarded-proto'];
+  if (proto) {
+    const first = String(proto).split(',')[0].trim();
+    if (first === 'https') return true;
+  }
+  return false;
+}
+function setCookie(res, name, val, maxAgeSec, req) {
+  // 仅当真实传输层为 HTTPS 时才加 Secure；明文 HTTP（裸 IP 直连）省略，否则浏览器拒存导致登录循环（L8）
+  const secure = isHttps(req) ? ' Secure;' : '';
   res.setHeader('Set-Cookie', `${name}=${val}; Path=/; HttpOnly; SameSite=Lax;${secure} Max-Age=${maxAgeSec}`);
 }
 function clearCookie(res, name) {

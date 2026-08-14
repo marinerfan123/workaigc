@@ -47,9 +47,10 @@ services:
       PAYMENT_MASTER_KEY: ${PAYMENT_MASTER_KEY:?PAYMENT_MASTER_KEY is required in production}
       ADMIN_SEED_EMAIL: ${ADMIN_SEED_EMAIL:?ADMIN_SEED_EMAIL is required}
       ADMIN_SEED_PASSWORD: ${ADMIN_SEED_PASSWORD:?ADMIN_SEED_PASSWORD is required}
-    # 只绑定回环地址，不直接对公网暴露；由宝塔 Nginx 反代到域名 + HTTPS
+    # 临时：备案完成前用裸 IP 直连 http://8.148.68.47:3001 访问，故暴露到 0.0.0.0。
+    # 备案完成、走 nginx HTTPS 反代后，建议改回 "127.0.0.1:${APP_HOST_PORT:-3001}:3001" 收紧。
     ports:
-      - "127.0.0.1:${APP_HOST_PORT:-3001}:3001"
+      - "0.0.0.0:${APP_HOST_PORT:-3001}:3001"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3001/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s

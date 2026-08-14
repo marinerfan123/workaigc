@@ -1261,27 +1261,35 @@ async function finalizeResumedTask(pgPool, ctx, result) {
 //   · 图片任务崩溃中途中途无 provider_task_id，resumeRunningTasks 不覆盖；
 //   · 续轮询遗漏或极端竞态下个别 running 任务可能永远停在 running。
 // 这些孤儿若不回收，积分（held）永久占用、前台 pending 卡片永不更新。
-// 策略：周期性扫描 created_at 超硬上限（3h，远超 90min 轮询安全线）的 running 任务，
+// 策略：按内容类型分设硬上限，周期性扫描 created_at 超阈值且仍 running 的孤儿任务，
 //       强制标 failed 并释放 held 积分，杜绝永久卡 running。
+//   · 图片（image）：5 分钟（flash 模型秒级出图，5 分钟未终态即视为丢回调/崩溃）。
+//   · 视频（video）：15 分钟（视频生成本就更长，给足余量）。
 // 注：waiting 任务属「保留待复核」（超时铁律：绝不按时间判失败），看门狗只回收 running 孤儿，不碰 waiting。
-const STUCK_HARD_LIMIT_MS = 3 * 60 * 60 * 1000;        // 3 小时硬上限
-const STUCK_WATCHDOG_INTERVAL_MS = 10 * 60 * 1000;    // 每 10 分钟扫描一次
+const STUCK_IMAGE_LIMIT_MS = 5 * 60 * 1000;           // 图片硬上限 5 分钟
+const STUCK_VIDEO_LIMIT_MS = 15 * 60 * 1000;          // 视频硬上限 15 分钟
+const STUCK_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;     // 每 5 分钟扫描一次
 let watchdogStarted = false;
 async function scanStuckTasks(pgPool) {
   try {
     const r = await pgPool.query(
-      `SELECT task_id, user_id, cost, cost_pool, idempotency_key, status
+      `SELECT task_id, user_id, cost, cost_pool, idempotency_key, status, content_type
          FROM generation_tasks
-        WHERE status='running' AND created_at < NOW() - INTERVAL '3 hours'`,
+        WHERE status='running'
+          AND (
+            (COALESCE(content_type,'image') <> 'video' AND created_at < NOW() - INTERVAL '5 minutes')
+            OR (content_type = 'video' AND created_at < NOW() - INTERVAL '15 minutes')
+          )`,
     );
     for (const row of r.rows) {
       // 释放 held 积分（按池回退，幂等安全）；仅 running 孤儿才会被选中，already-terminal 任务不会被重复释放。
       try {
         await billing.releaseCredits(pgPool, row.user_id, row.cost, row.idempotency_key, row.cost_pool);
       } catch (e) { console.warn('[watchdog] 释放积分失败（忽略）:', row.task_id, e.message); }
-      await updateTaskStatus(pgPool, row.task_id, 'failed', null, '任务超时未完成（看门狗兜底回收孤儿任务）', row.user_id);
-      realtime.emitTaskUpdate(row.user_id, { taskId: row.task_id, status: 'failed', error: '任务超时未完成（看门狗兜底回收孤儿任务）' });
-      console.warn(`[watchdog] 回收孤儿 running 任务 ${row.task_id}（创建超 3h），已标 failed 并释放积分`);
+      const overLine = row.content_type === 'video' ? '视频超 15min' : '图片超 5min';
+      await updateTaskStatus(pgPool, row.task_id, 'failed', null, `任务超时未完成（看门狗兜底回收孤儿任务：${overLine}）`, row.user_id);
+      realtime.emitTaskUpdate(row.user_id, { taskId: row.task_id, status: 'failed', error: `任务超时未完成（看门狗兜底回收孤儿任务：${overLine}）` });
+      console.warn(`[watchdog] 回收孤儿 running 任务 ${row.task_id}（${overLine}），已标 failed 并释放积分`);
     }
     if (r.rows.length) console.log(`[watchdog] 本轮回收 ${r.rows.length} 个孤儿 running 任务`);
   } catch (e) {
@@ -1294,7 +1302,7 @@ function startStuckTaskWatchdog(pgPool) {
   // 启动后先跑一次（尽快回收已存在的孤儿），随后周期扫描
   scanStuckTasks(pgPool).catch(() => {});
   setInterval(() => scanStuckTasks(pgPool).catch(() => {}), STUCK_WATCHDOG_INTERVAL_MS);
-  console.log('[watchdog] 孤儿 running 任务看门狗已启动（硬上限 3h，每 10 分钟扫描）');
+  console.log('[watchdog] 孤儿 running 任务看门狗已启动（图片 5min / 视频 15min，每 5 分钟扫描）');
 }
 
 // 查询单个任务状态

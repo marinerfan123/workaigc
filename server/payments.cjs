@@ -76,7 +76,7 @@ const payments = {
         );
         if (pkgRes.rows.length) {
           const pkg = pkgRes.rows[0];
-          amount = Math.floor(Number(pkg.price) || 0);
+          amount = Math.floor(Number(pkg.price) || 0) * 100; // price 为元，统一换算成分存储（与自定义金额、payment_settings 单位一致）
           bonus = Math.max(0, Math.floor(Number(pkg.bonus) || 0));
           packageId = pkg.id;
         }
@@ -170,7 +170,7 @@ const payments = {
 
       return sendJSON(res, 200, {
         ok: true,
-        order: { id, payOrderNo, amount, channel, status: 'pending', payUrl, expiresAt: expiresAt.toISOString(), bonus, packageId },
+        order: { id, payOrderNo, amount: amount / 100, channel, status: 'pending', payUrl, expiresAt: expiresAt.toISOString(), bonus, packageId },
       });
     }
 
@@ -187,7 +187,7 @@ const payments = {
       );
       return sendJSON(res, 200, {
         items: r.rows.map((x) => ({
-          id: x.id, payOrderNo: x.pay_order_no, amount: Number(x.amount),
+          id: x.id, payOrderNo: x.pay_order_no, amount: Number(x.amount) / 100,
           channel: x.channel, status: x.status,
           createdAt: x.created_at, paidAt: x.paid_at,
           bonus: Number(x.bonus) || 0, packageId: x.package_id || null,
@@ -213,7 +213,7 @@ const payments = {
       const expiresAt = new Date(createdMs + settings.defaultExpiresMin * 60000).toISOString();
       return sendJSON(res, 200, {
         order: {
-          id: o.id, payOrderNo: o.pay_order_no, amount: Number(o.amount),
+          id: o.id, payOrderNo: o.pay_order_no, amount: Number(o.amount) / 100,
           channel: o.channel, status: o.status, createdAt: o.created_at, paidAt: o.paid_at,
           expiresAt, failReason: o.fail_reason || null,
           bonus: Number(o.bonus) || 0, packageId: o.package_id || null,
