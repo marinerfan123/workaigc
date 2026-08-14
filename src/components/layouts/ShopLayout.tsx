@@ -3,6 +3,7 @@
 import { Outlet } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { NavigationDock, MobileDockBar } from '@/components/NavigationDock';
+import { BottomNav } from '@/components/BottomNav';
 import { shopDockConfig } from '@/components/navigationDockConfigs';
 import { useAuth } from '@/services/authStore';
 
@@ -31,9 +32,10 @@ export function ShopLayout() {
       />
       <div className="flex flex-1 flex-col min-w-0">
         <MobileDockBar title="AI 市集" onOpen={() => setMobileDockOpen(true)} />
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto pb-24 md:pb-0">
           <Outlet />
         </main>
+        <BottomNav />
       </div>
     </div>
   );

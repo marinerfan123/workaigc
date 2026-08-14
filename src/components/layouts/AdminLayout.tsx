@@ -5,6 +5,7 @@ import { Outlet, useNavigate } from 'react-router-dom';
 import { ShieldAlert } from 'lucide-react';
 import { useAuth, logout } from '@/services/authStore';
 import { NavigationDock, MobileDockBar } from '@/components/NavigationDock';
+import { BottomNav } from '@/components/BottomNav';
 import { adminDockConfig } from '@/components/navigationDockConfigs';
 import { useState, useEffect } from 'react';
 
@@ -69,10 +70,11 @@ export function AdminLayout() {
             </button>
           </div>
         ) : (
-          <main className="flex-1 overflow-y-auto">
+          <main className="flex-1 overflow-y-auto pb-24 md:pb-0">
             <Outlet />
           </main>
         )}
+        <BottomNav />
       </div>
     </div>
   );

@@ -2182,8 +2182,8 @@ export default function ModelHubPage() {
               </button>
             </div>
 
-            {/* 两列内容区 */}
-            <div className="grid flex-1 min-h-0 grid-cols-2 gap-x-5 gap-y-3 overflow-hidden">
+            {/* 两列内容区：移动端单列，避免对话框内过窄 */}
+            <div className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-3 overflow-hidden">
               {/* ============ 左列：连接配置 ============ */}
               <div className="flex flex-col gap-3 min-h-0 overflow-hidden">
                 {/* 服务商名称 + 类型（同行） */}

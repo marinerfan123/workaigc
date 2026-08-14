@@ -123,7 +123,7 @@ export default function LandingPage() {
                   onClick={() => setMenuOpen(!menuOpen)}
                   className="flex items-center gap-2 rounded-full bg-white/5 py-1 pl-2 pr-1 transition-colors hover:bg-white/10"
                 >
-                  <span className="shrink-0 rounded-full border border-amber-500/20 bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-400" title="赠送余额 / 充值余额">
+                  <span className="hidden sm:inline-flex shrink-0 rounded-full border border-amber-500/20 bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-400" title="赠送余额 / 充值余额">
                     {formatCredits(user.rewardCredits)} / {formatCredits(user.rechargeCredits)}
                   </span>
                   <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-emerald-400 to-cyan-400 text-xs font-bold text-black">
@@ -133,9 +133,15 @@ export default function LandingPage() {
                 {menuOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                    <div className="absolute right-0 top-full z-50 mt-2 w-52 rounded-2xl border border-white/10 bg-zinc-900 p-2 shadow-2xl">
+                    <div className="absolute right-0 top-full z-50 mt-2 w-56 rounded-2xl border border-white/10 bg-zinc-900 p-2 shadow-2xl">
                       <div className="truncate px-3 py-2 text-sm font-medium text-white">{user.displayName || user.email}</div>
                       <div className="truncate px-3 pb-2 text-xs text-zinc-500">{user.email}</div>
+                      <div className="sm:hidden px-3 py-2 text-xs text-zinc-400">
+                        余额：
+                        <span className="text-emerald-400">{formatCredits(user.rewardCredits)}</span>
+                        <span className="mx-1 text-zinc-600">/</span>
+                        <span className="text-amber-400">{formatCredits(user.rechargeCredits)}</span>
+                      </div>
                       <button
                         onClick={async () => { await refreshUser().catch(() => {}); }}
                         className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-zinc-300 transition-colors hover:bg-white/10"

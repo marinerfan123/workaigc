@@ -25,6 +25,7 @@ import {
   ensureApi,
 } from '@/services/api';
 import { useOssConfig } from '@/hooks/useOssConfig';
+import { useLayoutOutlet } from '@/components/Layout';
 
 export default function CharactersPage() {
   const navigate = useNavigate();
@@ -55,6 +56,8 @@ export default function CharactersPage() {
   const uploadRef = useRef<HTMLInputElement>(null);
   const createUploadRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+
+  const { onOpenMobileDock } = useLayoutOutlet();
 
   useEffect(() => {
     let cancelled = false;
@@ -230,7 +233,7 @@ export default function CharactersPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <TopBar onSettingsOpen={() => {}} onMediaPickerOpen={() => {}} />
+      <TopBar onSettingsOpen={() => {}} onMediaPickerOpen={() => {}} onOpenMobileDock={onOpenMobileDock} />
 
       <div className="flex flex-1 min-h-0">
         {/* 左侧角色列表 */}

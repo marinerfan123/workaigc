@@ -24,6 +24,7 @@ import type { ReferenceStyle } from '@/services/api';
 import { formatCredits } from '@/utils/format';
 import type { ModelSortMode } from '@/utils/groupModels';
 import { useAuth } from '@/services/authStore';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 /** 把任意值规整为合法的模型排序模式（非法/缺省回退 manual） */
 function normalizeSortMode(v: unknown): ModelSortMode {
@@ -117,7 +118,8 @@ export default function WorkspacePage() {
   const [viewerIndex, setViewerIndex] = useState(0);
   const { getDefaultModel, models } = useModelHub();
   const { config: ossConfig, ingestFromUrl, ingestFile } = useOssConfig();
-  const { refreshMediaCounts } = useLayoutOutlet();
+  const { refreshMediaCounts, onOpenMobileDock } = useLayoutOutlet();
+  const isMobile = useIsMobile();
 
   // 强制推行的参考样式（工作台示例墙：仅 is_promoted 的样式出现在这里）
   const [promotedStyles, setPromotedStyles] = useState<ReferenceStyle[]>([]);
@@ -551,6 +553,7 @@ export default function WorkspacePage() {
       <TopBar
         onSettingsOpen={() => setSettingsOpen(true)}
         onMediaPickerOpen={() => setPickerOpen(true)}
+        onOpenMobileDock={onOpenMobileDock}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -741,21 +744,54 @@ export default function WorkspacePage() {
           </div>
         </div>
 
-        {/* 右侧详情面板 */}
-        <DetailPanel
-          item={selectedItem}
-          onToggleFavorite={handleToggleFavorite}
-          onDelete={handleDelete}
-          onClose={() => setSelectedId(null)}
-          onUsePrompt={handleUsePrompt}
-          onAddAsReference={handleAddReference}
-          onUpdate={(updated) => {
-            setMediaList((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
-            apiSaveMedia(stripBlobItems([updated]));
-          }}
-          onMakeVideo={() => selectedItem && handleMakeVideo(selectedItem)}
-        />
+        {/* 右侧详情面板：桌面端为固定右栏；移动端改为覆盖式抽屉，避免 320px 右栏占满窄屏 */}
+        {!isMobile && (
+          <DetailPanel
+            item={selectedItem}
+            onToggleFavorite={handleToggleFavorite}
+            onDelete={handleDelete}
+            onClose={() => setSelectedId(null)}
+            onUsePrompt={handleUsePrompt}
+            onAddAsReference={handleAddReference}
+            onUpdate={(updated) => {
+              setMediaList((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+              apiSaveMedia(stripBlobItems([updated]));
+            }}
+            onMakeVideo={() => selectedItem && handleMakeVideo(selectedItem)}
+          />
+        )}
       </div>
+
+      {/* 移动端详情抽屉：选中素材后从右侧滑入覆盖，带半透明遮罩 */}
+      {isMobile && selectedItem && (
+        <div
+          className="fixed inset-0 z-50 flex justify-end md:hidden"
+          role="dialog"
+          aria-modal="true"
+          aria-label="素材详情"
+        >
+          <div
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+            onClick={() => setSelectedId(null)}
+            aria-hidden="true"
+          />
+          <div className="relative flex h-full w-full max-w-[440px] flex-col border-l border-zinc-800 bg-black shadow-2xl">
+            <DetailPanel
+              item={selectedItem}
+              onToggleFavorite={handleToggleFavorite}
+              onDelete={handleDelete}
+              onClose={() => setSelectedId(null)}
+              onUsePrompt={handleUsePrompt}
+              onAddAsReference={handleAddReference}
+              onUpdate={(updated) => {
+                setMediaList((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+                apiSaveMedia(stripBlobItems([updated]));
+              }}
+              onMakeVideo={() => handleMakeVideo(selectedItem)}
+            />
+          </div>
+        </div>
+      )}
 
       {/* 媒体选择器弹窗 */}
       <MediaPicker

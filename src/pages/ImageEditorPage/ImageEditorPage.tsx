@@ -23,12 +23,15 @@ import {
   Plus,
   Search,
   Settings2,
+  MoreHorizontal,
+  Menu,
 } from 'lucide-react';
 import Image from '@/components/ui/image';
 import { IMediaItem, MOCK_MEDIA_LIST } from '@/data/media';
 import { useModelHub } from '@/hooks/useModelHub';
 import { getEffectiveModelName } from '@/data/models';
 import { apiGetMedia, apiSaveMedia, ensureApi, stripBlobItems } from '@/services/api';
+import { useLayoutOutlet } from '@/components/Layout';
 
 export default function ImageEditorPage() {
   const { id } = useParams<{ id: string }>();
@@ -40,8 +43,10 @@ export default function ImageEditorPage() {
   const [editing, setEditing] = useState(false);
   const [activeTool, setActiveTool] = useState<string | null>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [model, setModel] = useState('Nano Banana 2 Lite');
   const [modelSearch, setModelSearch] = useState('');
+  const { onOpenMobileDock } = useLayoutOutlet();
   const { providers, models } = useModelHub();
 
   const tools = [
@@ -156,6 +161,14 @@ export default function ImageEditorPage() {
       <header className="flex h-14 items-center justify-between px-4 border-b border-zinc-800 bg-black/80 backdrop-blur-md z-20 sticky top-0">
         <div className="flex items-center gap-2">
           <button
+            type="button"
+            onClick={onOpenMobileDock}
+            aria-label="打开菜单"
+            className="md:hidden flex h-9 w-9 items-center justify-center rounded-xl text-zinc-300 hover:bg-zinc-800/60 hover:text-white transition-colors"
+          >
+            <Menu className="size-5" />
+          </button>
+          <button
             onClick={() => navigate(-1)}
             className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
           >
@@ -177,25 +190,73 @@ export default function ImageEditorPage() {
           >
             <Heart className={`size-4 ${currentItem.isFavorite ? 'fill-current' : ''}`} />
           </button>
-          <button className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors">
-            <Download className="size-4" />
-          </button>
-          <button
-            onClick={handleDelete}
-            className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 hover:bg-red-500/10 hover:text-red-400 transition-colors"
-          >
-            <Trash2 className="size-4" />
-          </button>
-          <button className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors">
-            <Share2 className="size-4" />
-          </button>
-          <button
-            onClick={() => setShowHistory(!showHistory)}
-            className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
-            title={showHistory ? '隐藏历史' : '显示历史'}
-          >
-            {showHistory ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
-          </button>
+
+          {/* 桌面端：平铺全部操作按钮 */}
+          <div className="hidden md:flex items-center gap-1">
+            <button className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors">
+              <Download className="size-4" />
+            </button>
+            <button
+              onClick={handleDelete}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 hover:bg-red-500/10 hover:text-red-400 transition-colors"
+            >
+              <Trash2 className="size-4" />
+            </button>
+            <button className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors">
+              <Share2 className="size-4" />
+            </button>
+            <button
+              onClick={() => setShowHistory(!showHistory)}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
+              title={showHistory ? '隐藏历史' : '显示历史'}
+            >
+              {showHistory ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
+            </button>
+          </div>
+
+          {/* 移动端：将次要操作收进「更多」下拉，避免 375px 顶栏溢出 */}
+          <div className="relative md:hidden">
+            <button
+              onClick={() => setMoreOpen(!moreOpen)}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-800/50 hover:text-white transition-colors"
+              aria-label="更多操作"
+            >
+              <MoreHorizontal className="size-4" />
+            </button>
+            {moreOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setMoreOpen(false)} />
+                <div className="absolute right-0 top-full z-40 mt-1 w-44 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900 p-1.5 shadow-2xl">
+                  <button
+                    onClick={() => setMoreOpen(false)}
+                    className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800/70 transition-colors"
+                  >
+                    <Download className="size-4" /> 下载
+                  </button>
+                  <button
+                    onClick={() => { setMoreOpen(false); handleDelete(); }}
+                    className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-sm text-zinc-300 hover:bg-red-500/10 hover:text-red-400 transition-colors"
+                  >
+                    <Trash2 className="size-4" /> 删除
+                  </button>
+                  <button
+                    onClick={() => setMoreOpen(false)}
+                    className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800/70 transition-colors"
+                  >
+                    <Share2 className="size-4" /> 分享
+                  </button>
+                  <button
+                    onClick={() => { setMoreOpen(false); setShowHistory(!showHistory); }}
+                    className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800/70 transition-colors"
+                  >
+                    {showHistory ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                    {showHistory ? '隐藏历史' : '显示历史'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
           <button className="ml-2 flex items-center gap-2 rounded-full bg-emerald-500 px-4 py-2 text-sm font-bold text-black hover:bg-emerald-400 transition-colors">
             <Check className="size-4" />
             完成

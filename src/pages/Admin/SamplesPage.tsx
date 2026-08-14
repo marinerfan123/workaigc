@@ -180,7 +180,7 @@ export default function SamplesPage() {
       </div>
 
       {/* 列表 */}
-      <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950">
+      <div className="overflow-x-auto rounded-2xl border border-zinc-800 bg-zinc-950">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-zinc-800 text-left text-xs uppercase tracking-wide text-zinc-500">

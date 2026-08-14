@@ -82,7 +82,7 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
 
   if (!item) {
     return (
-      <div className="flex h-full w-80 shrink-0 flex-col items-center justify-center border-l border-zinc-800 bg-black p-6">
+      <div className="flex h-full w-full md:w-80 shrink-0 flex-col items-center justify-center border-l border-zinc-800 bg-black p-6">
         <div className="flex h-16 w-16 items-center justify-center rounded-[2rem] bg-zinc-900 text-zinc-600 mb-4">
           <ImageIcon className="size-8" />
         </div>
@@ -221,7 +221,7 @@ export default function DetailPanel({ item, onToggleFavorite, onDelete, onClose,
   };
 
   return (
-    <div className="flex h-full w-80 shrink-0 flex-col border-l border-zinc-800 bg-black">
+    <div className="flex h-full w-full md:w-80 shrink-0 flex-col border-l border-zinc-800 bg-black">
       {/* 顶部操作栏 */}
       <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
         <div className="flex items-center gap-1">

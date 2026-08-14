@@ -301,7 +301,7 @@ export default function MonitorPage() {
       >
         <div
           ref={tableRef}
-          className="max-h-[520px] overflow-y-auto rounded-2xl border border-zinc-800 bg-zinc-950/60"
+          className="max-h-[520px] overflow-auto rounded-2xl border border-zinc-800 bg-zinc-950/60"
         >
           <table className="w-full text-xs">
             <thead className="sticky top-0 z-10 bg-zinc-900/95 backdrop-blur text-zinc-500 uppercase tracking-wider">

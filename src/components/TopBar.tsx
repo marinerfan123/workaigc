@@ -21,6 +21,7 @@ import {
   Wallet,
   ChevronDown,
   Loader2,
+  Menu,
 } from 'lucide-react';
 import { useAuth, logout, setAuthModalOpen, refreshUser } from '@/services/authStore';
 import { apiExportMyMedia } from '@/services/api';
@@ -29,9 +30,11 @@ import { formatCredits } from '@/utils/format';
 interface TopBarProps {
   onSettingsOpen: () => void;
   onMediaPickerOpen: () => void;
+  /** 移动端：页面自带 TopBar 时由左上角汉堡打开导航抽屉（外壳已隐藏其汉堡顶栏） */
+  onOpenMobileDock?: () => void;
 }
 
-export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProps) {
+export default function TopBar({ onSettingsOpen, onMediaPickerOpen, onOpenMobileDock }: TopBarProps) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -79,7 +82,19 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
 
   return (
     <header className="flex h-14 items-center justify-between px-4 border-b border-zinc-800 bg-black/80 backdrop-blur-md z-20 sticky top-0">
-      <div className="flex-1" />
+      <div className="flex items-center gap-2">
+        {onOpenMobileDock && (
+          <button
+            type="button"
+            onClick={onOpenMobileDock}
+            aria-label="打开菜单"
+            className="md:hidden flex h-9 w-9 items-center justify-center rounded-xl text-zinc-300 hover:bg-zinc-800/60 hover:text-white transition-colors"
+          >
+            <Menu className="size-5" />
+          </button>
+        )}
+        <div className="flex-1" />
+      </div>
 
       <div className="flex items-center gap-3">
         {/* 工具图标组 */}
@@ -87,7 +102,7 @@ export default function TopBar({ onSettingsOpen, onMediaPickerOpen }: TopBarProp
           <button onClick={onMediaPickerOpen} className={toolButton} title="新建">
             <Plus className="size-4" />
           </button>
-          <button className={toolButton} title="帮助">
+          <button className={`${toolButton} hidden sm:flex`} title="帮助">
             <HelpCircle className="size-4" />
           </button>
           <button onClick={onSettingsOpen} className={toolButton} title="设置">

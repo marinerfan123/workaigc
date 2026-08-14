@@ -12,7 +12,7 @@ export default function CustomerServiceFloat() {
         type="button"
         onClick={() => setOpen(true)}
         className={cn(
-          'fixed bottom-6 right-6 z-[100] flex items-center gap-2 rounded-full px-4 py-3',
+          'fixed bottom-24 right-6 z-40 flex items-center gap-2 rounded-full px-4 py-3 md:bottom-6',
           'bg-emerald-500 text-black shadow-lg shadow-emerald-500/20',
           'hover:bg-emerald-400 transition-all active:scale-95'
         )}
