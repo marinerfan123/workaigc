@@ -98,6 +98,8 @@ export default function ModelHubPage() {
 
   const [typeFilter, setTypeFilter] = useState<ModelType | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  // 模型列表 Tab：是否把已停用的（关闭的）模型也显示出来，便于一键重新开启
+  const [showDisabled, setShowDisabled] = useState(false);
   const [providerDialogOpen, setProviderDialogOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState<ReturnType<typeof useModelHub>['providers'][number] | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
@@ -186,15 +188,15 @@ export default function ModelHubPage() {
 
   const filteredModels = useMemo(() => {
     return models.filter((m) => {
-      // 主模型库「天然控制在前端」：enabled=false 的模型完全不出现
-      // （OFF 模型仅在「管理模型」抽屉里可见，便于重新开启）
-      if (!m.enabled) return false;
+      // 主模型库「天然控制在前端」：enabled=false 的模型默认不出现
+      // 打开「显示关闭模型」开关后，停用的模型也会列出，便于一键重新开启
+      if (!m.enabled && !showDisabled) return false;
       if (typeFilter !== 'all' && m.type !== typeFilter) return false;
       if (searchQuery && !m.displayName.toLowerCase().includes(searchQuery.toLowerCase())
         && !m.modelId.toLowerCase().includes(searchQuery.toLowerCase())) return false;
       return true;
     });
-  }, [models, typeFilter, searchQuery]);
+  }, [models, typeFilter, searchQuery, showDisabled]);
 
   // 按 model_id 聚合（同 model_id 多供应商 → 一个入口，避免重名）
   const groupedModels = useMemo(() => groupModelsByModelId(filteredModels), [filteredModels]);
@@ -1490,6 +1492,37 @@ export default function ModelHubPage() {
                   </button>
                 ))}
               </div>
+
+              {/* 显示关闭模型开关：开启后停用的模型也会列出，便于一键重新开启 */}
+              {(() => {
+                const disabledCount = models.filter((m) => !m.enabled).length;
+                if (disabledCount === 0) return null;
+                return (
+                  <button
+                    onClick={() => setShowDisabled((v) => !v)}
+                    className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition-all duration-200 shrink-0 ${
+                      showDisabled
+                        ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-400'
+                        : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-white'
+                    }`}
+                    title="开启后可在此处一键重新启用已停用的模型"
+                  >
+                    <span
+                      className={`relative h-3.5 w-6 shrink-0 rounded-full transition-all duration-200 ${
+                        showDisabled ? 'bg-emerald-500' : 'bg-zinc-700'
+                      }`}
+                    >
+                      <span
+                        className={`absolute top-0.5 h-2.5 w-2.5 rounded-full bg-white shadow transition-all duration-200 ${
+                          showDisabled ? 'left-[14px]' : 'left-0.5'
+                        }`}
+                      />
+                    </span>
+                    显示关闭模型
+                    <span className="rounded-full bg-zinc-800 px-1.5 text-[10px] text-zinc-400">{disabledCount}</span>
+                  </button>
+                );
+              })()}
 
               {/* 孤儿模型清理按钮：仅当存在孤儿模型时显示 */}
               {(() => {
