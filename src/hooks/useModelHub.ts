@@ -311,6 +311,8 @@ export function useModelHub() {
     getProviderName,
     getModelsByType,
     getDefaultModel,
+    refreshProviders,
+    refreshModels,
   };
 }
 

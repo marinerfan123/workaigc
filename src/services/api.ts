@@ -139,6 +139,11 @@ export async function apiDeleteModel(id: string) {
 export async function apiPatchModel(id: string, patch: Record<string, any>) {
   try { return await apiFetch(`/api/models/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }); } catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) }; }
 }
+/** 模型批量更新（管理员）：按 id 数组一键显隐 / 改价 */
+export async function apiBatchPatchModels(ids: string[], patch: { enabled?: boolean; creditCost?: number; rewardCreditsRequired?: number }) {
+  try { return await apiFetch('/api/models/batch', { method: 'POST', body: JSON.stringify({ ids, patch }) }); }
+  catch (e) { return { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 300), updated: 0 }; }
+}
 
 export interface ModelPriceHistory {
   found: boolean;

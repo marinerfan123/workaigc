@@ -48,13 +48,14 @@ import { useModelHub } from '@/hooks/useModelHub';
 import { groupModelsByModelId } from '@/utils/groupModels';
 import { useOssConfig, dataUrlToFile } from '@/hooks/useOssConfig';
 import { MOCK_MEDIA_LIST } from '@/data/media';
-import { apiGetMedia, apiSaveMedia, apiGetSettings, apiSaveSettings, apiSyncProviderModels, apiPreviewProviderModels, apiDeleteModel, stripBlobItems } from '@/services/api';
+import { apiGetMedia, apiSaveMedia, apiGetSettings, apiSaveSettings, apiSyncProviderModels, apiPreviewProviderModels, apiDeleteModel, apiBatchPatchModels, stripBlobItems } from '@/services/api';
 import EndpointsTab from './EndpointsTab';
 import PairingTab from './PairingTab';
 import AsyncAddDialog from './AsyncAddDialog';
 import AddModelDialog from './AddModelDialog';
 import { OssConfigPanel } from '@/components/OssConfigPanel';
 import ProviderModelsPanel from './ProviderModelsPanel';
+import BatchModelsPanel from './BatchModelsPanel';
 import ModelProtocolDrawer, { type DrawerModelGroup } from '@/components/ModelProtocolDrawer';
 
 const TYPE_LABELS: Record<ModelType, string> = {
@@ -111,6 +112,10 @@ export default function ModelHubPage() {
   // 「管理模型」抽屉
   const [manageProviderId, setManageProviderId] = useState<string | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
+  // 「批量管理模型」抽屉（跨服务商密钥池）
+  const [batchManageProviderIds, setBatchManageProviderIds] = useState<string[]>([]);
+  const [batchManageProviderName, setBatchManageProviderName] = useState('');
+  const [batchManageOpen, setBatchManageOpen] = useState(false);
 
   // 同 vendor/baseUrl 的 provider 密钥池展开态
   const [expandedProviderPools, setExpandedProviderPools] = useState<Set<string>>(new Set());
@@ -1366,6 +1371,13 @@ export default function ModelHubPage() {
                       <span>同步模型</span>
                     </button>
                     <button
+                      onClick={() => { setBatchManageProviderIds(items.map((p) => p.id)); setBatchManageProviderName(poolName); setBatchManageOpen(true); }}
+                      title='批量管理本密钥池下的模型（显隐/改价）'
+                      className='flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-indigo-500/10 hover:text-indigo-300 transition-colors'
+                    >
+                      <Boxes className='size-3.5' />
+                    </button>
+                    <button
                       onClick={() => handleDeleteGroup(items)}
                       title='删除整个密钥池'
                       className='flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 hover:bg-red-500/10 hover:text-red-400 transition-colors'
@@ -2518,6 +2530,14 @@ export default function ModelHubPage() {
         providerName={providers.find((p) => p.id === manageProviderId)?.name || ''}
         open={manageOpen}
         onClose={() => setManageOpen(false)}
+      />
+
+      {/* 密钥池维度的「批量模型管理」抽屉（跨服务商一键显隐 / 改价） */}
+      <BatchModelsPanel
+        providerIds={batchManageProviderIds}
+        providerName={batchManageProviderName}
+        open={batchManageOpen}
+        onClose={() => setBatchManageOpen(false)}
       />
     </div>
   );

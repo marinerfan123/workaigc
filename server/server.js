@@ -3489,6 +3489,63 @@ async function handleAPI(req, res) {
       return sendJSON(res, 400, { error: '更新失败：' + e.message });
     }
   }
+
+  // ── 模型批量更新（管理后台一键显隐 / 改价）：管理员专用，不走单条乐观锁，按 id 批量 SET ──
+  if (url === '/api/models/batch' && method === 'POST') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    if (!realUser) return sendJSON(res, 401, { error: '未登录' });
+    if (!pgPool) return sendJSON(res, 501, { error: 'JSON 兜底模式不支持批量' });
+    const body = await parseBody(req);
+    if (!body || typeof body !== 'object') return sendJSON(res, 400, { error: 'Invalid JSON' });
+    const { ids, patch } = body;
+    if (!Array.isArray(ids) || ids.length === 0) return sendJSON(res, 400, { error: 'ids 必须是含至少一个 id 的数组' });
+    if (!patch || typeof patch !== 'object') return sendJSON(res, 400, { error: 'patch 必须是对象' });
+    const allowed = {
+      enabled: 'enabled',
+      credit_cost: 'creditCost',
+      reward_credits_required: 'rewardCreditsRequired',
+    };
+    const cols = [];
+    const vals = [];
+    let priceChanged = false;
+    for (const [col, camel] of Object.entries(allowed)) {
+      if (!(camel in patch)) continue;
+      let v = patch[camel];
+      if (col === 'enabled') v = v !== false;
+      else if (col === 'credit_cost') { v = Math.max(0, Number(Number(v).toFixed(4)) || 0); priceChanged = true; }
+      else if (col === 'reward_credits_required') v = Math.max(0, Number(Number(v).toFixed(4)) || 0);
+      cols.push(col); vals.push(v);
+    }
+    if (cols.length === 0) return sendJSON(res, 400, { error: '无可更新字段' });
+    try {
+      const setClause = cols.map((c, i) => `${c} = $${i + 1}`).join(', ');
+      const sql = `UPDATE models SET ${setClause}, revision = revision + 1, updated_at = NOW(), updated_by = $${cols.length + 1} WHERE id = ANY($${cols.length + 2})`;
+      const params = [...vals, realUser.id, ids];
+      const r = await pgPool.query(sql, params);
+      if (priceChanged) {
+        const mrows = await pgPool.query('SELECT id, model_id, display_name, credit_cost, reward_credits_required FROM models WHERE id = ANY($1)', [ids]);
+        for (const m of mrows.rows) {
+          const newCost = ('creditCost' in patch) ? Math.max(0, Number((Number(patch.creditCost) || 0).toFixed(4))) : Number(m.credit_cost) || 0;
+          const newReward = ('rewardCreditsRequired' in patch) ? Math.max(0, Number((Number(patch.rewardCreditsRequired) || 0).toFixed(4))) : Number(m.reward_credits_required) || 0;
+          await pgPool.query(
+            'INSERT INTO model_price_history (model_id, display_name, credit_cost) VALUES ($1,$2,$3)',
+            [m.model_id, m.display_name || '', newCost]
+          ).catch(() => {});
+          await accounting.upsertModelPrice(pgPool, {
+            modelId: m.model_id,
+            creditPrice: newCost,
+            rewardPrice: newReward,
+            currency: 'CNY',
+          }).catch((e) => console.warn('[models] batch upsertModelPrice 失败', e.message));
+        }
+      }
+      return sendJSON(res, 200, { ok: true, updated: r.rowCount });
+    } catch (e) {
+      console.error('[models] batch 失败', e.message);
+      return sendJSON(res, 400, { error: '批量更新失败：' + e.message });
+    }
+  }
+
   if (url.startsWith('/api/models/') && method === 'DELETE') {
     if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
     const id = url.split('/api/models/')[1];
