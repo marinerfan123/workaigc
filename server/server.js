@@ -4291,6 +4291,17 @@ if (isProduction) {
   }
 }
 
+// ─── HTTP 连接/超时调优（CPU 优化：b 方案，零依赖）───
+// 作用：延长入站 keep-alive + 收紧请求/socket 超时 → 前端复用 TCP 连接、减少握手，
+// 快速回收半开/慢连接，降低 sys CPU。等效覆盖「a：连接复用」的精神（出站 fetch 因
+// Node22 内置 undici 已默认 keepAlive，且容器内缺 undici 包无法改 per-host 上限，故不出包）。
+// 注意：headersTimeout 必须 > keepAliveTimeout（Node 硬性约束），否则启动报错。
+server.keepAliveTimeout = 30000;        // 入站连接 keep-alive 30s（默认 5s），前端/代理复用连接
+server.headersTimeout = 35000;          // 必须 > keepAliveTimeout
+server.requestTimeout = 60000;          // 单个请求处理上限 60s，超时即断，防慢请求占连接
+server.timeout = 65000;                 // socket 空闲超时 65s
+server.maxHeadersCount = 200;           // 放宽头部上限，避免大 headers 请求被拒
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 服务: http://localhost:${PORT} | 📁 ${DATA_DIR} | 🐘 PG:connected(强制·唯一数据源) | 🔴 Redis:${isRedisUp() ? 'up' : 'memory-fallback(仅缓存)'}`);
   orderExpiry.start(); // 启动订单超时调度器（启动即扫一次）
