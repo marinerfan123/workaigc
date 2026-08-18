@@ -72,6 +72,27 @@ function aliyunPutHeaders(cfg, objectKey, buffer, contentType) {
     },
   };
 }
+
+// 流式 PUT 签名（不依赖整 buffer）：调用方已算好 md5 或选择不校验。
+// 用于 assetFinalize「边下边传」场景——下载流不能先整图算 MD5。
+// 双兼容：旧 aliyunPutHeaders(buffer) 仍给 probeConnectivity 等服务端自签场景用。
+//   - md5 为空（纯流式无法预知整 body 哈希）：签名串 Content-MD5 行留空，阿里云照样接受
+//   - contentLength 缺失则不写 Content-Length（由 fetch 走 chunked）
+function aliyunPutHeadersStream(cfg, objectKey, { md5, contentType, contentLength }) {
+  const safeMd5 = md5 || '';
+  const date = new Date().toUTCString();
+  const signStr = `PUT\n${safeMd5}\n${contentType}\n${date}\n/${cfg.bucket}/${objectKey}`;
+  const sig = crypto.createHmac('sha1', cfg.accessKeySecret).update(signStr).digest('base64');
+  const headers = {
+    'Authorization': `OSS ${cfg.accessKeyId}:${sig}`,
+    'Content-Type': contentType,
+    'Date': date,
+  };
+  if (safeMd5) headers['Content-MD5'] = safeMd5;
+  if (contentLength != null) headers['Content-Length'] = String(contentLength);
+  return { md5: safeMd5, date, headers };
+}
+
 // 浏览器直传专用：query-string 形式 PUT 预签名（不依赖 forbidden header）
 // 阿里云 OSS 的 header 签名依赖 Date/Content-MD5（浏览器无法手动设置），
 // 故直传必须走 URL 签名。
@@ -113,6 +134,26 @@ function tencentCosPutHeaders(cfg, _objectKey, buffer, contentType) {
     },
   };
 }
+
+// 腾讯云流式 PUT 签名：不依赖 buffer，只需 contentLength（签名基于 host+sign-time，与 body 无关）。
+// 用于 assetFinalize 边下边传——body 直接是下载流，零整图驻留。
+function tencentCosPutHeadersStream(cfg, _objectKey, { contentType, contentLength }) {
+  const secretId = cfg.accessKeyId;
+  const secretKey = cfg.accessKeySecret;
+  const qKeyTime = `${Math.floor(Date.now() / 1000)};${Math.floor(Date.now() / 1000) + 7 * 24 * 3600}`;
+  const signKey = crypto.createHmac('sha1', secretKey).update(qKeyTime).digest();
+  const httpString = `put\n/${_objectKey}\n\nhost=${cfg._hostName || ''}\n`;
+  const stringToSign = `sha1\n${qKeyTime}\n${crypto.createHash('sha1').update(httpString).digest('hex')}\n`;
+  const signature = crypto.createHmac('sha1', signKey).update(stringToSign).digest('hex');
+  const headers = {
+    'Authorization': `q-sign-algorithm=sha1&q-ak=${secretId}&q-sign-time=${qKeyTime}&q-key-time=${qKeyTime}&q-header-list=host&q-url-param-list=&q-signature=${signature}`,
+    'Host': cfg._hostName || '',
+    'Content-Type': contentType || 'application/octet-stream',
+  };
+  if (contentLength != null) headers['Content-Length'] = String(contentLength);
+  return { headers };
+}
+
 function tencentCosSignUrl(cfg, objectKey) {
   const hostName = cfg._hostName || `${cfg.bucket}${cfg.appId ? '-' + cfg.appId : ''}.cos.${cfg.region || 'ap-shanghai'}.myqcloud.com`;
   const secretId = cfg.accessKeyId;
@@ -256,12 +297,14 @@ module.exports = {
   aliyunHost,
   aliyunBuildSignedUrls,
   aliyunPutHeaders,
+  aliyunPutHeadersStream,
   aliyunPutSignUrl,
   aliyunBuildThumbUrl,
   buildOssThumbUrl,
   buildOssVideoSnapshotUrl,
   tencentCosHost,
   tencentCosPutHeaders,
+  tencentCosPutHeadersStream,
   tencentCosSignUrl,
   tencentCosPutSignUrl,
   // 辅助
