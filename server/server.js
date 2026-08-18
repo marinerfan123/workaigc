@@ -4230,9 +4230,10 @@ if (CLUSTER_ENABLED && cluster.isPrimary) {
   // 主进程到此为止，不运行 app（下方 bootstrap 仅在 worker 执行）
 }
 
-if (cluster.isWorker) {
-// leader worker（id=1）独跑周期性调度/崩溃恢复，避免多 worker 重复扫 DB / 重复续轮询
-const IS_LEADER = cluster.worker?.id === 1;
+// cluster 模式：仅 worker 运行 app；单进程模式(ENABLE_CLUSTER=false)：主进程即运行 app（否则 app 完全不启动）
+if (cluster.isWorker || !CLUSTER_ENABLED) {
+// leader worker（id=1）独跑周期性调度/崩溃恢复；单进程模式下 IS_LEADER 恒 true 亦运行，避免多 worker 重复扫 DB / 重复续轮询
+const IS_LEADER = !CLUSTER_ENABLED || cluster.worker?.id === 1;
 await initDB();
 await initRedis();
 
@@ -4383,4 +4384,4 @@ function gracefulShutdown(sig) {
 }
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-} // end if (cluster.isWorker)
+} // end if (cluster.isWorker || !CLUSTER_ENABLED)
