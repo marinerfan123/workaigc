@@ -464,7 +464,7 @@ function GenerationBar({
             id: it.mediaId || pendingId,
             title: ctx.prompt.slice(0, 20) || '生成结果',
             type: ctx.contentType,
-            thumbnail: persistentUrl,
+            thumbnail: it.thumbnail || persistentUrl,
             fullUrl: persistentUrl,
             prompt: ctx.prompt,
             model: ctx.model,

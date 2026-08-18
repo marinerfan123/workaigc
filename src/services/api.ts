@@ -234,6 +234,74 @@ export async function apiAdminRoutingDecide(params: { model: string; contentType
   }
 }
 
+// ─── 模型参与度（密钥池 / 模型四态） ────────────────────────────────────────
+export interface ModelParticipation {
+  modelId: string;
+  displayName: string;
+  mappingName: string | null; // 对外映射名（如 ML-IMG）
+  type: string;
+  enabled: boolean;
+  synced: boolean;            // 已同步到上游服务商（models.provider_id 非空）
+  bound: boolean;             // 已绑定（存在 enabled 绑定）
+  boundProviders: string[];
+  legacyProviders: string[];  // 所有有效 legacy provider（按 model_id 聚合）
+  participates: boolean;      // 实际可参与调度（绑定/回退 + 服务商有效）
+  candidateProviders: string[];
+  poolSize: number;           // 候选账号（密钥）数 = 密钥池规模
+  totalConcurrency: number | null; // 并发槽总数（null=无限/未设）
+  unlimited: boolean;
+  lowCapacity: boolean;       // 单线路 + 低并发：批量提交必崩
+  calledLast24h: number;      // 近 24h 实际调用次数
+  successLast24h: number;     // 近 24h 成功次数
+  cooling: boolean;           // 任一候选服务商当前冷却/熔断
+  coolingProviders: string[];
+}
+export interface ProviderParticipation {
+  providerId: string;
+  name: string;
+  baseUrl: string;
+  keyMasked: string;
+  enabled: boolean;
+  validKey: boolean;
+  cold: boolean | null;
+  manualState: string | null;
+  cbState: string;            // CLOSED | OPEN | HALF_OPEN
+  cooldownUntil: number | null;
+  cooling: boolean;
+  syncedModels: number;       // 该密钥承载的「已同步」模型数
+  boundModels: number;        // 该密钥承载的「已绑定」模型数
+  servedModels: number;       // 实际可参与模型数
+  called24h: number;          // 近 24h 该密钥被调用次数
+}
+export interface ParticipationSummary {
+  totalModels: number;
+  syncedModels: number;
+  boundModels: number;
+  participatesModels: number;
+  calledModels24h: number;
+  coolingModels: number;
+  lowCapacityModels: number;
+  totalProviders: number;
+  validProviders: number;
+  coolingProviders: number;
+}
+export interface ModelParticipationResponse {
+  summary: ParticipationSummary;
+  providers: ProviderParticipation[];
+  models: ModelParticipation[];
+}
+/** 后台「模型参与度」总览：密钥池/模型的四态（已同步/已绑定/实际被调用/当前冷却熔断） */
+export async function apiAdminModelParticipation(params: { onlyProblems?: boolean; providerId?: string } = {}): Promise<ModelParticipationResponse | null> {
+  try {
+    const q = new URLSearchParams();
+    if (params.onlyProblems) q.set('onlyProblems', '1');
+    if (params.providerId) q.set('providerId', params.providerId);
+    return await apiFetch<ModelParticipationResponse>(`/api/admin/model-participation?${q.toString()}`);
+  } catch {
+    return null;
+  }
+}
+
 // ─── OSS（多槽位 + 总开关） ────────────────────────────────────────
 export interface IOssOverview {
   enabled: boolean;

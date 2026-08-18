@@ -30,6 +30,14 @@ export function useMediaUrlStatus(item?: IMediaItem | null): MediaUrlState {
       };
     }
 
+    // 0. 省钱省流量缩略图（OSS 图片处理签名 URL）：列表/网格优先用它，原图留 ossUrl 供下载
+    if (item.thumbnail) {
+      finish({ url: item.thumbnail, isLoading: false, isFailed: false, reason: 'thumbnail' });
+      return () => {
+        cancelled = true;
+      };
+    }
+
     // 1. OSS 永久链接：永远有效，首选（不依赖浏览器本地存储）
     if (item.ossUrl) {
       finish({ url: item.ossUrl, isLoading: false, isFailed: false, reason: 'oss' });

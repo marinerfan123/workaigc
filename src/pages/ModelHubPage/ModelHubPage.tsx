@@ -130,6 +130,8 @@ export default function ModelHubPage() {
   // 双池账务：是否支持赠送余额 + 支持时的赠送价（必须 > 0）
   const [editSupportsReward, setEditSupportsReward] = useState(true);
   const [editRewardCreditsRequired, setEditRewardCreditsRequired] = useState<number>(0);
+  // 支持的分辨率多选（仅 image 模型在 group 内联编辑面板使用；保存时同步到 group 内每条 row）
+  const [editSupportedResolutions, setEditSupportedResolutions] = useState<Resolution[]>([]);
 
   // 表单状态
   const [formName, setFormName] = useState('');
@@ -1655,6 +1657,8 @@ export default function ModelHubPage() {
                                         ? rep.rewardCreditsRequired
                                         : (typeof rep?.creditCost === 'number' ? rep.creditCost : 0),
                                     );
+                                    // 分辨率多选：从 group 聚合后的并集取初值（合并去重由 groupModels 完成）
+                                    setEditSupportedResolutions([...group.supportedResolutions]);
                                   }
                                 }}
                                 title={isEditing ? '取消编辑' : '编辑名称 / 映射名 / 积分'}
@@ -1799,6 +1803,43 @@ export default function ModelHubPage() {
                                   支持赠送余额时必填且需大于 0；未填写将按充值价（{formatCredits(typeof group.creditCost === 'number' ? group.creditCost : 0)}）兜底。
                                 </p>
                               </div>
+                              {/* 支持分辨率多选（仅图片模型）：保存时同步到 group 内每条 row（多供应商都更新） */}
+                              {group.type === 'image' && (
+                                <div>
+                                  <label className="mb-1 block text-[10px] uppercase tracking-wider text-zinc-500">
+                                    支持分辨率（多选）
+                                  </label>
+                                  <div className="flex items-center gap-1 pt-1 flex-wrap">
+                                    {ALL_RESOLUTIONS.map((r) => {
+                                      const active = editSupportedResolutions.includes(r);
+                                      return (
+                                        <button
+                                          key={r}
+                                          type="button"
+                                          onClick={() =>
+                                            setEditSupportedResolutions((prev) =>
+                                              prev.includes(r) ? prev.filter((x) => x !== r) : [...prev, r],
+                                            )
+                                          }
+                                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold border transition-colors ${
+                                            active
+                                              ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                                              : 'bg-zinc-800/50 text-zinc-500 border-zinc-700 hover:border-zinc-600 hover:text-white'
+                                          }`}
+                                        >
+                                          {r}
+                                        </button>
+                                      );
+                                    })}
+                                    {editSupportedResolutions.length === 0 && (
+                                      <span className="text-[10px] text-amber-400">未选（前台将不显示分辨率选项）</span>
+                                    )}
+                                  </div>
+                                  <p className="mt-1 text-[10px] text-zinc-500">
+                                    前台 GenerationBar 按此渲染清晰度选项；多供应商模型保存时同步到所有行；空数组 = 前台该模型不显示清晰度选择。
+                                  </p>
+                                </div>
+                              )}
                               <div className="flex items-center justify-end gap-1.5 pt-1">
                                 <button
                                   onClick={() => setEditingGroupId(null)}
@@ -1807,7 +1848,7 @@ export default function ModelHubPage() {
                                   取消
                                 </button>
                                 <button
-                                  onClick={() => {
+                                  onClick={async () => {
                                     const newDisplay = editDisplayName.trim() || group.displayName || group.modelId;
                                     const newMapping = editMappingName.trim();
                                     const newCost = Math.max(0, Math.floor(Number(editCreditCost) || 0));
@@ -1834,6 +1875,37 @@ export default function ModelHubPage() {
                                           : m,
                                       ),
                                     );
+                                    // 同步「支持的分辨率」到 group 内每条 row（多供应商都更新）
+                                    // 关键：GenerationBar.resolveTemplate 优先读 paramTemplate.resolutions，
+                                    //       后台只写 model.supportedResolutions 会让前台看不到改动。
+                                    //       因此本次同时写两层：
+                                    //         1) supportedResolutions      ← 模型级（保留兼容 / 兜底）
+                                    //         2) paramTemplate.resolutions ← 模板级（前台实际读取路径）
+                                    //       paramTemplate 是 JSONB 嵌套对象，整体浅拷贝后只覆 .resolutions，
+                                    //       避免重置 ratios / qualities / videoResolutions 等其它字段。
+                                    // 仅对图片模型做；其它字段继续走 in-memory setModels（保持既有行为，不破坏其它字段）
+                                    if (group.type === 'image') {
+                                      const rows = group.rows;
+                                      const newResolutions = [...editSupportedResolutions];
+                                      const results = await Promise.all(
+                                        rows.map((r) =>
+                                          patchModel(r.id, {
+                                            supportedResolutions: newResolutions,
+                                            paramTemplate: { ...(r.paramTemplate || {}), resolutions: newResolutions },
+                                          })
+                                            .then(() => ({ ok: true as const, r }))
+                                            .catch((e: any) => ({ ok: false as const, r, err: e?.message ?? String(e) })),
+                                        ),
+                                      );
+                                      const okCount = results.filter((x) => x.ok).length;
+                                      const failed = results.length - okCount;
+                                      const lastErr = (results.find((x) => !x.ok) as { err?: string } | undefined)?.err || '';
+                                      if (failed > 0) {
+                                        toast.error(`分辨率同步失败 ${failed}/${rows.length}：${lastErr}`);
+                                      } else if (okCount > 0) {
+                                        toast.success(`分辨率已同步到 ${okCount} 个供应商`);
+                                      }
+                                    }
                                     setEditingGroupId(null);
                                   }}
                                   className="rounded-lg bg-emerald-500 px-2.5 py-1 text-[11px] font-medium text-black hover:bg-emerald-400"
