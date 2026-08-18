@@ -212,7 +212,7 @@ export default function ModelParticipationPage() {
                   <td className="px-3 py-2"><Pill ok={p.validKey} label={p.validKey ? '有效' : '无效'} /></td>
                   <td className="px-3 py-2">
                     <div className="tabular-nums text-zinc-200">{p.poolSize ?? 0}</div>
-                    <div className="text-[11px] text-zinc-500">活跃{p.activeKeys ?? 0}·断{p.coolingKeys ?? 0}·隔{p.isolatedKeys ?? 0}</div>
+                    <div className="text-[11px] text-zinc-500">活跃{p.activeKeys ?? 0}·运行{p.runtimeLoaded ?? 0}·断{p.coolingKeys ?? 0}·隔{p.isolatedKeys ?? 0}</div>
                   </td>
                   <td className="px-3 py-2">
                     <Pill

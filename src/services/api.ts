@@ -272,10 +272,11 @@ export interface ProviderParticipation {
   boundModels: number;        // 该密钥承载的「已绑定」模型数
   servedModels: number;       // 实际可参与模型数
   called24h: number;          // 近 24h 该密钥被调用次数
-  poolSize: number;           // 运行时 key 池大小（AKEYS，与 generate 同源；重启后首次调度前可能为 0）
-  activeKeys: number;         // 未隔离（active）key 数
-  coolingKeys: number;        // 处于熔断 OPEN/HALF_OPEN 的 key 数
-  isolatedKeys: number;       // 被禁用/隔离的 key 数
+  poolSize: number;           // 配置 key 总数（DB api_keys 权威源，墨池池规模，不受重启影响）
+  activeKeys: number;         // DB 活跃 key 数
+  isolatedKeys: number;       // DB 隔离/禁用 key 数
+  runtimeLoaded: number;      // AKEYS 已加载 key 数（运行时态，重启后首调度前可能为 0）
+  coolingKeys: number;        // AKEYS 运行时熔断(OPEN/HALF_OPEN) key 数
 }
 export interface ParticipationSummary {
   totalModels: number;

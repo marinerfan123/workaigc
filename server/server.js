@@ -2039,6 +2039,19 @@ async function handleAPI(req, res) {
           cooling,
         };
       });
+      // 2.5) 每个服务商配置的 key 池规模（DB api_keys 为权威源；dispatcher.cjs 注释：DB 是成员与 status 的权威源）
+      //      不受重启/内存态影响；AKEYS 运行时态仅作"已加载/熔断"补充。
+      const keyRows = await pgPool.query(
+        `SELECT provider_id,
+                COUNT(*)::int AS n,
+                COUNT(*) FILTER (WHERE status = 'active')::int AS active_n,
+                COUNT(*) FILTER (WHERE status <> 'active')::int AS isolated_n
+           FROM api_keys GROUP BY provider_id`
+      );
+      const keyStatsByProvider = {};
+      for (const r of keyRows.rows) {
+        keyStatsByProvider[r.provider_id] = { total: Number(r.n) || 0, active: Number(r.active_n) || 0, isolated: Number(r.isolated_n) || 0 };
+      }
       const providerStateMap = {};
       for (const p of providers) providerStateMap[p.providerId] = p;
       const validProviderIds = new Set(providers.filter((p) => p.validKey).map((p) => p.providerId));
@@ -2154,19 +2167,23 @@ async function handleAPI(req, res) {
           const cm = calledByModelProvider[m.model_id + '|' + p.providerId];
           if (cm) called24h += cm.cnt;
         }
-        // 方案①：暴露 dispatcher 多 key 池运行时态（AKEYS，与 generate 同源）
-        // poolSize=运行时 key 数；activeKeys=未隔离；isolatedKeys=被禁用/隔离；coolingKeys=CB OPEN/HALF_OPEN。
-        // 注意 AKEYS 为内存态，重启后该供应商首次调度前可能为 0（与总控调度口径一致）。
-        const keyStates = dispatcher.getKeyStates(p.providerId) || [];
-        let activeKeys = 0, isolatedKeys = 0, coolingKeys = 0;
-        for (const ks of keyStates) {
-          if (ks.status === 'active') activeKeys++; else isolatedKeys++;
+        // 密钥池（墨池池）维度：DB api_keys 为权威池规模（配置总数/活跃/隔离，不受重启影响）；
+        // AKEYS 为运行时态（与 generate 同源）：已加载 key 数 + 当前熔断(OPEN/HALF_OPEN) key 数。
+        const dk = keyStatsByProvider[p.providerId] || { total: 0, active: 0, isolated: 0 };
+        const rt = dispatcher.getKeyStates(p.providerId) || [];
+        let rtActive = 0, rtIsolated = 0, rtCooling = 0;
+        for (const ks of rt) {
+          if (ks.status === 'active') rtActive++; else rtIsolated++;
           const cb = ks.cbState; // getKeyStates 返回字符串 CLOSED/OPEN/HALF_OPEN 或 null
-          if (cb === 'OPEN' || cb === 'HALF_OPEN') coolingKeys++;
+          if (cb === 'OPEN' || cb === 'HALF_OPEN') rtCooling++;
         }
         return Object.assign({}, p, {
           syncedModels, boundModels, servedModels, called24h,
-          poolSize: keyStates.length, activeKeys, isolatedKeys, coolingKeys,
+          poolSize: dk.total,            // 配置 key 总数（墨池池规模，权威源）
+          activeKeys: dk.active,         // DB 活跃 key 数
+          isolatedKeys: dk.isolated,     // DB 隔离/禁用 key 数
+          runtimeLoaded: rt.length,      // AKEYS 已加载 key 数（重启后首调度前可能为 0）
+          coolingKeys: rtCooling,        // AKEYS 运行时熔断 key 数
         });
       });
 
