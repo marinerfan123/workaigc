@@ -152,3 +152,9 @@ output/
 
 # 真实 provider 密钥（本地注入用，绝不入库）
 scripts/prod-keys.json
+
+# ===== 本地工作区备份目录（不入库） =====
+# 以 _backup_YYYYMMDD_HHMM/ 命名的整目录备份
+_backup_*/
+# server/_stale_local/ 是容器恢复时拉回的真实线上文件备份
+server/_stale_local/
