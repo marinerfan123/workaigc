@@ -6,6 +6,8 @@ import fs from 'fs';
 import crypto from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import cluster from 'node:cluster';
+import os from 'node:os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3001;
@@ -4203,6 +4205,34 @@ const server = http.createServer(async (req, res) => {
   sendJSON(res, 404, { error: 'Not Found' });
 });
 
+// ─── Node cluster（多 worker 用满多核；#360 限流已迁 Redis，多实例/多 worker 安全）───
+// 仅当 ENABLE_CLUSTER !== 'false' 且为多核时启用；env WEB_CONCURRENCY 可指定 worker 数，默认 = CPU 核数。
+// 主进程只负责 fork/管理 worker 并转发信号；worker 才运行 app（initDB/listen/SIGTERM）。
+const CLUSTER_ENABLED = process.env.ENABLE_CLUSTER !== 'false';
+const NUM_WORKERS = process.env.WEB_CONCURRENCY
+  ? Math.max(1, parseInt(process.env.WEB_CONCURRENCY, 10) || 1)
+  : Math.max(1, os.cpus().length);
+
+if (CLUSTER_ENABLED && cluster.isPrimary) {
+  console.log(`[cluster] 主进程 pid=${process.pid} 启动 ${NUM_WORKERS} 个 worker（共 ${os.cpus().length} 核）`);
+  for (let i = 0; i < NUM_WORKERS; i++) cluster.fork();
+  cluster.on('exit', (worker, code, signal) => {
+    console.error(`[cluster] worker ${worker.process.pid} 退出(${signal || code})，自动重启`);
+    cluster.fork();
+  });
+  for (const sig of ['SIGTERM', 'SIGINT']) {
+    process.on(sig, () => {
+      console.log(`[cluster] 主进程收到 ${sig}，转发给所有 worker`);
+      for (const id of Object.keys(cluster.workers || {})) cluster.workers[id].kill(sig);
+      setTimeout(() => process.exit(0), 8000).unref(); // 给 worker 优雅退出时间，超时兜底
+    });
+  }
+  // 主进程到此为止，不运行 app（下方 bootstrap 仅在 worker 执行）
+}
+
+if (cluster.isWorker) {
+// leader worker（id=1）独跑周期性调度/崩溃恢复，避免多 worker 重复扫 DB / 重复续轮询
+const IS_LEADER = cluster.worker?.id === 1;
 await initDB();
 await initRedis();
 
@@ -4210,7 +4240,7 @@ await initRedis();
 // 必须在 PG 就绪后、且 pgPool 全局已赋值后调用（resumeRunningTasks 内部用 pgPool 重新加载 provider/model）。
 // 只恢复已持久化 provider_task_id 的 running 任务；提交前崩溃的任务无 provider task id，
 // 由 billing.cjs 的 running>30min 兜底释放 held 积分，不会泄漏（此处仅负责"拿回那一笔生成结果"）。
-if (pgPool) {
+if (pgPool && IS_LEADER) {
   dispatcher.resumeRunningTasks(pgPool)
     .then((r) => { if (r && r.resumed) console.log(`[startup] 崩溃恢复：续轮询 ${r.resumed} 个在途视频任务`); })
     .catch((e) => console.warn('[startup] 崩溃恢复扫描失败（不影响启动）:', e.message));
@@ -4304,7 +4334,7 @@ server.maxHeadersCount = 200;           // 放宽头部上限，避免大 header
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 服务: http://localhost:${PORT} | 📁 ${DATA_DIR} | 🐘 PG:connected(强制·唯一数据源) | 🔴 Redis:${isRedisUp() ? 'up' : 'memory-fallback(仅缓存)'}`);
-  orderExpiry.start(); // 启动订单超时调度器（启动即扫一次）
+  if (IS_LEADER) orderExpiry.start(); // 调度器仅 leader worker 跑（避免多实例重复扫 DB）
 });
 
 // ─── 优雅关闭（SIGTERM/SIGINT）──
@@ -4353,3 +4383,4 @@ function gracefulShutdown(sig) {
 }
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+} // end if (cluster.isWorker)

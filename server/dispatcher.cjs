@@ -14,6 +14,7 @@ const { loadDispatchPairs } = require('./modules/modelhub/bindings.cjs');
 const { makeJobRecorder, NULL_RECORDER, recordResumeJob } = require('./modules/modelhub/jobs.cjs');
 const router = require('./modules/modelhub/router.cjs'); // Phase 3.4 确定性智能路由（纯函数，非阻断接入）
 const assetFinalize = require('./assetFinalize.cjs'); // Phase 1 主流化：服务端最终化 provider 资源到 OSS + 写 media（替代前端 processResultImages）
+const rateLimit = require('./rateLimitRedis.cjs'); // Redis 共享限流（多 worker/多实例安全，#360 解法）
 
 // ─── 日志总线注入（由 server.js 启动时 setLogSink(logbus) 注入）───
 // 生成失败 / 异常必须落到后台「核心错误日志 + 实时监控」(logbus.emit('ERROR') → syslog 持久化 + SSE 广播)，
@@ -583,6 +584,28 @@ function markReject(a, now) {
   } catch (e) { /* 熔断逻辑异常不影响生成 */ }
 }
 
+// ── Redis 共享限流接入（#360 解法）──
+// 本地 GLOBAL_ACTIVE / a.conc / a.bucket 仍维护（监控展示 + Redis 降级兜底）；
+// Redis 层为跨进程权威闸：全局并发 + per-provider 并发(ZSET 租约) + per-provider RPM 令牌桶(Lua)。
+// 返回 rl 句柄（含 slot id），任一闸不满足返回 null（上层切下一个账号）。
+async function acquireRateLimitSlots(p, cost, multiKey, a, aggCap, now) {
+  let bucketCharged = false;
+  if (!multiKey && a.capacityModel !== 'unlimited') {
+    const ok = await rateLimit.tryProviderBucket(p.provider.id, cost, a.bucket.cap, now);
+    if (!ok) { markReject(a, now); return null; } // 桶空 → 拒单（与旧语义一致）
+    bucketCharged = true;
+  }
+  const provConcId = await rateLimit.incrProviderConc(p.provider.id, aggCap);
+  if (!provConcId) { if (bucketCharged) rateLimit.refundProviderBucket(p.provider.id, cost, a.bucket.cap); return null; }
+  const globalId = await rateLimit.acquireGlobalSlot(GLOBAL_MAX);
+  if (!globalId) {
+    rateLimit.decProviderConc(p.provider.id, provConcId);
+    if (bucketCharged) rateLimit.refundProviderBucket(p.provider.id, cost, a.bucket.cap);
+    return null;
+  }
+  return { globalId, provConcId, bucketCharged };
+}
+
 // 在单个账号上尝试一次生成；账号不可用（冷却/桶空/并发满）或失败（429/异常）返回 null（上层切下一个）
 async function attemptOnAccount(p, tier, input, contentType, recorder) {
   const now = Date.now();
@@ -615,14 +638,16 @@ async function attemptOnAccount(p, tier, input, contentType, recorder) {
   const poolExists = !!(pool && pool.size > 0);
   const activeKeyCount = poolExists ? pool.size : 1;
   const aggCap = Math.max(keyConcCap, keyConcCap * activeKeyCount); // 多 key → 容量线性扩展
-  if (a.conc >= aggCap) return null;                          // 整池并发满（非拒单，仅忙，不记 attempt）
   // ── 选 key：优先池内轮转；池为空（legacy）回退 providers.api_key；池存在但全不可用 → 本账号不可用 ──
   const selKey = poolExists ? pickKey(p.provider.id, now, keyConcCap) : null;
   const multiKey = poolExists && pool.size > 1;
   const effectiveApiKey = selKey ? selKey.apiKey : (poolExists ? '' : (p.provider.api_key || ''));
   if (!effectiveApiKey) return null;                          // 无任何可用 key
-  if (!_multiKey && a.capacityModel !== 'unlimited') a.bucket.tokens -= cost; // 占用单位（仅单 key 路径）
-  a.conc += 1; GLOBAL_ACTIVE += 1;
+  // 跨进程权威闸：全局并发 + per-provider 并发 + (单 key 路径)RPM 令牌桶；任一不满足返回 null（上层切下一个）
+  const rl = await acquireRateLimitSlots(p, cost, _multiKey, a, aggCap, now);
+  if (!rl) return null;
+  if (!_multiKey && a.capacityModel !== 'unlimited') a.bucket.tokens -= cost; // 本地展示/降级兜底（权威由 Redis 令牌桶）
+  a.conc += 1; GLOBAL_ACTIVE += 1;                            // 本地展示/降级兜底计数
   if (selKey) { selKey.conc += 1; selKey.lastUsedAt = now; }
   const t0 = Date.now();                                       // 真正发起请求的时刻（仅此后记 attempt）
   // 向 recorder 记一次实际尝试（best-effort，绝不影响主链路）；success/timeout/failed/429/error 各分支各自调用
@@ -657,7 +682,7 @@ async function attemptOnAccount(p, tier, input, contentType, recorder) {
         }
       }
       if (res && res.rateLimited) {                            // 真实 429：冷却当前 key + 池内换下一把重试（解锁聚合吞吐）
-        if (!_multiKey && a.capacityModel !== 'unlimited') a.bucket.tokens += cost; // 单 key 路径退还桶（多 key 未占用）
+        if (!_multiKey && a.capacityModel !== 'unlimited') a.bucket.tokens += cost; if (rl && rl.bucketCharged) rateLimit.refundProviderBucket(p.provider.id, cost, a.bucket.cap); // 单 key 路径退还桶（多 key 未占用）
         if (selKey) {
           selKey.conc -= 1;                                     // 释放本 key 并发槽
           selKey.consecutiveFailures += 1;
@@ -678,7 +703,7 @@ async function attemptOnAccount(p, tier, input, contentType, recorder) {
           }
         }
         if (!multiKey) markReject(a, now);                      // 单 key 保持原语义：整账号冷却；多 key 不冷却整池，仅隔离该 key
-        a.conc -= 1; GLOBAL_ACTIVE -= 1;
+        a.conc -= 1; GLOBAL_ACTIVE -= 1; if (rl) { rateLimit.decProviderConc(p.provider.id, rl.provConcId); rateLimit.releaseGlobalSlot(rl.globalId); }
         return null;                                            // 池内可换 key 已耗尽（或单 key）→ 上层切下一个账号/等待区
       }
       break;                                                    // 非 429：交予下方 timeout/failed/error/success 分支处理
@@ -689,7 +714,7 @@ async function attemptOnAccount(p, tier, input, contentType, recorder) {
     // 上层 dispatchOne → generate → generateAsync 的 timeout 分支会标 'waiting' 保留待复核（积分仍 held，不释放）。
     if (res && res.status === 'timeout') {
       if (selKey) selKey.conc -= 1;
-      a.conc -= 1; GLOBAL_ACTIVE -= 1;
+      a.conc -= 1; GLOBAL_ACTIVE -= 1; if (rl) { rateLimit.decProviderConc(p.provider.id, rl.provConcId); rateLimit.releaseGlobalSlot(rl.globalId); }
       await mark('timeout', { providerErrorCode: 'TIMEOUT' });
       return {
         status: 'timeout',
@@ -704,8 +729,8 @@ async function attemptOnAccount(p, tier, input, contentType, recorder) {
     // 释放本账号限流额度 + 并发槽（任务已死，不占坑）；不 markReject（非整账号冷却，避免无谓降低容量）。
     if (res && res.status === 'failed') {
       if (selKey) selKey.conc -= 1;
-      if (!_multiKey && a.capacityModel !== 'unlimited') a.bucket.tokens += cost;
-      a.conc -= 1; GLOBAL_ACTIVE -= 1;
+      if (!_multiKey && a.capacityModel !== 'unlimited') a.bucket.tokens += cost; if (rl && rl.bucketCharged) rateLimit.refundProviderBucket(p.provider.id, cost, a.bucket.cap);
+      a.conc -= 1; GLOBAL_ACTIVE -= 1; if (rl) { rateLimit.decProviderConc(p.provider.id, rl.provConcId); rateLimit.releaseGlobalSlot(rl.globalId); }
       await mark('failed', { providerErrorCode: 'PROVIDER_FAILED' });
       return {
         status: 'failed',
@@ -716,8 +741,8 @@ async function attemptOnAccount(p, tier, input, contentType, recorder) {
       };
     }
     if (!res || res.status !== 'success') {                    // 真失败（网络抖动/无图片/配置错）→ 冷却该账号后切下一个
-      if (!_multiKey && a.capacityModel !== 'unlimited') a.bucket.tokens += cost;
-      a.conc -= 1; GLOBAL_ACTIVE -= 1;
+      if (!_multiKey && a.capacityModel !== 'unlimited') a.bucket.tokens += cost; if (rl && rl.bucketCharged) rateLimit.refundProviderBucket(p.provider.id, cost, a.bucket.cap);
+      a.conc -= 1; GLOBAL_ACTIVE -= 1; if (rl) { rateLimit.decProviderConc(p.provider.id, rl.provConcId); rateLimit.releaseGlobalSlot(rl.globalId); }
       if (selKey) { selKey.conc -= 1; selKey.consecutiveFailures += 1; selKey.lastFailureAt = now; try { selKey.cbState = router.cbRecordOutcome(selKey.cbState, 'failure', now); } catch (e) {} }
       if (!multiKey) markReject(a, now);                       // 多 key：仅隔离该 key，不冷却整池
       await mark('error', { providerErrorCode: 'PROVIDER_ERROR' });
@@ -725,15 +750,15 @@ async function attemptOnAccount(p, tier, input, contentType, recorder) {
     }
     try { a.cbState = router.cbRecordOutcome(a.cbState, 'success', now); } catch (e) { /* 熔断异常不阻断 */ }
     if (!multiKey) a.consecutiveRejects = 0;                   // 成功 → 单 key 重置拒单计数、释放并发槽
-    a.conc -= 1; GLOBAL_ACTIVE -= 1;
+    a.conc -= 1; GLOBAL_ACTIVE -= 1; if (rl) { rateLimit.decProviderConc(p.provider.id, rl.provConcId); rateLimit.releaseGlobalSlot(rl.globalId); }
     if (selKey) { selKey.conc -= 1; selKey.consecutiveFailures = 0; try { selKey.cbState = router.cbRecordOutcome(selKey.cbState, 'success', now); } catch (e) {} }
     await mark('success', { httpStatus: 200 });
     // 精确归因：本次成功出自哪个 provider / model / 类型 / 产出资产数（供双边记账）
     const units = res.images ? (res.images.length || 0) : (res.videoUrl ? 1 : 0);
     return { ...res, providerId: p.provider.id, modelId: p.model.model_id, modelType: contentType, units, bindingId: p.bindingId || '' };
   } catch (e) {
-    if (!_multiKey && a.capacityModel !== 'unlimited') a.bucket.tokens += cost;
-    a.conc -= 1; GLOBAL_ACTIVE -= 1;
+    if (!_multiKey && a.capacityModel !== 'unlimited') a.bucket.tokens += cost; if (rl && rl.bucketCharged) rateLimit.refundProviderBucket(p.provider.id, cost, a.bucket.cap);
+    a.conc -= 1; GLOBAL_ACTIVE -= 1; if (rl) { rateLimit.decProviderConc(p.provider.id, rl.provConcId); rateLimit.releaseGlobalSlot(rl.globalId); }
     if (selKey) { selKey.conc -= 1; selKey.consecutiveFailures += 1; selKey.lastFailureAt = now; try { selKey.cbState = router.cbRecordOutcome(selKey.cbState, 'failure', now); } catch (er) {} }
     if (!multiKey) markReject(a, now);
     await mark('error', { providerErrorCode: 'EXCEPTION' });
@@ -891,7 +916,7 @@ async function dispatchOne(pairs, tier, input, contentType, recorder, pgPool) {
     });
     let brokeForGlobal = false;
     for (const p of seq) {
-      if (GLOBAL_ACTIVE >= GLOBAL_MAX) { await sleep(120); brokeForGlobal = true; break; }
+      if (rateLimit.globalIsFull(GLOBAL_MAX)) { await sleep(120); brokeForGlobal = true; break; }
       if (recorder && recorder.setRetryReason) recorder.setRetryReason(retryReason);
       const r = await attemptOnAccount(p, tier, input, contentType, recorder);
       if (!r) {                                               // 本次未产出结果（限流/冷却/瞬错/忙）→ 记录原因，切下一个账号
