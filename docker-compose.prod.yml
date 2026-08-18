@@ -28,6 +28,8 @@ services:
 
   app:
     build: .
+    # CPU 硬上限：2 核机器的 80%（1.6 核），与 app 内 cpuMonitor 软闸（80%/5s）配合实现「超 80% → 应用级降级；极端情况 OS 内核兜底」
+    cpus: '1.6'
     depends_on:
       redis:
         condition: service_healthy

@@ -48,6 +48,7 @@ import billing from './billing.cjs'; // Phase A 积分计费
 import accounting from './accounting.cjs'; // Phase M6+ 全局双边账务（后台量 vs 客户量）
 import redisStore from './redis.cjs';       // Phase 0 优雅 Redis 层（自动内存兜底）
 import rateLimitMod from './ratelimit.cjs'; // Phase 0 固定窗口限流
+import cpuMonitor from './cpuMonitor.cjs'; // CPU 自适应负载降级（dispatcher 入口检查 + healthz 暴露）
 const { initRedis, isRedisUp } = redisStore;
 const { clientIp, rateLimit } = rateLimitMod;
 import adminMod from './admin.cjs'; // Phase 2 运营总控台(M3) + 全局智能体层(M4) 后台接口
@@ -1766,6 +1767,7 @@ async function handleAPI(req, res) {
 
   // Phase 0 健康检查：公开端点，网关前放行，供 nginx/容器探针与压测使用
   if (url === '/api/healthz' && method === 'GET') {
+    const cpu = cpuMonitor.getStatus();
     return sendJSON(res, 200, {
       status: 'ok',
       pg: !!pgPool,
@@ -1773,6 +1775,12 @@ async function handleAPI(req, res) {
       uptime: Math.floor(process.uptime()),
       version: process.env.npm_package_version || '0.1.0',
       ts: Date.now(),
+      cpu: {
+        percent: Math.round(cpu.cpuPercent * 1000) / 10, // 单核占比（%），保留 1 位小数
+        shedding: cpu.shedding,
+        shedThreshold: Math.round(cpu.shedThreshold * 100),
+        recoverThreshold: Math.round(cpu.recoverThreshold * 100),
+      },
     });
   }
 
@@ -3079,6 +3087,11 @@ async function handleAPI(req, res) {
       const { taskId, error } = await dispatcher.generateAsync(pgPool, genOpts);
       if (error) {
         await billing.releaseCredits(pgPool, realUser.id, cost, idemKey, pay.pool).catch(() => {});
+        // CPU 自适应降级：dispatcher 检测到本 worker CPU 超阈值 → 返 503 + Retry-After（前端可重试）
+        if (typeof error === 'string' && error.startsWith('CPU_OVERLOAD')) {
+          res.setHeader('Retry-After', '5');
+          return sendJSON(res, 503, { status: 'overloaded', error, retryAfterSec: 5 });
+        }
         return sendJSON(res, 200, { status: 'failed', error });
       }
       return sendJSON(res, 200, { status: 'pending', taskId });
@@ -4236,6 +4249,7 @@ if (cluster.isWorker || !CLUSTER_ENABLED) {
 const IS_LEADER = !CLUSTER_ENABLED || cluster.worker?.id === 1;
 await initDB();
 await initRedis();
+cpuMonitor.start(); // 启动 CPU 自适应负载降级监控（每 worker 独立）
 
 // ─── 崩溃恢复：启动即扫描在途视频任务，续轮询崩溃前已提交但本进程未完成的任务 ───
 // 必须在 PG 就绪后、且 pgPool 全局已赋值后调用（resumeRunningTasks 内部用 pgPool 重新加载 provider/model）。

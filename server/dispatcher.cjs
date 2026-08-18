@@ -15,6 +15,7 @@ const { makeJobRecorder, NULL_RECORDER, recordResumeJob } = require('./modules/m
 const router = require('./modules/modelhub/router.cjs'); // Phase 3.4 确定性智能路由（纯函数，非阻断接入）
 const assetFinalize = require('./assetFinalize.cjs'); // Phase 1 主流化：服务端最终化 provider 资源到 OSS + 写 media（替代前端 processResultImages）
 const rateLimit = require('./rateLimitRedis.cjs'); // Redis 共享限流（多 worker/多实例安全，#360 解法）
+const cpuMonitor = require('./cpuMonitor.cjs'); // CPU 自适应负载降级（80% 阈值进入 SHED，返 503）
 
 // ─── 日志总线注入（由 server.js 启动时 setLogSink(logbus) 注入）───
 // 生成失败 / 异常必须落到后台「核心错误日志 + 实时监控」(logbus.emit('ERROR') → syslog 持久化 + SSE 广播)，
@@ -1046,6 +1047,11 @@ function getArrayByPath(obj, path) {
 
 // ─── 异步生成：返回 taskId 立即让前端可轮询，状态写入 PG ───
 async function generateAsync(pgPool, opts) {
+  // CPU 自适应降级：若本 worker CPU 持续 >80%（默认阈值），拒绝新任务（route 层转 503 + Retry-After）
+  // in-flight 任务不受影响，SHED 只拒绝「准备入队的新请求」
+  if (cpuMonitor.isShedding()) {
+    return { taskId: null, error: 'CPU_OVERLOAD: 系统繁忙，请稍后重试' };
+  }
   if (!pgPool) return { taskId: null, error: '数据库不可用' };
   const { model, displayModelName, prompt, count, contentType, referenceImages, pendingIds = [], clientMeta = {}, user_id, idempotencyKey, cost = 0, costPool = 'recharge' } = opts;
   // 生成一个稳定 taskId：便于前端 localStorage 持久化关联
