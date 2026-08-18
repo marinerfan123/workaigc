@@ -187,6 +187,7 @@ async function finalizeUrl(pgPool, opts) {
   let ossUrl = '';
   let ossObjectKey = '';
   let ossUploaded = false;
+  let thumbUrl = '';
   let contentType = normalizeContentType(providerUrl, null, type === 'video' ? 'video/mp4' : 'image/jpeg');
   let fileSize = 0;
   let status = 'pending_upload';
@@ -214,6 +215,17 @@ async function finalizeUrl(pgPool, opts) {
       ossObjectKey = buildObjectKey(cfg, userId, safeName);
       await putObject(cfg, ossObjectKey, buffer, contentType);
       ossUrl = buildGetUrl(cfg, ossObjectKey);
+      thumbUrl = '';
+      if (type === 'image') {
+        try { thumbUrl = ossMod.buildOssThumbUrl(cfg, ossObjectKey) || ''; } catch (_) { thumbUrl = ''; }
+      } else if (type === 'video') {
+        // 视频即时封面帧：OSS 边缘抽帧，无需 ffmpeg
+        // [FIX 2026-08-15] Request 5：与图片 buildOssThumbUrl 同一模式
+        try {
+          const snap = ossMod.buildOssVideoSnapshotUrl(cfg, ossObjectKey);
+          if (snap && snap.signedUrl) thumbUrl = snap.signedUrl;
+        } catch (_) { thumbUrl = ''; }
+      }
       ossUploaded = true;
       status = 'success';
       const providerTag = cfg.providerType === 'tencent-cos' ? 'COS' : 'OSS';
@@ -232,9 +244,9 @@ async function finalizeUrl(pgPool, opts) {
   }
 
   // ── 3. 写 media 表（成功/已有 OSS URL）──
-  await insertMedia(pgPool, { mediaId, userId, taskId, type, prompt, model, ratio, providerUrl, ossUrl, ossObjectKey, ossUploaded: true, contentType, fileSize, status: 'success', errorMessage: '' });
+  await insertMedia(pgPool, { mediaId, userId, taskId, type, prompt, model, ratio, providerUrl, thumbnail: thumbUrl, ossUrl, ossObjectKey, ossUploaded: true, contentType, fileSize, status: 'success', errorMessage: '' });
 
-  return { mediaId, pendingId: mediaId, ossUrl, ossObjectKey, ossUploaded: true, status: 'success', providerUrl, contentType, fileSize, type };
+  return { mediaId, pendingId: mediaId, ossUrl, thumbnail: thumbUrl, ossObjectKey, ossUploaded: true, status: 'success', providerUrl, contentType, fileSize, type };
 }
 
 // media 表 INSERT（或幂等 UPSERT）
@@ -245,7 +257,7 @@ async function insertMedia(pgPool, row) {
   // 用 ON CONFLICT (id) DO UPDATE 保证幂等（重入不重复插入）
   const params = [
     id, row.taskId, row.type,
-    row.ossUrl || row.providerUrl,
+    row.thumbnail || row.ossUrl || row.providerUrl,
     row.ossUrl || row.providerUrl,
     row.prompt, row.model, row.ratio,
     row.ossUrl || '', row.ossObjectKey || '', row.ossUploaded || false,
