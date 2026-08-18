@@ -189,6 +189,7 @@ export default function ModelParticipationPage() {
                 <th className="px-3 py-2">密钥</th>
                 <th className="px-3 py-2">启用</th>
                 <th className="px-3 py-2">有效</th>
+                <th className="px-3 py-2">Key池(运行)</th>
                 <th className="px-3 py-2">熔断态</th>
                 <th className="px-3 py-2">冷却</th>
                 <th className="px-3 py-2 text-right">已同步</th>
@@ -199,7 +200,7 @@ export default function ModelParticipationPage() {
             </thead>
             <tbody>
               {providers.length === 0 ? (
-                <tr><td colSpan={10} className="px-3 py-8 text-center text-zinc-500">无数据</td></tr>
+                <tr><td colSpan={11} className="px-3 py-8 text-center text-zinc-500">无数据</td></tr>
               ) : providers.map((p) => (
                 <tr key={p.providerId} className="border-t border-white/5 hover:bg-white/[0.02]">
                   <td className="px-3 py-2">
@@ -209,6 +210,10 @@ export default function ModelParticipationPage() {
                   <td className="px-3 py-2 font-mono text-[11px] text-zinc-400">{p.keyMasked}</td>
                   <td className="px-3 py-2"><Pill ok={p.enabled} label={p.enabled ? '启用' : '停用'} /></td>
                   <td className="px-3 py-2"><Pill ok={p.validKey} label={p.validKey ? '有效' : '无效'} /></td>
+                  <td className="px-3 py-2">
+                    <div className="tabular-nums text-zinc-200">{p.poolSize ?? 0}</div>
+                    <div className="text-[11px] text-zinc-500">活跃{p.activeKeys ?? 0}·断{p.coolingKeys ?? 0}·隔{p.isolatedKeys ?? 0}</div>
+                  </td>
                   <td className="px-3 py-2">
                     <Pill
                       tone={p.cbState === 'CLOSED' ? 'ok' : p.cbState === 'OPEN' ? 'bad' : 'warn'}

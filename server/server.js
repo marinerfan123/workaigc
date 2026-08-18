@@ -2145,7 +2145,7 @@ async function handleAPI(req, res) {
       const provAgg = providers.map((p) => {
         let syncedModels = 0, boundModels = 0, servedModels = 0, called24h = 0;
         for (const m of models) {
-          const isLegacy = m.legacyProvider === p.providerId;
+          const isLegacy = (m.legacyProviders || []).includes(p.providerId);
           const isBound = (m.boundProviders || []).includes(p.providerId);
           if (!isLegacy && !isBound) continue;
           if (m.synced && isLegacy) syncedModels++;
@@ -2154,7 +2154,20 @@ async function handleAPI(req, res) {
           const cm = calledByModelProvider[m.model_id + '|' + p.providerId];
           if (cm) called24h += cm.cnt;
         }
-        return Object.assign({}, p, { syncedModels, boundModels, servedModels, called24h });
+        // 方案①：暴露 dispatcher 多 key 池运行时态（AKEYS，与 generate 同源）
+        // poolSize=运行时 key 数；activeKeys=未隔离；isolatedKeys=被禁用/隔离；coolingKeys=CB OPEN/HALF_OPEN。
+        // 注意 AKEYS 为内存态，重启后该供应商首次调度前可能为 0（与总控调度口径一致）。
+        const keyStates = dispatcher.getKeyStates(p.providerId) || [];
+        let activeKeys = 0, isolatedKeys = 0, coolingKeys = 0;
+        for (const ks of keyStates) {
+          if (ks.status === 'active') activeKeys++; else isolatedKeys++;
+          const cb = ks.cbState; // getKeyStates 返回字符串 CLOSED/OPEN/HALF_OPEN 或 null
+          if (cb === 'OPEN' || cb === 'HALF_OPEN') coolingKeys++;
+        }
+        return Object.assign({}, p, {
+          syncedModels, boundModels, servedModels, called24h,
+          poolSize: keyStates.length, activeKeys, isolatedKeys, coolingKeys,
+        });
       });
 
       // 9) 汇总
