@@ -2002,6 +2002,184 @@ async function handleAPI(req, res) {
       return sendJSON(res, 500, { error: '路由决策失败：' + (e?.message || e) });
     }
   }
+  // ── 模型参与度总览（密钥池 / 模型四态：已同步 / 已绑定 / 实际被调用 / 当前冷却熔断）──
+  // 参与口径严格对齐 dispatcher.loadDispatchPairs (server/modules/modelhub/bindings.cjs)：
+  //   参与 = 存在 enabled 绑定（或 legacy models.provider_id 回退）且对应服务商 enabled + api_key 有效（>=6 位）。
+  //   冷却/熔断 = dispatcher.getAccountStates() 内存态（与 generate 同源），cold 或 cbState∈{OPEN,HALF_OPEN}。
+  if (url === '/api/admin/model-participation' && method === 'GET') {
+    if (!admin.requireAdmin(req)) return sendJSON(res, 403, { error: '需要管理员权限' });
+    if (!pgPool) return sendJSON(res, 503, { error: '数据库不可用' });
+    try {
+      const u = new URL(req.url, 'http://localhost');
+      const onlyProblems = u.searchParams.get('onlyProblems') === '1';
+      const providerFilter = (u.searchParams.get('providerId') || '').trim();
+
+      // 1) 实时账号状态（冷却/熔断）来自 dispatcher 内存态（ACCT），与 generate 同源
+      const states = dispatcher.getAccountStates(); // pid -> {cold, manualState, cbState:{state,...}, cooldownUntil, ...}
+
+      // 2) 服务商（密钥）基础信息 + 有效性（enabled && api_key.length>=6，对齐 bindings.cjs:106）
+      const provRows = await pgPool.query('SELECT id, name, base_url, api_key, enabled, max_concurrent FROM providers ORDER BY created_at');
+      const providers = provRows.rows.map((p) => {
+        const st = states[p.id] || null;
+        const cb = st && st.cbState ? st.cbState.state : 'CLOSED';
+        const cooling = !!st && (st.cold || st.manualState === 'cold' || cb === 'OPEN' || cb === 'HALF_OPEN');
+        const valid = p.enabled && p.api_key && p.api_key.length >= 6;
+        return {
+          providerId: p.id,
+          name: p.name || '',
+          baseUrl: p.base_url || '',
+          keyMasked: p.api_key && p.api_key.length > 4 ? '***' + String(p.api_key).slice(-4) : '***',
+          enabled: p.enabled,
+          maxConcurrent: p.max_concurrent,
+          validKey: valid,
+          cold: st ? st.cold : null,
+          manualState: st ? st.manualState : null,
+          cbState: cb,
+          cooldownUntil: st ? st.cooldownUntil : null,
+          cooling,
+        };
+      });
+      const providerStateMap = {};
+      for (const p of providers) providerStateMap[p.providerId] = p;
+      const validProviderIds = new Set(providers.filter((p) => p.validKey).map((p) => p.providerId));
+
+      // 3) 已同步模型（models 表）——按 model_id 聚合为「逻辑模型」；一行多 provider 属正常设计
+      const modelRows = await pgPool.query('SELECT id, model_id, display_name, mapping_name, type, provider_id, enabled FROM models');
+      // 4) 绑定（provider_model_bindings，仅 enabled）
+      const bindRows = await pgPool.query('SELECT model_id, provider_id, enabled, id FROM provider_model_bindings');
+      const boundByModel = {}; // model_id -> [providerId]
+      for (const b of bindRows.rows) {
+        if (!b.enabled) continue;
+        (boundByModel[b.model_id] = boundByModel[b.model_id] || []).push(b.provider_id);
+      }
+      // 5) 近 24h 实际调用（generation_attempts）
+      const attRows = await pgPool.query(
+        `SELECT model_id, provider_id, COUNT(*)::int AS cnt,
+                SUM(CASE WHEN status='success' THEN 1 ELSE 0 END)::int AS succ
+           FROM generation_attempts
+          WHERE created_at >= NOW() - INTERVAL '24 hours'
+          GROUP BY model_id, provider_id`
+      );
+      const calledByModel = {};         // model_id -> {cnt, succ}
+      const calledByModelProvider = {}; // "model_id|provider_id" -> {cnt, succ}
+      for (const a of attRows.rows) {
+        calledByModel[a.model_id] = calledByModel[a.model_id] || { cnt: 0, succ: 0 };
+        calledByModel[a.model_id].cnt += Number(a.cnt) || 0;
+        calledByModel[a.model_id].succ += Number(a.succ) || 0;
+        calledByModelProvider[a.model_id + '|' + a.provider_id] = { cnt: Number(a.cnt) || 0, succ: Number(a.succ) || 0 };
+      }
+
+      // 6) 组装 per-model 行（按 model_id 聚合；参与口径对齐 loadDispatchPairs）
+      //    models 表一行对应一个「模型×服务商」组合（dispatcher 按 model_id|provider_id 组合键去重），
+      //    此处按 model_id 归并为逻辑模型，避免参与页面把同一模型渲染 100+ 次。
+      const modelAgg = {}; // model_id -> { rows, hasMapping, enabledAny }
+      for (const m of modelRows.rows) {
+        const a = (modelAgg[m.model_id] = modelAgg[m.model_id] || { modelId: m.model_id, rows: [], hasMapping: false, enabledAny: false });
+        a.rows.push(m);
+        if (m.mapping_name) a.hasMapping = true;
+        if (m.enabled) a.enabledAny = true;
+      }
+      const models = Object.values(modelAgg).map((a) => {
+        const first = a.rows[0];
+        const mappingRow = a.rows.find((r) => r.mapping_name) || first;
+        const displayName = mappingRow.display_name || first.model_id;
+        const mappingName = mappingRow.mapping_name || null;
+        // 收集所有有效 legacy provider（enabled 行 + api_key 有效），而非仅取一行
+        const legacyProviders = [];
+        const seenLegacy = new Set();
+        for (const r of a.rows) {
+          if (r.enabled && r.provider_id && validProviderIds.has(r.provider_id) && !seenLegacy.has(r.provider_id)) {
+            legacyProviders.push(r.provider_id); seenLegacy.add(r.provider_id);
+          }
+        }
+        const bps = boundByModel[a.modelId] || [];
+        const candidateProviders = [];
+        const seen = new Set();
+        for (const lp of legacyProviders) { if (!seen.has(lp)) { candidateProviders.push(lp); seen.add(lp); } }
+        for (const bp of bps) { if (validProviderIds.has(bp) && !seen.has(bp)) { candidateProviders.push(bp); seen.add(bp); } }
+        const participates = candidateProviders.length > 0;
+        const called = calledByModel[a.modelId] || { cnt: 0, succ: 0 };
+        // 并发容量维度：单线路 + 低并发 = 批量提交必崩（如 gpt-image-1）
+        let totalConcurrency = 0; let unlimited = false;
+        for (const cp of candidateProviders) {
+          const mc = providerStateMap[cp] ? providerStateMap[cp].maxConcurrent : null;
+          if (mc == null) unlimited = true; else totalConcurrency += Number(mc) || 0;
+        }
+        const poolSize = candidateProviders.length;
+        const effectiveSlots = unlimited ? null : totalConcurrency;
+        const lowCapacity = participates && (poolSize <= 1 && (effectiveSlots == null ? false : effectiveSlots <= 1));
+        let cooling = false; const coolingProviders = [];
+        for (const cp of candidateProviders) {
+          const ps = providerStateMap[cp];
+          if (ps && ps.cooling) { cooling = true; coolingProviders.push(cp); }
+        }
+        return {
+          modelId: a.modelId,
+          displayName,
+          mappingName,
+          type: first.type,
+          enabled: a.enabledAny,
+          synced: a.rows.some((r) => r.provider_id),   // 已同步到上游服务商
+          bound: bps.length > 0,                        // 已绑定（enabled 绑定）
+          boundProviders: bps,
+          legacyProviders,
+          participates,                                  // 实际可参与调度
+          candidateProviders,
+          poolSize,
+          totalConcurrency: effectiveSlots,
+          unlimited,
+          lowCapacity,
+          calledLast24h: called.cnt,
+          successLast24h: called.succ,
+          cooling,
+          coolingProviders,
+        };
+      });
+
+      // 7) 过滤器
+      let filteredModels = models;
+      if (providerFilter) filteredModels = filteredModels.filter((x) => (x.candidateProviders || []).includes(providerFilter));
+      if (onlyProblems) filteredModels = filteredModels.filter((x) => !x.participates || x.cooling || x.lowCapacity);
+
+      // 8) 服务商维度聚合（每个密钥承载的同步/绑定/调用 + 是否冷却）
+      const provAgg = providers.map((p) => {
+        let syncedModels = 0, boundModels = 0, servedModels = 0, called24h = 0;
+        for (const m of models) {
+          const isLegacy = m.legacyProvider === p.providerId;
+          const isBound = (m.boundProviders || []).includes(p.providerId);
+          if (!isLegacy && !isBound) continue;
+          if (m.synced && isLegacy) syncedModels++;
+          if (isBound) boundModels++;
+          if ((m.candidateProviders || []).includes(p.providerId)) servedModels++;
+          const cm = calledByModelProvider[m.model_id + '|' + p.providerId];
+          if (cm) called24h += cm.cnt;
+        }
+        return Object.assign({}, p, { syncedModels, boundModels, servedModels, called24h });
+      });
+
+      // 9) 汇总
+      const summary = {
+        totalModels: models.length,
+        syncedModels: models.filter((m) => m.synced).length,
+        boundModels: models.filter((m) => m.bound).length,
+        participatesModels: models.filter((m) => m.participates).length,
+        calledModels24h: models.filter((m) => m.calledLast24h > 0).length,
+        coolingModels: models.filter((m) => m.cooling).length,
+        lowCapacityModels: models.filter((m) => m.lowCapacity).length,
+        totalProviders: providers.length,
+        validProviders: providers.filter((p) => p.validKey).length,
+        coolingProviders: providers.filter((p) => p.cooling).length,
+      };
+
+      return sendJSON(res, 200, {
+        summary,
+        providers: onlyProblems ? provAgg.filter((p) => p.cooling) : provAgg,
+        models: filteredModels,
+      });
+    } catch (e) {
+      return sendJSON(res, 500, { error: '查询模型参与度失败：' + (e?.message || e) });
+    }
+  }
   if (url.startsWith('/api/admin/') && method !== 'OPTIONS') return admin.handleAdmin(req, res, url.split('?')[0], method);
 
   // ── 电商模块（AI 市集 / 技能注册表 / 试用台）── 命中即处理（内部自行鉴权：目录/商品公开，试用/获取/我的技能需登录）

@@ -10,6 +10,7 @@
 import type { LucideIcon } from 'lucide-react';
 import {
   LayoutDashboard,
+  Layers,
   Activity,
   ScrollText,
   XCircle,
@@ -74,6 +75,7 @@ export const ADMIN_MODULES: AdminModule[] = [
   { key: 'admin-model-hub', label: '模型 Hub', icon: Cpu, path: '/model-hub', group: 'supply', end: true },
   { key: 'admin-models', label: '模型价格', icon: SlidersHorizontal, path: '/admin/models', group: 'supply' },
   { key: 'admin-routing', label: '智能路由', icon: Route, path: '/admin/routing', group: 'supply' },
+  { key: 'admin-model-participation', label: '模型参与度', icon: Layers, path: '/admin/model-participation', group: 'supply' },
   // 技能注册原本错挂"财务与电商"，后端实属 shop 域的能力注册表（市集+智能体共用），
   // 归到供给侧更贴切。
   { key: 'admin-skills', label: '技能注册', icon: Boxes, path: '/admin/skills', group: 'supply' },

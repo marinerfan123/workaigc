@@ -11,6 +11,7 @@ import ModelHubPage from '@/pages/ModelHubPage/ModelHubPage';
 import ModelConsole from '@/pages/ModelConsole/ModelConsole';
 import ModelPricePage from '@/pages/Admin/ModelPricePage';
 import RoutingPage from '@/pages/Admin/RoutingPage';
+import ModelParticipationPage from '@/pages/Admin/ModelParticipationPage';
 import AccountPage from '@/pages/AccountPage/AccountPage';
 import UserPage from '@/pages/UserPage/UserPage';
 import NotFoundPage from '@/pages/NotFoundPage/NotFoundPage';
@@ -133,6 +134,7 @@ export default function App() {
           <Route path="reference-styles" element={<ReferenceStylesReviewPage />} />
           <Route path="models" element={<ModelPricePage />} />
           <Route path="routing" element={<RoutingPage />} />
+          <Route path="model-participation" element={<ModelParticipationPage />} />
           <Route path="transactions" element={<TransactionsPage />} />
           <Route path="skills" element={<SkillsPage />} />
           <Route path="ecommerce" element={<EcommerceAdminPage />} />
